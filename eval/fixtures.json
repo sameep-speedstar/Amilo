@@ -1,0 +1,41 @@
+{
+  "fixtures": [
+    {
+      "id": "promo-newsletter",
+      "description": "Gmail CATEGORY_PROMOTIONS should be handled",
+      "event": {
+        "source": "gmail",
+        "actor": "deals@store.com",
+        "title": "50% off this weekend only",
+        "snippet": "Unsubscribe | Shop now",
+        "meta": { "gmailCategory": "promotions" }
+      },
+      "expectedBucket": "handled"
+    },
+    {
+      "id": "vip-ask",
+      "description": "VIP with substance needs attention",
+      "event": {
+        "source": "gmail",
+        "actor": "ceo@partner.com",
+        "title": "Need your call on the term sheet today",
+        "snippet": "Can you confirm the dilution cap before 5pm?"
+      },
+      "context": { "vipList": ["ceo@partner.com"] },
+      "expectedBucket": "needs_attention"
+    },
+    {
+      "id": "appointment-email",
+      "description": "Dentist confirmation is a commitment, not noise",
+      "event": {
+        "source": "gmail",
+        "actor": "noreply@clinic.com",
+        "title": "Appointment confirmed — 12 Aug 4:30pm",
+        "snippet": "See you Tuesday at 4:30pm",
+        "kind": "appointment",
+        "meta": { "commitmentAt": "2026-08-12T11:00:00Z" }
+      },
+      "expectedBucket": "needs_attention"
+    }
+  ]
+}

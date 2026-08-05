@@ -1,0 +1,24 @@
+{
+  "name": "amilo",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Amilo — WhatsApp-native chief of staff powered by Cursor Agent SDK (cloud)",
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build -w @amilo/brain-contract -w @amilo/core -w @amilo/db -w @amilo/channels-whatsapp -w @amilo/brain-cursor -w @amilo/api",
+    "dev": "npm run dev -w @amilo/api",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "lint": "npm run typecheck"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.3",
+    "@types/node": "^22.15.3"
+  }
+}
