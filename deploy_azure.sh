@@ -25,7 +25,17 @@ fi
 set -a
 # shellcheck disable=SC1091
 source .env
+if [[ -f .env.azure.db ]]; then
+  # Production Postgres URL (overrides local docker DATABASE_URL)
+  # shellcheck disable=SC1091
+  source .env.azure.db
+fi
 set +a
+
+if [[ -z "${DATABASE_URL:-}" || "$DATABASE_URL" == *"localhost"* ]]; then
+  echo "DATABASE_URL must point at Azure Postgres (.env.azure.db). Aborting." >&2
+  exit 1
+fi
 
 REQUIRED_VARS=(
   WABA_VERIFY_TOKEN

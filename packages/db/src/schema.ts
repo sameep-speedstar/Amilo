@@ -5,6 +5,7 @@ import {
   pgTable,
   text,
   timestamp,
+  uniqueIndex,
   uuid,
   varchar,
 } from "drizzle-orm/pg-core";
@@ -23,16 +24,22 @@ export const users = pgTable("users", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
-export const channels = pgTable("channels", {
-  id: uuid("id").defaultRandom().primaryKey(),
-  userId: uuid("user_id")
-    .notNull()
-    .references(() => users.id, { onDelete: "cascade" }),
-  kind: varchar("kind", { length: 20 }).notNull(),
-  address: varchar("address", { length: 200 }).notNull(),
-  isPrimary: boolean("is_primary").notNull().default(false),
-  prefs: jsonb("prefs").$type<Record<string, unknown>>().notNull().default({}),
-});
+export const channels = pgTable(
+  "channels",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    kind: varchar("kind", { length: 20 }).notNull(),
+    address: varchar("address", { length: 200 }).notNull(),
+    isPrimary: boolean("is_primary").notNull().default(false),
+    prefs: jsonb("prefs").$type<Record<string, unknown>>().notNull().default({}),
+    /** Last inbound from this address — drives WhatsApp 24h window. */
+    lastInboundAt: timestamp("last_inbound_at", { withTimezone: true }),
+  },
+  (t) => [uniqueIndex("channels_kind_address_uidx").on(t.kind, t.address)],
+);
 
 export const events = pgTable("events", {
   id: uuid("id").defaultRandom().primaryKey(),
@@ -92,4 +99,10 @@ export const auditLog = pgTable("audit_log", {
   detail: jsonb("detail").$type<Record<string, unknown>>().notNull().default({}),
   confirmed: boolean("confirmed").notNull().default(false),
   ts: timestamp("ts", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/** Meta webhook delivery dedupe (message ids). */
+export const webhookDedupe = pgTable("webhook_dedupe", {
+  id: varchar("id", { length: 200 }).primaryKey(),
+  seenAt: timestamp("seen_at", { withTimezone: true }).notNull().defaultNow(),
 });

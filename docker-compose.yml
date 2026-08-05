@@ -6,7 +6,7 @@ services:
       POSTGRES_PASSWORD: amilo
       POSTGRES_DB: amilo
     ports:
-      - "5432:5432"
+      - "5433:5432"
     volumes:
       - amilo_pg:/var/lib/postgresql/data
     healthcheck:

@@ -2,24 +2,37 @@ import { createServer } from "node:http";
 import { config as loadEnv } from "dotenv";
 import { serve } from "@hono/node-server";
 import { Hono } from "hono";
+import { sql } from "drizzle-orm";
 import { createCursorBrain, createStubBrain } from "@amilo/brain-cursor";
 import {
   createWhatsAppChannel,
   isPhoneAllowed,
   parseWhatsAppWebhook,
-  toInboundMessage,
   verifyWebhookSignature,
   type WindowStore,
 } from "@amilo/channels-whatsapp";
-import { handleInbound } from "@amilo/core";
+import { handleInbound, type InboundMessage } from "@amilo/core";
+import {
+  claimWebhookMessage,
+  createDb,
+  getUserById,
+  getWhatsAppAddress,
+  getWhatsAppLastInbound,
+  logMessage,
+  setCursorAgentId,
+  setUserStatus,
+  touchWhatsAppInbound,
+  upsertWhatsAppUser,
+  type Db,
+} from "@amilo/db";
 import { loadSettings } from "./config.js";
 
-loadEnv(); // local .env; Azure injects app settings instead
+loadEnv();
 
 const settings = loadSettings();
 const app = new Hono();
+const db: Db = createDb(settings.databaseUrl);
 
-const agentMemory = new Map<string, string>();
 const brain = settings.cursorApiKey
   ? createCursorBrain({
       apiKey: settings.cursorApiKey,
@@ -27,31 +40,21 @@ const brain = settings.cursorApiKey
       repoUrl: settings.cursorBrainRepo,
       startingRef: settings.cursorBrainRef,
       agentStore: {
-        get: async (userId) => agentMemory.get(userId) ?? null,
+        get: async (userId) => {
+          const u = await getUserById(db, userId);
+          return u?.cursorAgentId ?? null;
+        },
         set: async (userId, id) => {
-          agentMemory.set(userId, id);
+          await setCursorAgentId(db, userId, id);
         },
       },
     })
   : createStubBrain();
 
-/** In-memory pause + 24h window until DB wiring in M2. */
-const paused = new Set<string>();
-const lastInboundByWa = new Map<string, Date>();
-const processedMessageIds = new Map<string, number>();
-const PROFILE_NAMES = new Map<string, string>();
-
 const windows: WindowStore = {
-  getLastInbound: async (waId) => lastInboundByWa.get(waId) ?? null,
-  setLastInbound: async (waId, at) => {
-    lastInboundByWa.set(waId, at);
-  },
+  getLastInbound: (waId) => getWhatsAppLastInbound(db, waId),
+  setLastInbound: (waId, at) => touchWhatsAppInbound(db, waId, at),
 };
-
-/** userId is E.164 (+digits); Graph send wants digits only. */
-function waDigitsFromUserId(userId: string): string {
-  return userId.replace(/\D/g, "");
-}
 
 const waChannel = createWhatsAppChannel({
   cfg: {
@@ -60,32 +63,20 @@ const waChannel = createWhatsAppChannel({
     appSecret: settings.wabaAppSecret,
   },
   windows,
-  resolveAddress: async (userId) => waDigitsFromUserId(userId),
+  resolveAddress: async (userId) => {
+    const addr = await getWhatsAppAddress(db, userId);
+    if (!addr) throw new Error(`no whatsapp channel for user ${userId}`);
+    return addr;
+  },
 });
-
-function rememberMessageId(id: string): boolean {
-  const now = Date.now();
-  if (processedMessageIds.has(id)) return false;
-  processedMessageIds.set(id, now);
-  if (processedMessageIds.size > 2000) {
-    for (const [k, ts] of processedMessageIds) {
-      if (now - ts > 24 * 60 * 60 * 1000) processedMessageIds.delete(k);
-    }
-  }
-  return true;
-}
 
 async function processInbound(rawJson: unknown): Promise<void> {
   const messages = parseWhatsAppWebhook(rawJson);
   for (const parsed of messages) {
-    if (!rememberMessageId(parsed.messageId)) {
+    const claimed = await claimWebhookMessage(db, parsed.messageId);
+    if (!claimed) {
       console.log(JSON.stringify({ event: "wa_dup_skip", id: parsed.messageId }));
       continue;
-    }
-
-    await windows.setLastInbound(parsed.waId, parsed.timestamp);
-    if (parsed.profileName) {
-      PROFILE_NAMES.set(parsed.phoneE164, parsed.profileName);
     }
 
     if (!isPhoneAllowed(parsed.waId, settings.allowedPhones)) {
@@ -98,18 +89,49 @@ async function processInbound(rawJson: unknown): Promise<void> {
       continue;
     }
 
+    const user = await upsertWhatsAppUser(db, {
+      phoneE164: parsed.phoneE164,
+      waId: parsed.waId,
+      ...(parsed.profileName ? { profileName: parsed.profileName } : {}),
+    });
+    await touchWhatsAppInbound(db, parsed.waId, parsed.timestamp);
+
+    await logMessage(db, {
+      userId: user.id,
+      channel: "whatsapp",
+      direction: "in",
+      kind: parsed.kind,
+      bodyRef: parsed.content.slice(0, 500),
+      meta: { waMessageId: parsed.messageId },
+    });
+
     if (parsed.kind === "voice") {
-      await waChannel.send(parsed.phoneE164, {
-        text: "Voice notes land in a later milestone — send text for now, or help.",
+      const text = "Voice notes land in a later milestone — send text for now, or help.";
+      await waChannel.send(user.id, { text });
+      await logMessage(db, {
+        userId: user.id,
+        channel: "whatsapp",
+        direction: "out",
+        kind: "text",
+        bodyRef: text,
       });
       continue;
     }
 
-    const inbound = toInboundMessage(parsed);
+    const inbound: InboundMessage = {
+      userId: user.id,
+      channel: "whatsapp",
+      kind: parsed.kind,
+      content: parsed.content,
+      ts: parsed.timestamp,
+      ...(parsed.mediaId ? { mediaRef: parsed.mediaId } : {}),
+    };
+
     console.log(
       JSON.stringify({
         event: "wa_inbound",
-        userId: parsed.phoneE164,
+        userId: user.id,
+        phone: parsed.phoneE164,
         kind: parsed.kind,
         chars: parsed.content.length,
       }),
@@ -119,21 +141,34 @@ async function processInbound(rawJson: unknown): Promise<void> {
       const outbound = await handleInbound(inbound, {
         brain,
         channel: waChannel,
-        resolveUserName: async (userId) => PROFILE_NAMES.get(userId) ?? "there",
-        isPaused: async (userId) => paused.has(userId),
-        setPaused: async (userId, p) => {
-          if (p) paused.add(userId);
-          else paused.delete(userId);
+        resolveUserName: async (id) => {
+          const u = await getUserById(db, id);
+          return u?.name ?? "there";
+        },
+        isPaused: async (id) => {
+          const u = await getUserById(db, id);
+          return u?.status === "paused";
+        },
+        setPaused: async (id, p) => {
+          await setUserStatus(db, id, p ? "paused" : "active");
         },
       });
 
       for (const msg of outbound) {
-        await waChannel.send(parsed.phoneE164, msg);
+        await waChannel.send(user.id, msg);
+        await logMessage(db, {
+          userId: user.id,
+          channel: "whatsapp",
+          direction: "out",
+          kind: "templateName" in msg ? "template" : "text",
+          bodyRef: "templateName" in msg ? msg.templateName : msg.text.slice(0, 500),
+          meta: "templateName" in msg ? { template: msg.templateName } : {},
+        });
       }
       console.log(
         JSON.stringify({
           event: "wa_outbound",
-          userId: parsed.phoneE164,
+          userId: user.id,
           count: outbound.length,
         }),
       );
@@ -145,8 +180,14 @@ async function processInbound(rawJson: unknown): Promise<void> {
         }),
       );
       try {
-        await waChannel.send(parsed.phoneE164, {
-          text: "Something went wrong on my side — try again in a moment.",
+        const text = "Something went wrong on my side — try again in a moment.";
+        await waChannel.send(user.id, { text });
+        await logMessage(db, {
+          userId: user.id,
+          channel: "whatsapp",
+          direction: "out",
+          kind: "text",
+          bodyRef: text,
         });
       } catch {
         /* already logged */
@@ -155,16 +196,23 @@ async function processInbound(rawJson: unknown): Promise<void> {
   }
 }
 
-app.get("/health", (c) =>
-  c.json({
+app.get("/health", async (c) => {
+  let dbOk = false;
+  try {
+    await db.execute(sql`select 1`);
+    dbOk = true;
+  } catch {
+    dbOk = false;
+  }
+  return c.json({
     ok: true,
     service: "amilo",
     brain: settings.cursorApiKey ? "cursor-cloud" : "stub",
-    milestone: "M1",
-  }),
-);
+    db: dbOk ? "up" : "down",
+    milestone: "M2",
+  });
+});
 
-/** Meta webhook verification challenge. */
 app.get("/webhooks/whatsapp", (c) => {
   const mode = c.req.query("hub.mode");
   const token = c.req.query("hub.verify_token");
@@ -175,10 +223,6 @@ app.get("/webhooks/whatsapp", (c) => {
   return c.text("Forbidden", 403);
 });
 
-/**
- * Inbound webhook — verify signature, ACK immediately, process async.
- * Meta retries on non-2xx; never block the handshake on LLM/send.
- */
 app.post("/webhooks/whatsapp", async (c) => {
   const raw = Buffer.from(await c.req.arrayBuffer());
   if (settings.wabaAppSecret) {
@@ -210,43 +254,46 @@ app.post("/webhooks/whatsapp", async (c) => {
   return c.json({ received: true });
 });
 
-/** Local/dev chat harness (not WhatsApp) — exercises orchestrator + brain. */
 app.post("/dev/chat", async (c) => {
   if (settings.nodeEnv === "production") {
     return c.json({ error: "disabled in production" }, 404);
   }
-  const body = await c.req.json<{ userId?: string; text?: string; name?: string }>();
-  const userId = body.userId ?? "dev-user";
-  const text = body.text ?? "";
+  const body = await c.req.json<{ phone?: string; text?: string; name?: string }>();
+  const phone = body.phone ?? settings.allowedPhones[0] ?? "+910000000000";
+  const waId = phone.replace(/\D/g, "");
+  const user = await upsertWhatsAppUser(db, {
+    phoneE164: phone.startsWith("+") ? phone : `+${waId}`,
+    waId,
+    ...(body.name ? { profileName: body.name } : {}),
+  });
   const outbound = await handleInbound(
     {
-      userId,
+      userId: user.id,
       channel: "web",
       kind: "text",
-      content: text,
+      content: body.text ?? "",
       ts: new Date(),
     },
     {
       brain,
       channel: {
         async send() {
-          /* no-op for dev */
+          /* no-op */
         },
       },
-      resolveUserName: async () => body.name ?? "Sameep",
-      isPaused: async (id) => paused.has(id),
+      resolveUserName: async () => body.name ?? user.name ?? "Sameep",
+      isPaused: async (id) => (await getUserById(db, id))?.status === "paused",
       setPaused: async (id, p) => {
-        if (p) paused.add(id);
-        else paused.delete(id);
+        await setUserStatus(db, id, p ? "paused" : "active");
       },
     },
   );
-  return c.json({ outbound });
+  return c.json({ userId: user.id, outbound });
 });
 
 const port = settings.port;
 serve({ fetch: app.fetch, port, createServer }, (info) => {
   console.log(
-    `Amilo API listening on :${info.port} (brain=${settings.cursorApiKey ? "cursor" : "stub"}, milestone=M1)`,
+    `Amilo API listening on :${info.port} (brain=${settings.cursorApiKey ? "cursor" : "stub"}, milestone=M2)`,
   );
 });

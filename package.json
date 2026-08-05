@@ -15,7 +15,9 @@
     "dev": "npm run dev -w @amilo/api",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",
-    "lint": "npm run typecheck"
+    "lint": "npm run typecheck",
+    "db:generate": "npm run generate -w @amilo/db",
+    "db:migrate": "npm run migrate -w @amilo/db"
   },
   "devDependencies": {
     "typescript": "^5.8.3",

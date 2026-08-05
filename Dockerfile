@@ -12,4 +12,4 @@ WORKDIR /app
 ENV NODE_ENV=production
 COPY --from=build /app /app
 EXPOSE 8080
-CMD ["npm", "run", "start", "-w", "@amilo/api"]
+CMD ["sh", "-c", "npm run migrate -w @amilo/db && npm run start -w @amilo/api"]

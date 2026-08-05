@@ -3,9 +3,12 @@ import postgres from "postgres";
 import * as schema from "./schema.js";
 
 export function createDb(databaseUrl: string) {
-  const client = postgres(databaseUrl, { max: 10 });
+  const client = databaseUrl.includes("sslmode=require")
+    ? postgres(databaseUrl, { max: 10, prepare: false, ssl: "require" })
+    : postgres(databaseUrl, { max: 10, prepare: false });
   return drizzle(client, { schema });
 }
 
 export type Db = ReturnType<typeof createDb>;
 export * from "./schema.js";
+export * from "./repos.js";

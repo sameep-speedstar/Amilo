@@ -12,3 +12,4 @@ coverage/
 .idea/
 .vscode/
 !.vscode/extensions.json
+.env.azure.db
