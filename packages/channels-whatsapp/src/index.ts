@@ -125,9 +125,18 @@ export function createWhatsAppChannel(opts: {
   };
 }
 
-/** Minimal normalize stub — full webhook parsing lands in M1. */
-export function stubInbound(partial: Omit<InboundMessage, "channel">): InboundMessage {
-  return { ...partial, channel: "whatsapp" };
+/** Build channel-blind inbound from a parsed WA message (userId = E.164). */
+export function toInboundMessage(
+  parsed: import("./parse.js").ParsedWhatsAppMessage,
+): InboundMessage {
+  return {
+    userId: parsed.phoneE164,
+    channel: "whatsapp",
+    kind: parsed.kind,
+    content: parsed.content,
+    ts: parsed.timestamp,
+    ...(parsed.mediaId ? { mediaRef: parsed.mediaId } : {}),
+  };
 }
 
 /** Exact Meta template names as submitted (pending approval). */
@@ -136,3 +145,12 @@ export const TEMPLATE_NAMES = {
   eveningSummary: "evening_wrap",
   priorityAlert: "priority_update",
 } as const;
+
+export {
+  isPhoneAllowed,
+  normalizePhoneKey,
+  parseWhatsAppWebhook,
+  toE164,
+  type ParsedWhatsAppMessage,
+  type WhatsAppWebhookPayload,
+} from "./parse.js";

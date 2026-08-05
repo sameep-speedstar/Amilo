@@ -99,5 +99,6 @@ Set template names in `.env` / `TEMPLATE_NAMES` to match Meta exactly (`morning_
 - [x] Create `evening_wrap` (Utility / EN)
 - [x] Create `priority_update` (Utility / EN)
 - [ ] Wait for Approved
-- [ ] Fill `.env` with WABA tokens (`WABA_ACCESS_TOKEN`, `WABA_PHONE_NUMBER_ID`, `WABA_APP_SECRET`, `WABA_VERIFY_TOKEN`)
-- [ ] Point Meta webhook to `https://<host>/webhooks/whatsapp`
+- [x] Fill `.env` with WABA tokens
+- [x] Deploy API + bind `api.amilo.io`
+- [ ] Point Meta webhook to `https://api.amilo.io/webhooks/whatsapp`

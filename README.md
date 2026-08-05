@@ -42,7 +42,7 @@ npm run dev
 ## Milestones
 
 - **M0** — Bootstrap (this skeleton) + submit WABA templates
-- **M1** — WhatsApp webhook round-trip
+- **M1** — WhatsApp webhook round-trip (parse → orchestrator → send)
 - **M2** — Multi-tenant domain + standing commands
 - **M3** — Cursor brain (durable per-user agents + MCP)
 - **M4** — Google sync + morning/evening briefings
