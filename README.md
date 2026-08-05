@@ -24,6 +24,9 @@ LifeOS proved the product on Telegram + Claude. This codebase rebuilds Amilo **W
 | `eval/` | Golden fixtures for Cursor vs Claude A/B |
 | `docs/` | Architecture, WABA templates, launch |
 
+Privacy policy: https://www.amilo.io/privacy  
+API (production): https://api.amilo.io — see [docs/API_SUBDOMAIN.md](docs/API_SUBDOMAIN.md)
+
 ## Quick start
 
 ```bash

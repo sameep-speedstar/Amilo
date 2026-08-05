@@ -130,8 +130,9 @@ export function stubInbound(partial: Omit<InboundMessage, "channel">): InboundMe
   return { ...partial, channel: "whatsapp" };
 }
 
+/** Exact Meta template names as submitted (pending approval). */
 export const TEMPLATE_NAMES = {
-  morningBriefing: "morning_briefing",
-  eveningSummary: "evening_summary",
-  priorityAlert: "priority_alert",
+  morningBriefing: "morning_update",
+  eveningSummary: "evening_wrap",
+  priorityAlert: "priority_update",
 } as const;

@@ -1,10 +1,13 @@
 import { createServer } from "node:http";
+import { config as loadEnv } from "dotenv";
 import { serve } from "@hono/node-server";
 import { Hono } from "hono";
 import { createCursorBrain, createStubBrain } from "@amilo/brain-cursor";
 import { verifyWebhookSignature } from "@amilo/channels-whatsapp";
 import { handleInbound, type InboundMessage } from "@amilo/core";
 import { loadSettings } from "./config.js";
+
+loadEnv(); // local .env; Azure injects app settings instead
 
 const settings = loadSettings();
 const app = new Hono();

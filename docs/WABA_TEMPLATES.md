@@ -3,11 +3,17 @@
 Submit in **Meta Business Manager → WhatsApp Manager → Message Templates**.  
 Category: **Utility**. Language: **English**.
 
-Status: Facebook Business approved + number added. Templates still need creation/approval.
+**Submitted (pending approval)** — names locked in code as:
+
+| Role | Meta template name |
+|------|--------------------|
+| Morning | `morning_update` |
+| Evening | `evening_wrap` |
+| Alert | `priority_update` |
 
 ---
 
-## 1. `morning_briefing`
+## 1. `morning_update`
 
 **Body**
 
@@ -29,7 +35,9 @@ Reply 1, 2 or 3 for details, M for more, or send a voice note.
 
 ---
 
-## 2. `evening_summary`
+
+
+## 2. `evening_wrap`
 
 **Body**
 
@@ -48,7 +56,9 @@ Anything to capture before tomorrow? Send a voice note.
 
 ---
 
-## 3. `priority_alert`
+
+
+## 3. `priority_update`
 
 **Body**
 
@@ -67,6 +77,8 @@ Reply 1 to act, 2 to snooze to this evening, 3 to ignore.
 
 ---
 
+
+
 ## Review risk
 
 Meta Utility is meant for transactional content. Proactive AI briefings may bounce to Marketing or request revision. If rejected:
@@ -75,15 +87,17 @@ Meta Utility is meant for transactional content. Proactive AI briefings may boun
 2. Keep a single `{{3}}` body blob (survives review better than many variables).
 3. Re-submit; Telegram control bot keeps founder loop unblocked.
 
+
+
 ## After approval
 
-Set template names in env / config to match exactly (`morning_briefing`, `evening_summary`, `priority_alert`) — see `TEMPLATE_NAMES` in `@amilo/channels-whatsapp`.
+Set template names in `.env` / `TEMPLATE_NAMES` to match Meta exactly (`morning_update`, `evening_wrap`, `priority_update`).
 
 ## Founder checklist
 
-- [ ] Create `morning_briefing` (Utility / EN)
-- [ ] Create `evening_summary` (Utility / EN)
-- [ ] Create `priority_alert` (Utility / EN)
+- [x] Create `morning_update` (Utility / EN)
+- [x] Create `evening_wrap` (Utility / EN)
+- [x] Create `priority_update` (Utility / EN)
 - [ ] Wait for Approved
-- [ ] Paste WABA tokens into `.env` (`WABA_ACCESS_TOKEN`, `WABA_PHONE_NUMBER_ID`, `WABA_APP_SECRET`, `WABA_VERIFY_TOKEN`)
+- [ ] Fill `.env` with WABA tokens (`WABA_ACCESS_TOKEN`, `WABA_PHONE_NUMBER_ID`, `WABA_APP_SECRET`, `WABA_VERIFY_TOKEN`)
 - [ ] Point Meta webhook to `https://<host>/webhooks/whatsapp`
