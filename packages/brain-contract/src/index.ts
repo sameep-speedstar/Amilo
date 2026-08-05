@@ -1,4 +1,4 @@
-/** Swappable IQ brain — Cursor cloud today, anything else later. */
+/** Swappable IQ brain — Grok for chat; Cursor cloud reserved for heavy jobs. */
 
 export type AttentionBucket = "needs_attention" | "can_wait" | "handled";
 
@@ -35,6 +35,34 @@ export interface BriefingDraft {
   bodyText: string;
 }
 
+export type ContextNodeKind =
+  | "person"
+  | "org"
+  | "place"
+  | "topic"
+  | "preference"
+  | "constraint"
+  | "goal";
+
+export interface GraphNodeUpdate {
+  op: "upsert_node";
+  kind: ContextNodeKind;
+  label: string;
+  attrs?: Record<string, unknown>;
+  confidence?: number;
+}
+
+export interface GraphEdgeUpdate {
+  op: "upsert_edge";
+  fromLabel: string;
+  toLabel: string;
+  rel: string;
+  attrs?: Record<string, unknown>;
+  confidence?: number;
+}
+
+export type GraphUpdate = GraphNodeUpdate | GraphEdgeUpdate;
+
 export interface InterpretResult {
   /** Structured intent the orchestrator understands — never free-form side effects. */
   intent:
@@ -44,6 +72,8 @@ export interface InterpretResult {
     | { type: "dismiss"; refs: string[] }
     | { type: "propose_action"; summary: string; action: Record<string, unknown> }
     | { type: "noop" };
+  /** Personal context graph deltas from this turn (optional). */
+  graphUpdates?: GraphUpdate[];
 }
 
 export interface BrainUserContext {
@@ -54,6 +84,8 @@ export interface BrainUserContext {
   ignoredPatterns: string[];
   openCommitmentsSummary: string;
   calendarToday: string;
+  /** Compact silent context from the personal graph. */
+  contextGraphSummary?: string;
 }
 
 export interface BrainPort {

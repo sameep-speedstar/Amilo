@@ -4,6 +4,8 @@ import { serve } from "@hono/node-server";
 import { Hono } from "hono";
 import { sql } from "drizzle-orm";
 import { createCursorBrain, createStubBrain } from "@amilo/brain-cursor";
+import { createGrokBrain } from "@amilo/brain-grok";
+import type { BrainPort } from "@amilo/brain-contract";
 import {
   createWhatsAppChannel,
   isPhoneAllowed,
@@ -11,8 +13,9 @@ import {
   verifyWebhookSignature,
   type WindowStore,
 } from "@amilo/channels-whatsapp";
-import { handleInbound, type InboundMessage } from "@amilo/core";
+import { handleInbound, type InboundMessage, type OrchestratorDeps } from "@amilo/core";
 import {
+  applyGraphUpdates,
   claimWebhookMessage,
   createDb,
   getUserById,
@@ -21,20 +24,29 @@ import {
   logMessage,
   setCursorAgentId,
   setUserStatus,
+  summarizeContextGraph,
   touchWhatsAppInbound,
   upsertWhatsAppUser,
   type Db,
 } from "@amilo/db";
-import { loadSettings } from "./config.js";
+import { loadSettings, resolveBrainLabel } from "./config.js";
 
 loadEnv();
 
 const settings = loadSettings();
 const app = new Hono();
 const db: Db = createDb(settings.databaseUrl);
+const brainLabel = resolveBrainLabel(settings);
 
-const brain = settings.cursorApiKey
-  ? createCursorBrain({
+function createBrain(): BrainPort {
+  if (settings.xaiApiKey) {
+    return createGrokBrain({
+      apiKey: settings.xaiApiKey,
+      model: settings.grokModel,
+    });
+  }
+  if (settings.cursorApiKey) {
+    return createCursorBrain({
       apiKey: settings.cursorApiKey,
       model: settings.cursorModel,
       repoUrl: settings.cursorBrainRepo,
@@ -48,8 +60,12 @@ const brain = settings.cursorApiKey
           await setCursorAgentId(db, userId, id);
         },
       },
-    })
-  : createStubBrain();
+    });
+  }
+  return createStubBrain();
+}
+
+const brain = createBrain();
 
 const windows: WindowStore = {
   getLastInbound: (waId) => getWhatsAppLastInbound(db, waId),
@@ -69,6 +85,34 @@ const waChannel = createWhatsAppChannel({
     return addr;
   },
 });
+
+function orchestratorDeps(): OrchestratorDeps {
+  return {
+    brain,
+    channel: waChannel,
+    resolveUserName: async (id) => {
+      const u = await getUserById(db, id);
+      return u?.name ?? "there";
+    },
+    isPaused: async (id) => {
+      const u = await getUserById(db, id);
+      return u?.status === "paused";
+    },
+    setPaused: async (id, p) => {
+      await setUserStatus(db, id, p ? "paused" : "active");
+    },
+    getContextGraphSummary: (id) => summarizeContextGraph(db, id),
+    applyGraphUpdates: async (opts) => {
+      await applyGraphUpdates(db, {
+        userId: opts.userId,
+        userName: opts.userName,
+        claim: opts.message,
+        updates: opts.updates,
+        ...(opts.sourceMessageId ? { sourceMessageId: opts.sourceMessageId } : {}),
+      });
+    },
+  };
+}
 
 async function processInbound(rawJson: unknown): Promise<void> {
   const messages = parseWhatsAppWebhook(rawJson);
@@ -123,6 +167,7 @@ async function processInbound(rawJson: unknown): Promise<void> {
       channel: "whatsapp",
       kind: parsed.kind,
       content: parsed.content,
+      messageId: parsed.messageId,
       ts: parsed.timestamp,
       ...(parsed.mediaId ? { mediaRef: parsed.mediaId } : {}),
     };
@@ -134,25 +179,12 @@ async function processInbound(rawJson: unknown): Promise<void> {
         phone: parsed.phoneE164,
         kind: parsed.kind,
         chars: parsed.content.length,
+        brain: brainLabel,
       }),
     );
 
     try {
-      const outbound = await handleInbound(inbound, {
-        brain,
-        channel: waChannel,
-        resolveUserName: async (id) => {
-          const u = await getUserById(db, id);
-          return u?.name ?? "there";
-        },
-        isPaused: async (id) => {
-          const u = await getUserById(db, id);
-          return u?.status === "paused";
-        },
-        setPaused: async (id, p) => {
-          await setUserStatus(db, id, p ? "paused" : "active");
-        },
-      });
+      const outbound = await handleInbound(inbound, orchestratorDeps());
 
       for (const msg of outbound) {
         await waChannel.send(user.id, msg);
@@ -173,14 +205,13 @@ async function processInbound(rawJson: unknown): Promise<void> {
         }),
       );
     } catch (err) {
-      console.error(
-        JSON.stringify({
-          event: "wa_process_error",
-          error: err instanceof Error ? err.message : String(err),
-        }),
-      );
+      const errMsg = err instanceof Error ? err.message : String(err);
+      console.error(JSON.stringify({ event: "wa_process_error", error: errMsg }));
       try {
-        const text = "Something went wrong on my side — try again in a moment.";
+        const text =
+          /permission-denied|credits or licenses/i.test(errMsg)
+            ? "Grok API has no credits on this xAI team — add billing at console.x.ai, then try again."
+            : "Something went wrong on my side — try again in a moment.";
         await waChannel.send(user.id, { text });
         await logMessage(db, {
           userId: user.id,
@@ -207,9 +238,9 @@ app.get("/health", async (c) => {
   return c.json({
     ok: true,
     service: "amilo",
-    brain: settings.cursorApiKey ? "cursor-cloud" : "stub",
+    brain: brainLabel,
     db: dbOk ? "up" : "down",
-    milestone: "M2",
+    milestone: "M3",
   });
 });
 
@@ -266,6 +297,7 @@ app.post("/dev/chat", async (c) => {
     waId,
     ...(body.name ? { profileName: body.name } : {}),
   });
+  const deps = orchestratorDeps();
   const outbound = await handleInbound(
     {
       userId: user.id,
@@ -275,25 +307,21 @@ app.post("/dev/chat", async (c) => {
       ts: new Date(),
     },
     {
-      brain,
+      ...deps,
       channel: {
         async send() {
           /* no-op */
         },
       },
       resolveUserName: async () => body.name ?? user.name ?? "Sameep",
-      isPaused: async (id) => (await getUserById(db, id))?.status === "paused",
-      setPaused: async (id, p) => {
-        await setUserStatus(db, id, p ? "paused" : "active");
-      },
     },
   );
-  return c.json({ userId: user.id, outbound });
+  return c.json({ userId: user.id, brain: brainLabel, outbound });
 });
 
 const port = settings.port;
 serve({ fetch: app.fetch, port, createServer }, (info) => {
   console.log(
-    `Amilo API listening on :${info.port} (brain=${settings.cursorApiKey ? "cursor" : "stub"}, milestone=M2)`,
+    `Amilo API listening on :${info.port} (brain=${brainLabel}, milestone=M3)`,
   );
 });

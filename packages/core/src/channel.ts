@@ -8,6 +8,8 @@ export interface InboundMessage {
   kind: "text" | "voice" | "button";
   content: string;
   mediaRef?: string;
+  /** Upstream message id (e.g. WhatsApp wamid) for graph observation audit. */
+  messageId?: string;
   ts: Date;
 }
 

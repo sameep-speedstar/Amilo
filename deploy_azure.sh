@@ -98,6 +98,8 @@ az webapp config appsettings set --name "$APP_NAME" --resource-group "$RESOURCE_
     CURSOR_MODEL="${CURSOR_MODEL:-composer-2.5}" \
     CURSOR_BRAIN_REPO="${CURSOR_BRAIN_REPO:-https://github.com/sameep-speedstar/Amilo}" \
     CURSOR_BRAIN_REF="${CURSOR_BRAIN_REF:-main}" \
+    XAI_API_KEY="${XAI_API_KEY:-}" \
+    GROK_MODEL="${GROK_MODEL:-grok-4-1-fast-non-reasoning}" \
     DOCKER_ENABLE_CI=true \
     WEBSITE_PULL_IMAGE_OVER_VNET=false \
   >/dev/null

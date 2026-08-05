@@ -149,7 +149,7 @@ export function createStubBrain(): BrainPort {
       return {
         intent: {
           type: "reply_text",
-          text: `Amilo (stub brain): I heard “${message.slice(0, 200)}”. Wire CURSOR_API_KEY to enable the real brain.`,
+          text: `Amilo (stub brain): I heard “${message.slice(0, 200)}”. Set XAI_API_KEY to enable the Grok brain.`,
         },
       };
     },

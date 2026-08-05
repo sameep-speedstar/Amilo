@@ -106,3 +106,65 @@ export const webhookDedupe = pgTable("webhook_dedupe", {
   id: varchar("id", { length: 200 }).primaryKey(),
   seenAt: timestamp("seen_at", { withTimezone: true }).notNull().defaultNow(),
 });
+
+/** Personal context graph — nodes. */
+export const contextNodes = pgTable(
+  "context_nodes",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    kind: varchar("kind", { length: 40 }).notNull(),
+    label: varchar("label", { length: 320 }).notNull(),
+    attrs: jsonb("attrs").$type<Record<string, unknown>>().notNull().default({}),
+    confidence: integer("confidence").notNull().default(80),
+    lastSeenAt: timestamp("last_seen_at", { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex("context_nodes_user_kind_label_uidx").on(t.userId, t.kind, t.label)],
+);
+
+/** Personal context graph — edges. */
+export const contextEdges = pgTable(
+  "context_edges",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    fromNodeId: uuid("from_node_id")
+      .notNull()
+      .references(() => contextNodes.id, { onDelete: "cascade" }),
+    toNodeId: uuid("to_node_id")
+      .notNull()
+      .references(() => contextNodes.id, { onDelete: "cascade" }),
+    rel: varchar("rel", { length: 80 }).notNull(),
+    attrs: jsonb("attrs").$type<Record<string, unknown>>().notNull().default({}),
+    confidence: integer("confidence").notNull().default(80),
+    lastSeenAt: timestamp("last_seen_at", { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("context_edges_user_from_to_rel_uidx").on(
+      t.userId,
+      t.fromNodeId,
+      t.toNodeId,
+      t.rel,
+    ),
+  ],
+);
+
+/** Append-only observations that produced graph updates. */
+export const contextObservations = pgTable("context_observations", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  userId: uuid("user_id")
+    .notNull()
+    .references(() => users.id, { onDelete: "cascade" }),
+  sourceMessageId: varchar("source_message_id", { length: 200 }),
+  claim: text("claim").notNull(),
+  linkedNodeIds: jsonb("linked_node_ids").$type<string[]>().notNull().default([]),
+  linkedEdgeIds: jsonb("linked_edge_ids").$type<string[]>().notNull().default([]),
+  raw: jsonb("raw").$type<Record<string, unknown>>().notNull().default({}),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});

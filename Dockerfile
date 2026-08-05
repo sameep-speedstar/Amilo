@@ -3,6 +3,7 @@ WORKDIR /app
 COPY package.json package-lock.json* ./
 COPY apps ./apps
 COPY packages ./packages
+COPY brain ./brain
 COPY tsconfig.base.json ./
 RUN npm install
 RUN npm run build

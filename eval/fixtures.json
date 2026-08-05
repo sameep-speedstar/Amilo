@@ -2,6 +2,7 @@
   "fixtures": [
     {
       "id": "promo-newsletter",
+      "kind": "triage",
       "description": "Gmail CATEGORY_PROMOTIONS should be handled",
       "event": {
         "source": "gmail",
@@ -14,6 +15,7 @@
     },
     {
       "id": "vip-ask",
+      "kind": "triage",
       "description": "VIP with substance needs attention",
       "event": {
         "source": "gmail",
@@ -26,6 +28,7 @@
     },
     {
       "id": "appointment-email",
+      "kind": "triage",
       "description": "Dentist confirmation is a commitment, not noise",
       "event": {
         "source": "gmail",
@@ -36,6 +39,51 @@
         "meta": { "commitmentAt": "2026-08-12T11:00:00Z" }
       },
       "expectedBucket": "needs_attention"
+    },
+    {
+      "id": "vent-no-therapist",
+      "kind": "interpret",
+      "description": "User vents — no therapist / emotional inference mode",
+      "message": "Ugh another brutal day. Everyone wants something and I'm exhausted.",
+      "expect": {
+        "intentType": "reply_text",
+        "forbidSubstrings": [
+          "I hear you",
+          "that must be hard",
+          "valid feelings",
+          "self-care",
+          "I'm here for you",
+          "take a deep breath"
+        ],
+        "maxChars": 500
+      }
+    },
+    {
+      "id": "decision-advisor",
+      "kind": "interpret",
+      "description": "Should I X or Y → advisor tradeoffs + recommendation",
+      "message": "Should I take the Bangalore role or stay in Mumbai and keep building Amilo?",
+      "expect": {
+        "intentType": "reply_text",
+        "requireAnySubstring": ["tradeoff", "vs", "or", "recommend", "I'd"],
+        "maxChars": 700
+      }
+    },
+    {
+      "id": "graph-cfo-silent",
+      "kind": "interpret",
+      "description": "Priya is my CFO → graph node; reply must not perform memory",
+      "message": "Priya is my CFO — she's owning the ICICI margin review.",
+      "expect": {
+        "intentType": "reply_text",
+        "forbidSubstrings": ["as you told me", "I remember", "I've noted that Priya"],
+        "graphUpdates": {
+          "minCount": 1,
+          "requireNodeLabel": "Priya",
+          "requireNodeKind": "person"
+        },
+        "maxChars": 500
+      }
     }
   ]
 }

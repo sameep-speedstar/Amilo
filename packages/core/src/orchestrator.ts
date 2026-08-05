@@ -1,4 +1,4 @@
-import type { BrainPort } from "@amilo/brain-contract";
+import type { BrainPort, GraphUpdate } from "@amilo/brain-contract";
 import type { ChannelPort, InboundMessage, OutboundMessage } from "./channel.js";
 
 const STANDING: Record<string, string> = {
@@ -22,6 +22,16 @@ export interface OrchestratorDeps {
   resolveUserName: (userId: string) => Promise<string>;
   isPaused: (userId: string) => Promise<boolean>;
   setPaused: (userId: string, paused: boolean) => Promise<void>;
+  /** Silent personal context for the brain. */
+  getContextGraphSummary?: (userId: string) => Promise<string>;
+  /** Persist graph deltas after interpret. */
+  applyGraphUpdates?: (opts: {
+    userId: string;
+    userName: string;
+    message: string;
+    updates: GraphUpdate[];
+    sourceMessageId?: string;
+  }) => Promise<void>;
 }
 
 /**
@@ -66,6 +76,10 @@ export async function handleInbound(
   }
 
   const name = await deps.resolveUserName(msg.userId);
+  const contextGraphSummary = deps.getContextGraphSummary
+    ? await deps.getContextGraphSummary(msg.userId)
+    : "none yet";
+
   const result = await deps.brain.interpret(
     {
       userId: msg.userId,
@@ -75,15 +89,43 @@ export async function handleInbound(
       ignoredPatterns: [],
       openCommitmentsSummary: "none yet",
       calendarToday: "none yet",
+      contextGraphSummary,
     },
     text,
   );
 
+  if (deps.applyGraphUpdates && result.graphUpdates?.length) {
+    await deps.applyGraphUpdates({
+      userId: msg.userId,
+      userName: name || "user",
+      message: text,
+      updates: result.graphUpdates,
+      ...(msg.messageId ? { sourceMessageId: msg.messageId } : {}),
+    });
+  }
+
   switch (result.intent.type) {
-    case "reply_text":
-      return [{ text: result.intent.text }];
+    case "reply_text": {
+      const reply = result.intent.text.trim();
+      if (reply) return [{ text: reply }];
+      // Empty reply_text — still acknowledge so WhatsApp never goes dead-silent.
+      return [
+        {
+          text: result.graphUpdates?.length
+            ? "Got it."
+            : "Got it — say more if you want me to act on that.",
+        },
+      ];
+    }
     case "noop":
-      return [];
+      // Chat path must not go silent; noop is for future push/idle jobs.
+      return [
+        {
+          text: result.graphUpdates?.length
+            ? "Got it."
+            : "Got it — say more if you want me to act on that.",
+        },
+      ];
     default:
       return [
         {
