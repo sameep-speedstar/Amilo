@@ -110,7 +110,14 @@ export function parseCalendarCreateHint(
   timeZone: string,
   now: Date = new Date(),
 ): { title: string; startIso: string; endIso: string } | null {
-  const text = message.trim();
+  // Drop leading acknowledgements / filler ("Cool, …", "Ok — …") before the verb.
+  let text = message
+    .trim()
+    .replace(
+      /^(?:(?:cool|ok|okay|sure|thanks|thank you|ty|yeah|yep|yup|got it|great|nice|perfect|awesome|alright|right|noted|sounds good)[\s,!.\-–—:]*)+/i,
+      "",
+    )
+    .trim();
   if (
     !/\b(add|schedule|book|create|put|block)\b/i.test(text) &&
     !/\b(meeting|lunch|call|event|appointment)\b/i.test(text)
@@ -130,32 +137,63 @@ export function parseCalendarCreateHint(
     if (inDays) day = addCalendarDays(today, Number(inDays[1]));
   }
 
-  // Clock: at 1pm / 13:00 / 1:00 pm
+  // Duration: "1 hour" / "30 min" (default 60m). Prefer this over bare "1" as a clock.
+  let durationMs = 60 * 60 * 1000;
+  const durMatch = text.match(
+    /\b(\d{1,2}(?:\.\d+)?)\s*(hours?|hrs?|h|minutes?|mins?|m)\b/i,
+  );
+  if (durMatch) {
+    const n = Number(durMatch[1]);
+    const unit = durMatch[2]!.toLowerCase();
+    if (Number.isFinite(n) && n > 0) {
+      durationMs = /^(minutes?|mins?|m)$/.test(unit)
+        ? Math.round(n * 60_000)
+        : Math.round(n * 3_600_000);
+    }
+  }
+
+  // Clock: prefer "at 1pm" / "1:00 pm"; avoid treating "1 hour" as 1:00.
   const clockMatch = text.match(
-    /\b(?:at|@)?\s*(\d{1,2}(?::\d{2})?\s*(?:am|pm)?|\d{1,2}:\d{2})\b/i,
+    /\b(?:at|@)\s*(\d{1,2}(?::\d{2})?\s*(?:am|pm)?|\d{1,2}:\d{2})\b/i,
   );
   let clock = clockMatch?.[1] ? parseClockToken(clockMatch[1]) : null;
   if (!clock) {
-    // bare "1pm" without at
     const bare = text.match(/\b(\d{1,2}(?::\d{2})?\s*(?:am|pm))\b/i);
     clock = bare?.[1] ? parseClockToken(bare[1]) : null;
+  }
+  if (!clock) {
+    const hm24 = text.match(/\b([01]?\d|2[0-3]):([0-5]\d)\b/);
+    clock = hm24?.[0] ? parseClockToken(hm24[0]) : null;
   }
   if (!clock) return null;
 
   let title = text
-    .replace(/^(?:please\s+)?(?:add|schedule|book|create|put|block)\s+(?:a\s+|an\s+)?/i, "")
-    .replace(/\b(?:today|tomorrow|in\s+\d+\s+days?)\b/gi, "")
+    // Instruction verbs — not part of the event title
+    .replace(
+      /^(?:please\s+)?(?:add|schedule|book|create|put|block)\s+(?:a\s+|an\s+|me\s+)?/i,
+      "",
+    )
+    .replace(
+      /\b(?:add|schedule|book|create|put|block)\s+(?:a\s+|an\s+|me\s+)?/gi,
+      "",
+    )
+    .replace(/\b(?:today|tomorrow|tomorow|tommorow|in\s+\d+\s+days?)\b/gi, "")
     .replace(/\b(?:at|@)\s*\d{1,2}(?::\d{2})?\s*(?:am|pm)?\b/gi, "")
     .replace(/\b\d{1,2}(?::\d{2})?\s*(?:am|pm)\b/gi, "")
-    .replace(/\b\d{1,2}:\d{2}\b/g, "")
+    .replace(/\b(?:[01]?\d|2[0-3]):[0-5]\d\b/g, "")
+    .replace(/\b\d{1,2}(?:\.\d+)?\s*(?:hours?|hrs?|h|minutes?|mins?|m)\b/gi, "")
     .replace(/\bon\s+(?:personal|work|excro|speedstar)\b/gi, "")
     .replace(/\s+/g, " ")
     .replace(/^[\s,.\-–—]+|[\s,.\-–—]+$/g, "")
     .trim();
+
+  if (/^with\s+\S/i.test(title)) {
+    title = `Meeting ${title}`;
+  }
   if (!title) title = "Event";
 
   const start = zonedLocalDateTime(timeZone, day, clock.hour, clock.minute);
-  const end = new Date(start.getTime() + 60 * 60 * 1000);
+  const end = new Date(start.getTime() + durationMs);
   return {
     title,
     startIso: start.toISOString(),

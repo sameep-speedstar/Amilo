@@ -104,4 +104,23 @@ describe("timezone helpers", () => {
       "Friday 7 August · 1:00 pm",
     );
   });
+
+  it("strips ack + book verb; keeps duration and who", () => {
+    const now = new Date("2026-08-06T18:30:00.000Z"); // Fri 7 Aug 00:00 IST
+    const hint = parseCalendarCreateHint(
+      "Cool, book 1 hour with Rajeev at 1 PM today",
+      "Asia/Kolkata",
+      now,
+    );
+    assert.ok(hint);
+    assert.equal(hint!.title, "Meeting with Rajeev");
+    assert.equal(
+      formatLocalWhenFriendly(new Date(hint!.startIso), "Asia/Kolkata"),
+      "Friday 7 August · 1:00 pm",
+    );
+    assert.equal(
+      formatLocalWhenFriendly(new Date(hint!.endIso), "Asia/Kolkata"),
+      "Friday 7 August · 2:00 pm",
+    );
+  });
 });
