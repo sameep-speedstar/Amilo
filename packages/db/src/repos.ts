@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, sql } from "drizzle-orm";
+import { and, desc, eq, gte, ne, sql } from "drizzle-orm";
 import type { GraphUpdate } from "@amilo/brain-contract";
 import type { Db } from "./index.js";
 import {
@@ -562,21 +562,152 @@ export async function summarizeCalendarToday(db: Db, userId: string): Promise<st
   return rows
     .map((e) => {
       const when = e.occursAt ? e.occursAt.toISOString().slice(11, 16) : "?";
-      return `- ${when} ${e.title ?? "(untitled)"}`;
+      return `• ${when} ${e.title ?? "(untitled)"}`;
     })
     .join("\n");
 }
 
-export async function summarizeRecentMail(db: Db, userId: string): Promise<string> {
+export function matchesMutedPattern(
+  haystack: string,
+  patterns: string[],
+): boolean {
+  if (!patterns.length) return false;
+  const h = haystack.toLowerCase().replace(/\s+/g, " ");
+  return patterns.some((p) => {
+    const needle = p.trim().toLowerCase().replace(/\s+/g, " ");
+    if (needle.length < 2) return false;
+    if (h.includes(needle)) return true;
+    // All significant tokens present (order-independent) for multi-word mutes.
+    const tokens = needle.split(" ").filter((t) => t.length >= 3);
+    return tokens.length >= 2 && tokens.every((t) => h.includes(t));
+  });
+}
+
+export type UserPrefs = {
+  mutedPatterns: string[];
+  vipList: string[];
+};
+
+export function parseUserPrefs(raw: Record<string, unknown> | null | undefined): UserPrefs {
+  const muted = Array.isArray(raw?.mutedPatterns)
+    ? raw!.mutedPatterns.map(String).map((s) => s.trim()).filter(Boolean)
+    : [];
+  const vip = Array.isArray(raw?.vipList)
+    ? raw!.vipList.map(String).map((s) => s.trim()).filter(Boolean)
+    : [];
+  return { mutedPatterns: muted, vipList: vip };
+}
+
+export async function getUserPrefs(db: Db, userId: string): Promise<UserPrefs> {
+  const u = await getUserById(db, userId);
+  return parseUserPrefs(u?.prefs ?? {});
+}
+
+export async function addMutedPattern(
+  db: Db,
+  userId: string,
+  pattern: string,
+): Promise<string[]> {
+  const prefs = await getUserPrefs(db, userId);
+  const cleaned = pattern.trim().replace(/^["']|["']$/g, "");
+  if (!cleaned) return prefs.mutedPatterns;
+  const next = [...new Set([...prefs.mutedPatterns, cleaned])];
+  await db
+    .update(users)
+    .set({ prefs: { mutedPatterns: next, vipList: prefs.vipList } })
+    .where(eq(users.id, userId));
+  // Hide already-synced matching mail so brief updates without waiting for re-sync.
+  await markMatchingMailMuted(db, userId, cleaned);
+  return next;
+}
+
+/** Mark existing gmail events matching a mute phrase so they leave the brief. */
+export async function markMatchingMailMuted(
+  db: Db,
+  userId: string,
+  pattern: string,
+): Promise<number> {
   const rows = await db.query.events.findMany({
     where: and(eq(events.userId, userId), eq(events.source, "gmail")),
-    orderBy: [desc(events.createdAt)],
-    limit: 15,
+    limit: 200,
   });
-  if (!rows.length) return "none yet";
-  return rows
-    .map((e) => `- ${e.actor ?? "?"} | ${e.title ?? "(no subject)"} — ${(e.snippet ?? "").slice(0, 80)}`)
+  let n = 0;
+  for (const e of rows) {
+    if (e.kind === "muted" || e.kind === "promo") continue;
+    const hay = `${e.actor ?? ""} ${e.title ?? ""} ${e.snippet ?? ""}`;
+    if (!matchesMutedPattern(hay, [pattern])) continue;
+    await db
+      .update(events)
+      .set({ kind: "muted", meta: { ...e.meta, mutedBy: pattern } })
+      .where(eq(events.id, e.id));
+    n += 1;
+  }
+  return n;
+}
+
+export async function removeMutedPattern(
+  db: Db,
+  userId: string,
+  pattern: string,
+): Promise<string[]> {
+  const prefs = await getUserPrefs(db, userId);
+  const needle = pattern.trim().toLowerCase();
+  const next = prefs.mutedPatterns.filter((p) => p.toLowerCase() !== needle);
+  await db
+    .update(users)
+    .set({ prefs: { mutedPatterns: next, vipList: prefs.vipList } })
+    .where(eq(users.id, userId));
+  return next;
+}
+
+export async function summarizeRecentMail(
+  db: Db,
+  userId: string,
+  mutedPatterns: string[] = [],
+): Promise<string> {
+  const rows = await db.query.events.findMany({
+    where: and(
+      eq(events.userId, userId),
+      eq(events.source, "gmail"),
+      ne(events.kind, "promo"),
+      ne(events.kind, "social"),
+      ne(events.kind, "muted"),
+    ),
+    orderBy: [desc(events.createdAt)],
+    limit: 40,
+  });
+  const filtered = rows
+    .filter((e) => {
+      const labels = (e.meta as { labelIds?: unknown })?.labelIds;
+      if (Array.isArray(labels)) {
+        if (
+          labels.includes("CATEGORY_PROMOTIONS") ||
+          labels.includes("CATEGORY_SOCIAL") ||
+          labels.includes("CATEGORY_FORUMS")
+        ) {
+          return false;
+        }
+      }
+      const hay = `${e.actor ?? ""} ${e.title ?? ""} ${e.snippet ?? ""}`;
+      if (matchesMutedPattern(hay, mutedPatterns)) return false;
+      return e.kind === "mail" || !e.kind;
+    })
+    .slice(0, 12);
+  if (!filtered.length) return "none yet";
+  return filtered
+    .map(
+      (e) =>
+        `• ${shortActor(e.actor)} | ${e.title ?? "(no subject)"}`,
+    )
     .join("\n");
+}
+
+function shortActor(actor: string | null | undefined): string {
+  if (!actor) return "?";
+  const m = actor.match(/<([^>]+)>/);
+  if (m?.[1]) return m[1];
+  if (actor.includes("@")) return actor.split(/\s+/).pop() ?? actor;
+  return actor.slice(0, 40);
 }
 
 export async function summarizeOpenCommitments(db: Db, userId: string): Promise<string> {
@@ -586,5 +717,5 @@ export async function summarizeOpenCommitments(db: Db, userId: string): Promise<
     limit: 10,
   });
   if (!rows.length) return "none yet";
-  return rows.map((c) => `- ${c.title}`).join("\n");
+  return rows.map((c) => `• ${c.title}`).join("\n");
 }

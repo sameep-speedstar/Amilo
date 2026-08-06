@@ -139,7 +139,7 @@ export function toInboundMessage(
   };
 }
 
-/** Exact Meta template names as submitted (pending approval). */
+/** Exact Meta template names — Approved. */
 export const TEMPLATE_NAMES = {
   morningBriefing: "morning_update",
   eveningSummary: "evening_wrap",

@@ -14,9 +14,10 @@
 
 ## Not done (next)
 
-- Scheduled morning/evening template pushes (blocked on Meta template approval)
+- Scheduled morning/evening template pushes (cron / quiet hours)
 - M5: Confirm-before-write + A/B eval
-- Template outbound once Meta approves `morning_update` / `evening_wrap` / `priority_update`
+
+On-demand `brief` / `morning` / `evening` already send approved WABA templates.
 
 ## Separate systems
 

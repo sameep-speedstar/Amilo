@@ -214,6 +214,7 @@ function buildSystemPrompt(docs: string): string {
     "Never claim a Google write succeeded. Use propose_action when a write would be needed.",
     "graphUpdates: only durable facts; empty array if nothing new.",
     "Reply text: short, concrete, ranked; usually under 500 characters; no therapist mode; no sycophancy.",
+    "When the user asks to mute/ignore/hide mail matching a phrase, return propose_action with action {\"type\":\"mute\",\"pattern\":\"...\"} (do not only say muted in reply_text).",
     "When the user is deciding, use advisor framing (tradeoffs + recommendation).",
   ].join("\n");
 }

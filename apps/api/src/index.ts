@@ -15,16 +15,19 @@ import {
 } from "@amilo/channels-whatsapp";
 import { handleInbound, type InboundMessage, type OrchestratorDeps } from "@amilo/core";
 import {
+  addMutedPattern,
   applyGraphUpdates,
   claimWebhookMessage,
   createDb,
   deleteGoogleAccount,
   getGoogleAccount,
   getUserById,
+  getUserPrefs,
   getWhatsAppAddress,
   getWhatsAppLastInbound,
   listGoogleAccounts,
   logMessage,
+  removeMutedPattern,
   setCursorAgentId,
   setUserStatus,
   summarizeCalendarToday,
@@ -152,7 +155,14 @@ function orchestratorDeps(): OrchestratorDeps {
     syncGoogle: async (userId) => {
       if (!googleCfg) throw new Error("Google OAuth not configured");
       const u = await getUserById(db, userId);
-      return syncGoogleForUser(db, googleCfg, userId, u?.timezone ?? "Asia/Kolkata");
+      const prefs = await getUserPrefs(db, userId);
+      return syncGoogleForUser(
+        db,
+        googleCfg,
+        userId,
+        u?.timezone ?? "Asia/Kolkata",
+        prefs.mutedPatterns,
+      );
     },
     isGoogleConnected: async (userId) => {
       const rows = await listGoogleAccounts(db, userId);
@@ -160,14 +170,25 @@ function orchestratorDeps(): OrchestratorDeps {
     },
     getBriefingContext: async (userId) => {
       const u = await getUserById(db, userId);
+      const prefs = await getUserPrefs(db, userId);
       const timezone = u?.timezone ?? "Asia/Kolkata";
       return {
         timezone,
         openCommitmentsSummary: await summarizeOpenCommitments(db, userId),
         calendarToday: await summarizeCalendarToday(db, userId),
-        recentMail: await summarizeRecentMail(db, userId),
+        recentMail: await summarizeRecentMail(db, userId, prefs.mutedPatterns),
+        ignoredPatterns: prefs.mutedPatterns,
+        vipList: prefs.vipList,
       };
     },
+    briefingTemplates: {
+      morning: settings.wabaTemplateMorning,
+      evening: settings.wabaTemplateEvening,
+      languageCode: "en",
+    },
+    addMutedPattern: (userId, pattern) => addMutedPattern(db, userId, pattern),
+    removeMutedPattern: (userId, pattern) => removeMutedPattern(db, userId, pattern),
+    listMutedPatterns: async (userId) => (await getUserPrefs(db, userId)).mutedPatterns,
   };
 }
 

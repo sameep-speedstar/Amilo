@@ -6,6 +6,32 @@ export interface GmailMessage {
   snippet: string;
   labelIds: string[];
   date?: string;
+  hasUnsubscribe?: boolean;
+}
+
+const NOISE_LABELS = new Set([
+  "CATEGORY_PROMOTIONS",
+  "CATEGORY_SOCIAL",
+  "CATEGORY_FORUMS",
+]);
+
+const NEWSLETTER_KEYWORDS = [
+  "unsubscribe",
+  "newsletter",
+  "view in browser",
+  "% off",
+  "sale ends",
+  "limited time",
+  "flash sale",
+  "noreply-promo",
+];
+
+/** True when Gmail (or light heuristics) says this is promo/noise — skip for briefings. */
+export function isPromotionalMail(m: GmailMessage): boolean {
+  if (m.labelIds.some((l) => NOISE_LABELS.has(l))) return true;
+  if (m.hasUnsubscribe) return true;
+  const hay = `${m.from} ${m.subject} ${m.snippet}`.toLowerCase();
+  return NEWSLETTER_KEYWORDS.some((k) => hay.includes(k));
 }
 
 const BASE = "https://gmail.googleapis.com/gmail/v1/users/me";
@@ -49,6 +75,7 @@ async function fetchMessage(accessToken: string, id: string): Promise<GmailMessa
     snippet: String(data.snippet ?? ""),
     labelIds: Array.isArray(data.labelIds) ? data.labelIds.map(String) : [],
     ...(headers.Date ? { date: headers.Date } : {}),
+    ...(headers["List-Unsubscribe"] ? { hasUnsubscribe: true } : {}),
   };
 }
 

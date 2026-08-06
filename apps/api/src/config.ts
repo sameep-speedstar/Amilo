@@ -18,6 +18,9 @@ export interface Settings {
   googleClientSecret: string;
   googleRedirectUri: string;
   tokenEncryptionKey: string;
+  wabaTemplateMorning: string;
+  wabaTemplateEvening: string;
+  wabaTemplateAlert: string;
 }
 
 function req(name: string, fallback?: string): string {
@@ -58,6 +61,9 @@ export function loadSettings(): Settings {
     googleClientSecret: req("GOOGLE_CLIENT_SECRET"),
     googleRedirectUri,
     tokenEncryptionKey: req("TOKEN_ENCRYPTION_KEY"),
+    wabaTemplateMorning: req("WABA_TEMPLATE_MORNING", "morning_update"),
+    wabaTemplateEvening: req("WABA_TEMPLATE_EVENING", "evening_wrap"),
+    wabaTemplateAlert: req("WABA_TEMPLATE_ALERT", "priority_update"),
   };
 }
 

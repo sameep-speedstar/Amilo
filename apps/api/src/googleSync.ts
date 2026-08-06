@@ -1,4 +1,5 @@
 import {
+  isPromotionalMail,
   listCalendarToday,
   listRecentGmail,
   refreshAccessToken,
@@ -8,6 +9,7 @@ import { decryptToken, encryptToken } from "@amilo/google";
 import {
   getGoogleAccount,
   listGoogleAccounts,
+  matchesMutedPattern,
   updateGoogleSyncCursors,
   updateGoogleTokens,
   upsertEvent,
@@ -49,12 +51,25 @@ async function syncOneAccount(
   userId: string,
   account: GoogleAccountRow,
   timezone: string,
-): Promise<{ mail: number; calendar: number }> {
+  mutedPatterns: string[],
+): Promise<{ mail: number; skippedPromo: number; skippedMuted: number; calendar: number }> {
   const { accessToken, account: acct } = await ensureAccessToken(db, cfg, account);
   const emailTag = acct.email ?? acct.label;
 
   const gmail = await listRecentGmail(accessToken, acct.gmailHistoryId);
+  let mail = 0;
+  let skippedPromo = 0;
+  let skippedMuted = 0;
   for (const m of gmail.messages) {
+    if (isPromotionalMail(m)) {
+      skippedPromo += 1;
+      continue;
+    }
+    const hay = `${m.from} ${m.subject} ${m.snippet}`;
+    if (matchesMutedPattern(hay, mutedPatterns)) {
+      skippedMuted += 1;
+      continue;
+    }
     await upsertEvent(db, {
       userId,
       source: "gmail",
@@ -62,7 +77,7 @@ async function syncOneAccount(
       actor: m.from.slice(0, 320),
       title: m.subject,
       snippet: m.snippet.slice(0, 2000),
-      kind: m.labelIds.includes("CATEGORY_PROMOTIONS") ? "promo" : "mail",
+      kind: "mail",
       meta: {
         threadId: m.threadId,
         labelIds: m.labelIds,
@@ -71,9 +86,11 @@ async function syncOneAccount(
         gmailId: m.id,
       },
     });
+    mail += 1;
   }
 
   const cal = await listCalendarToday(accessToken, timezone);
+  let calendar = 0;
   for (const ev of cal) {
     if (ev.status === "cancelled") continue;
     await upsertEvent(db, {
@@ -92,13 +109,14 @@ async function syncOneAccount(
       },
       occursAt: ev.startIso ? new Date(ev.startIso) : null,
     });
+    calendar += 1;
   }
 
   await updateGoogleSyncCursors(db, acct.id, {
     gmailHistoryId: gmail.historyId,
   });
 
-  return { mail: gmail.messages.length, calendar: cal.length };
+  return { mail, skippedPromo, skippedMuted, calendar };
 }
 
 /** Sync every linked Google account for the user. */
@@ -107,7 +125,14 @@ export async function syncGoogleForUser(
   cfg: GoogleOAuthConfig,
   userId: string,
   timezone = "Asia/Kolkata",
-): Promise<{ mail: number; calendar: number; accounts: number }> {
+  mutedPatterns: string[] = [],
+): Promise<{
+  mail: number;
+  skippedPromo: number;
+  skippedMuted: number;
+  calendar: number;
+  accounts: number;
+}> {
   const accounts = await listGoogleAccounts(db, userId);
   if (!accounts.length) {
     throw new Error(
@@ -116,12 +141,16 @@ export async function syncGoogleForUser(
   }
 
   let mail = 0;
+  let skippedPromo = 0;
+  let skippedMuted = 0;
   let calendar = 0;
   const errors: string[] = [];
   for (const account of accounts) {
     try {
-      const r = await syncOneAccount(db, cfg, userId, account, timezone);
+      const r = await syncOneAccount(db, cfg, userId, account, timezone, mutedPatterns);
       mail += r.mail;
+      skippedPromo += r.skippedPromo;
+      skippedMuted += r.skippedMuted;
       calendar += r.calendar;
     } catch (err) {
       errors.push(
@@ -132,5 +161,5 @@ export async function syncGoogleForUser(
   if (errors.length === accounts.length) {
     throw new Error(`Sync failed for all accounts:\n${errors.join("\n")}`);
   }
-  return { mail, calendar, accounts: accounts.length };
+  return { mail, skippedPromo, skippedMuted, calendar, accounts: accounts.length };
 }

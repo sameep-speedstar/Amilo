@@ -3,7 +3,7 @@
 Submit in **Meta Business Manager → WhatsApp Manager → Message Templates**.  
 Category: **Utility**. Language: **English**.
 
-**Submitted (pending approval)** — names locked in code as:
+**Status: Approved (live)** — names locked in code as:
 
 | Role | Meta template name |
 |------|--------------------|
@@ -98,7 +98,8 @@ Set template names in `.env` / `TEMPLATE_NAMES` to match Meta exactly (`morning_
 - [x] Create `morning_update` (Utility / EN)
 - [x] Create `evening_wrap` (Utility / EN)
 - [x] Create `priority_update` (Utility / EN)
-- [ ] Wait for Approved
+- [x] Wait for Approved
 - [x] Fill `.env` with WABA tokens
 - [x] Deploy API + bind `api.amilo.io`
-- [ ] Point Meta webhook to `https://api.amilo.io/webhooks/whatsapp`
+- [x] Point Meta webhook to `https://api.amilo.io/webhooks/whatsapp`
+- [ ] Scheduled morning/evening cron (optional next)
