@@ -107,6 +107,35 @@ export const auditLog = pgTable("audit_log", {
   ts: timestamp("ts", { withTimezone: true }).notNull().defaultNow(),
 });
 
+/** Confirm-before-write proposals awaiting user yes/cancel. */
+export const pendingActions = pgTable("pending_actions", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  userId: uuid("user_id")
+    .notNull()
+    .references(() => users.id, { onDelete: "cascade" }),
+  kind: varchar("kind", { length: 40 }).notNull(),
+  summary: text("summary").notNull(),
+  payload: jsonb("payload").$type<Record<string, unknown>>().notNull().default({}),
+  status: varchar("status", { length: 20 }).notNull().default("pending"),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  result: jsonb("result").$type<Record<string, unknown>>().notNull().default({}),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  resolvedAt: timestamp("resolved_at", { withTimezone: true }),
+});
+
+/** Lightweight A/B / quality notes (amilo-wa vs claude-telegram). */
+export const evalEvents = pgTable("eval_events", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  userId: uuid("user_id").references(() => users.id, { onDelete: "set null" }),
+  bot: varchar("bot", { length: 40 }).notNull().default("amilo-wa"),
+  channel: varchar("channel", { length: 20 }).notNull().default("whatsapp"),
+  event: varchar("event", { length: 80 }).notNull(),
+  score: integer("score"),
+  note: text("note"),
+  meta: jsonb("meta").$type<Record<string, unknown>>().notNull().default({}),
+  ts: timestamp("ts", { withTimezone: true }).notNull().defaultNow(),
+});
+
 /** Meta webhook delivery dedupe (message ids). */
 export const webhookDedupe = pgTable("webhook_dedupe", {
   id: varchar("id", { length: 200 }).primaryKey(),

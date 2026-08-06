@@ -48,7 +48,7 @@ npm run dev
 - **M4** — Google sync + on-demand briefings
 - **M4.1** — Timezone + reminders
 - **M4.2** — Scheduled morning/evening template pushes
-- **M5** — Confirm-before-write + A/B eval
+- **M5** — Confirm-before-write (calendar) + email drafts + light A/B log
 - **M6** — App-ready shell (onboarding web, second channel)
 
 ## Non-negotiables

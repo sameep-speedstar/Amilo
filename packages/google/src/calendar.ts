@@ -10,6 +10,15 @@ export interface CalendarEvent {
   allDay: boolean;
 }
 
+export interface CalendarWriteInput {
+  title: string;
+  startIso: string;
+  endIso: string;
+  timezone?: string;
+  location?: string | null;
+  description?: string | null;
+}
+
 const BASE = "https://www.googleapis.com/calendar/v3/calendars/primary/events";
 
 /** Today's events in the given IANA timezone (default Asia/Kolkata). */
@@ -33,6 +42,72 @@ export async function listCalendarToday(
     items?: Array<Record<string, unknown>>;
   };
   return (data.items ?? []).map(parseEvent);
+}
+
+export async function createCalendarEvent(
+  accessToken: string,
+  input: CalendarWriteInput,
+): Promise<CalendarEvent> {
+  const tz = input.timezone ?? "Asia/Kolkata";
+  const body = {
+    summary: input.title,
+    location: input.location ?? undefined,
+    description: input.description ?? undefined,
+    start: { dateTime: input.startIso, timeZone: tz },
+    end: { dateTime: input.endIso, timeZone: tz },
+  };
+  const res = await fetch(BASE, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    throw new Error(`Calendar create ${res.status}: ${(await res.text()).slice(0, 300)}`);
+  }
+  return parseEvent((await res.json()) as Record<string, unknown>);
+}
+
+export async function patchCalendarEvent(
+  accessToken: string,
+  eventId: string,
+  input: Partial<CalendarWriteInput>,
+): Promise<CalendarEvent> {
+  const tz = input.timezone ?? "Asia/Kolkata";
+  const body: Record<string, unknown> = {};
+  if (input.title != null) body.summary = input.title;
+  if (input.location !== undefined) body.location = input.location;
+  if (input.description !== undefined) body.description = input.description;
+  if (input.startIso) body.start = { dateTime: input.startIso, timeZone: tz };
+  if (input.endIso) body.end = { dateTime: input.endIso, timeZone: tz };
+
+  const res = await fetch(`${BASE}/${encodeURIComponent(eventId)}`, {
+    method: "PATCH",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    throw new Error(`Calendar patch ${res.status}: ${(await res.text()).slice(0, 300)}`);
+  }
+  return parseEvent((await res.json()) as Record<string, unknown>);
+}
+
+export async function cancelCalendarEvent(
+  accessToken: string,
+  eventId: string,
+): Promise<void> {
+  const res = await fetch(`${BASE}/${encodeURIComponent(eventId)}`, {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  if (!res.ok && res.status !== 410) {
+    throw new Error(`Calendar cancel ${res.status}: ${(await res.text()).slice(0, 300)}`);
+  }
 }
 
 function parseEvent(item: Record<string, unknown>): CalendarEvent {

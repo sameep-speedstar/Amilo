@@ -24,6 +24,8 @@ const STANDING: Record<string, string> = {
     "quiet hours 22:00-07:00 — set quiet window",
     "timezone — show or set your local time (travel: I'm in Dubai)",
     "remind me … at 12:30 — schedule a ping in your timezone",
+    "yes / cancel — confirm or drop a pending calendar/draft action",
+    "eval log <note> — A/B quality note",
     "help — show this message",
     "",
     "Talk normally for everything else.",
@@ -121,6 +123,27 @@ export interface OrchestratorDeps {
     startHm: string,
     endHm: string,
   ) => Promise<void>;
+  /** Confirm-before-write (M5). */
+  getOpenPending?: (userId: string) => Promise<{
+    id: string;
+    kind: string;
+    summary: string;
+    payload: Record<string, unknown>;
+  } | null>;
+  createPending?: (opts: {
+    userId: string;
+    kind: string;
+    summary: string;
+    payload: Record<string, unknown>;
+  }) => Promise<{ id: string; kind: string; summary: string }>;
+  confirmPending?: (userId: string) => Promise<{ ok: boolean; message: string }>;
+  rejectPending?: (userId: string) => Promise<{ ok: boolean; message: string }>;
+  editPending?: (
+    userId: string,
+    patch: Record<string, unknown>,
+    summary?: string,
+  ) => Promise<{ ok: boolean; message: string }>;
+  logEval?: (userId: string, note: string) => Promise<void>;
 }
 
 function extractMutePatternFromMessage(message: string): string | null {
@@ -216,6 +239,51 @@ export async function handleInbound(
     return [{ text: "I'm paused. Send resume to continue." }];
   }
 
+  // --- Pending confirm-before-write (prefer over timezone yes) ---
+  const openPending = deps.getOpenPending
+    ? await deps.getOpenPending(msg.userId)
+    : null;
+
+  if (openPending && deps.confirmPending && deps.rejectPending) {
+    if (
+      /^(yes|y|yeah|yep|ok|okay|confirm|do it|go ahead|approved?)$/i.test(lower)
+    ) {
+      const r = await deps.confirmPending(msg.userId);
+      return [{ text: r.ok ? r.message : `Couldn't complete: ${r.message}` }];
+    }
+    if (/^(cancel|no|nope|reject|don't|dont|never ?mind|abort)$/i.test(lower)) {
+      const r = await deps.rejectPending(msg.userId);
+      return [{ text: r.message || "Cancelled — nothing written." }];
+    }
+    const editMatch = text.match(/^edit\s+(.+)$/i);
+    if (editMatch?.[1] && deps.editPending) {
+      const patchRaw = editMatch[1].trim();
+      const r = await deps.editPending(
+        msg.userId,
+        { note: patchRaw },
+        `${openPending.summary} (edit: ${patchRaw})`,
+      );
+      return [
+        {
+          text: r.ok
+            ? `Updated proposal:\n${r.message}\n\nReply yes to confirm, cancel to drop.`
+            : r.message,
+        },
+      ];
+    }
+    // Nudge if they talk while something is pending
+    if (!/^(help|pause|briefs|timezone|tz|sync|brief|google)/i.test(lower)) {
+      return [
+        {
+          text: [
+            `Pending: ${openPending.summary}`,
+            "Reply yes to confirm, cancel to drop, or edit <change>.",
+          ].join("\n"),
+        },
+      ];
+    }
+  }
+
   // --- Timezone confirm / update (before other chat) ---
   const tzState = deps.getTimezoneState
     ? await deps.getTimezoneState(msg.userId)
@@ -237,7 +305,8 @@ export async function handleInbound(
     deps.getTimezoneState &&
     deps.confirmTimezone &&
     !tzState.tzConfirmed &&
-    isTimezoneAffirmative(text)
+    isTimezoneAffirmative(text) &&
+    !openPending
   ) {
     await deps.confirmTimezone(msg.userId);
     return [
@@ -257,6 +326,12 @@ export async function handleInbound(
         text: `Your timezone: ${label} (${tzState.timezone}).${confirm}\nTravel tip: “I'm in Dubai” or timezone Asia/Dubai`,
       },
     ];
+  }
+
+  const evalMatch = text.match(/^eval\s+log\s+(.+)$/i);
+  if (evalMatch?.[1] && deps.logEval) {
+    await deps.logEval(msg.userId, evalMatch[1].trim());
+    return [{ text: "Logged for A/B eval." }];
   }
 
   // --- Scheduled briefs prefs ---
@@ -723,6 +798,87 @@ export async function handleInbound(
     }
   }
 
+  // Confirm-before-write proposals (calendar / email draft).
+  if (result.intent.type === "propose_action" && deps.createPending) {
+    const action = result.intent.action;
+    const type = String(action.type ?? "").toLowerCase();
+    const writeKinds = new Set([
+      "calendar_create",
+      "calendar_update",
+      "calendar_cancel",
+      "email_draft",
+      "create_event",
+      "update_event",
+      "cancel_event",
+      "send_email",
+      "email",
+      "draft_email",
+    ]);
+    if (writeKinds.has(type)) {
+      let kind = type;
+      if (type === "create_event") kind = "calendar_create";
+      if (type === "update_event") kind = "calendar_update";
+      if (type === "cancel_event") kind = "calendar_cancel";
+      if (type === "send_email" || type === "email" || type === "draft_email") {
+        kind = "email_draft";
+      }
+
+      const payload: Record<string, unknown> = { ...action };
+      delete payload.type;
+      if (!payload.accountLabel) payload.accountLabel = "personal";
+
+      let summary =
+        result.intent.summary?.trim() ||
+        String(action.summary ?? "").trim() ||
+        "";
+      if (!summary) {
+        if (kind === "email_draft") {
+          summary = `Email draft to ${String(action.to ?? "?")}: ${String(action.subject ?? "(no subject)")}`;
+        } else if (kind === "calendar_cancel") {
+          summary = `Cancel calendar: ${String(action.title ?? action.eventId ?? "event")}`;
+        } else {
+          summary = `${kind === "calendar_update" ? "Update" : "Create"} calendar: ${String(action.title ?? "event")} @ ${String(action.start ?? action.startIso ?? "?")}`;
+        }
+      }
+
+      const pending = await deps.createPending({
+        userId: msg.userId,
+        kind,
+        summary,
+        payload,
+      });
+
+      if (kind === "email_draft") {
+        const body = String(action.body ?? action.body_draft ?? "").trim();
+        const draftLines = [
+          action.to ? `To: ${String(action.to)}` : null,
+          action.subject ? `Subject: ${String(action.subject)}` : null,
+          body || "(empty body)",
+        ].filter(Boolean);
+        return [
+          {
+            text: [
+              "I can't send email yet — here's a draft to copy.",
+              "Reply yes when you've got it, cancel to discard.",
+            ].join("\n"),
+          },
+          { text: draftLines.join("\n") },
+        ];
+      }
+
+      return [
+        {
+          text: [
+            `Proposed (${pending.kind}):`,
+            pending.summary,
+            "",
+            "Reply yes to write to Google Calendar, cancel to drop.",
+          ].join("\n"),
+        },
+      ];
+    }
+  }
+
   switch (result.intent.type) {
     case "reply_text": {
       const reply = result.intent.text.trim();
@@ -744,7 +900,7 @@ export async function handleInbound(
         },
       ];
     case "propose_action":
-      return [{ text: `Noted — ${result.intent.summary || "I'll hold that for a later milestone."}` }];
+      return [{ text: `Noted — ${result.intent.summary || "I'll hold that for now."}` }];
     default:
       return [
         {

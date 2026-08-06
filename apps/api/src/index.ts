@@ -19,13 +19,16 @@ import {
   applyGraphUpdates,
   claimWebhookMessage,
   createDb,
+  createPendingAction,
   createReminder,
   deleteGoogleAccount,
+  getOpenPendingAction,
   getUserById,
   getUserPrefs,
   getWhatsAppAddress,
   getWhatsAppLastInbound,
   listGoogleAccounts,
+  logEvalEvent,
   logMessage,
   patchUserPrefs,
   removeMutedPattern,
@@ -38,9 +41,11 @@ import {
   summarizeOpenCommitments,
   summarizeRecentMail,
   touchWhatsAppInbound,
+  updatePendingPayload,
   upsertGoogleAccount,
   upsertWhatsAppUser,
   type Db,
+  type PendingActionKind,
 } from "@amilo/db";
 import {
   buildAuthUrl,
@@ -53,6 +58,7 @@ import {
 import { googleConfigured, loadSettings, resolveBrainLabel } from "./config.js";
 import { syncGoogleForUser } from "./googleSync.js";
 import { startBriefWorker } from "./briefWorker.js";
+import { executePendingAction, rejectPendingAction } from "./pendingExecute.js";
 import { startReminderWorker } from "./reminders.js";
 
 loadEnv();
@@ -241,6 +247,56 @@ function orchestratorDeps(): OrchestratorDeps {
         quietEndHm: endHm,
       });
     },
+    getOpenPending: async (userId) => {
+      const row = await getOpenPendingAction(db, userId);
+      if (!row) return null;
+      return {
+        id: row.id,
+        kind: row.kind,
+        summary: row.summary,
+        payload: row.payload as Record<string, unknown>,
+      };
+    },
+    createPending: async (opts) => {
+      const row = await createPendingAction(db, {
+        userId: opts.userId,
+        kind: opts.kind as PendingActionKind,
+        summary: opts.summary,
+        payload: opts.payload,
+      });
+      return { id: row.id, kind: row.kind, summary: row.summary };
+    },
+    confirmPending: async (userId) => {
+      const row = await getOpenPendingAction(db, userId);
+      if (!row) return { ok: false, message: "Nothing pending to confirm." };
+      const u = await getUserById(db, userId);
+      return executePendingAction(db, googleCfg, row, u?.timezone ?? "Asia/Kolkata");
+    },
+    rejectPending: async (userId) => {
+      const row = await getOpenPendingAction(db, userId);
+      if (!row) return { ok: false, message: "Nothing pending to cancel." };
+      await rejectPendingAction(db, row);
+      return { ok: true, message: "Cancelled — nothing written." };
+    },
+    editPending: async (userId, patch, summary) => {
+      const row = await getOpenPendingAction(db, userId);
+      if (!row) return { ok: false, message: "Nothing pending to edit." };
+      const nextPayload = { ...(row.payload as Record<string, unknown>), ...patch };
+      const updated = await updatePendingPayload(db, row.id, nextPayload, summary);
+      return {
+        ok: Boolean(updated),
+        message: updated?.summary ?? row.summary,
+      };
+    },
+    logEval: async (userId, note) => {
+      await logEvalEvent(db, {
+        userId,
+        event: "manual_note",
+        note,
+        bot: "amilo-wa",
+        channel: "whatsapp",
+      });
+    },
   };
 }
 
@@ -371,7 +427,7 @@ app.get("/health", async (c) => {
     brain: brainLabel,
     google: googleOk ? "configured" : "off",
     db: dbOk ? "up" : "down",
-    milestone: "M4.2",
+    milestone: "M5",
   });
 });
 
@@ -507,7 +563,7 @@ app.post("/dev/chat", async (c) => {
 const port = settings.port;
 serve({ fetch: app.fetch, port, createServer }, (info) => {
   console.log(
-    `Amilo API listening on :${info.port} (brain=${brainLabel}, google=${googleOk ? "on" : "off"}, milestone=M4.2)`,
+    `Amilo API listening on :${info.port} (brain=${brainLabel}, google=${googleOk ? "on" : "off"}, milestone=M5)`,
   );
 });
 

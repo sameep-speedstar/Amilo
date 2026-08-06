@@ -1,6 +1,6 @@
 # Launch notes
 
-## Done in M0–M4.2
+## Done in M0–M5
 
 - TypeScript monorepo scaffold
 - `BrainPort` + Grok chat (+ Cursor cloud reserved) + stub
@@ -10,21 +10,29 @@
 - **M3:** Grok IQ + personal context graph
 - **M4:** Google OAuth (shared client with LifeOS) + Gmail/Calendar sync + on-demand `brief`
 - **M4.1:** India-correct clocks, timezone onboard/travel update, due reminders
-- **M4.2:** Scheduled morning/evening WABA templates (`morning_update` / `evening_wrap`) in user TZ + quiet hours prefs
+- **M4.2:** Scheduled morning/evening WABA templates in user TZ + quiet hours prefs
+- **M5:** Confirm-before-write — calendar create/update/cancel after WhatsApp yes; email drafts copyable only (no send)
 - Azure Postgres `amilo-pg` + live `api.amilo.io`
 - High-IQ docs under `brain/`
+
+## M5 confirm-before-write
+
+- Pending proposals in `pending_actions` (expire ~2h); reply **yes** / **cancel** / **edit …**
+- Calendar writes use existing `calendar.events` scope
+- Email: draft text only — expand OAuth (`gmail.send`) in a later slice + re-connect
+- Audit: `audit_log`; light A/B: `eval_events` + `eval log <note>`
 
 ## Scheduled briefs notes
 
 - Always sent as **templates** (works outside the 24h window).
 - Template body params are flattened (no newlines) to satisfy Meta `#132018`.
 - Defaults: morning `07:30`, evening `20:00`, quiet `22:00–07:00` local.
-- Commands: `briefs`, `briefs on|off`, `brief morning 7:30`, `brief evening 8pm`, `quiet hours 22:00-07:00`.
-- On-demand `brief` / `morning` / `evening` remain free-form inside the 24h window.
 
 ## Not done (next)
 
-- M5: Confirm-before-write + A/B eval
+- Expand Gmail send/modify scopes + reconnect UX
+- M6: App-ready shell (onboarding web, second channel)
+- Stronger A/B scoring harness vs Claude Telegram
 
 ## Separate systems
 

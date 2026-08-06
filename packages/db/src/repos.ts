@@ -8,9 +8,12 @@ import {
   contextEdges,
   contextNodes,
   contextObservations,
+  evalEvents,
   events,
   googleAccounts,
   messageLog,
+  pendingActions,
+  auditLog,
   users,
   webhookDedupe,
 } from "./schema.js";
@@ -975,4 +978,161 @@ export function buildFlatBriefDigest(opts: {
   }
   return parts.join(" | ").replace(/\n/g, " • ");
 }
+
+export type PendingActionKind =
+  | "calendar_create"
+  | "calendar_update"
+  | "calendar_cancel"
+  | "email_draft";
+
+export type PendingActionStatus =
+  | "pending"
+  | "confirmed"
+  | "rejected"
+  | "expired"
+  | "failed";
+
+export type PendingActionRow = typeof pendingActions.$inferSelect;
+
+export async function createPendingAction(
+  db: Db,
+  opts: {
+    userId: string;
+    kind: PendingActionKind;
+    summary: string;
+    payload: Record<string, unknown>;
+    expiresInMs?: number;
+  },
+): Promise<PendingActionRow> {
+  // Only one open pending per user — expire older ones.
+  await expirePendingActions(db, opts.userId);
+  await db
+    .update(pendingActions)
+    .set({ status: "expired", resolvedAt: new Date() })
+    .where(
+      and(eq(pendingActions.userId, opts.userId), eq(pendingActions.status, "pending")),
+    );
+
+  const expiresAt = new Date(Date.now() + (opts.expiresInMs ?? 2 * 60 * 60 * 1000));
+  const [row] = await db
+    .insert(pendingActions)
+    .values({
+      userId: opts.userId,
+      kind: opts.kind,
+      summary: opts.summary.slice(0, 1000),
+      payload: opts.payload,
+      status: "pending",
+      expiresAt,
+    })
+    .returning();
+  if (!row) throw new Error("failed to create pending action");
+  return row;
+}
+
+export async function getOpenPendingAction(
+  db: Db,
+  userId: string,
+): Promise<PendingActionRow | null> {
+  await expirePendingActions(db, userId);
+  const row = await db.query.pendingActions.findFirst({
+    where: and(eq(pendingActions.userId, userId), eq(pendingActions.status, "pending")),
+    orderBy: [desc(pendingActions.createdAt)],
+  });
+  return row ?? null;
+}
+
+export async function expirePendingActions(db: Db, userId?: string): Promise<number> {
+  const now = new Date();
+  const cond = userId
+    ? and(
+        eq(pendingActions.userId, userId),
+        eq(pendingActions.status, "pending"),
+        lte(pendingActions.expiresAt, now),
+      )
+    : and(eq(pendingActions.status, "pending"), lte(pendingActions.expiresAt, now));
+  const updated = await db
+    .update(pendingActions)
+    .set({ status: "expired", resolvedAt: now })
+    .where(cond)
+    .returning({ id: pendingActions.id });
+  return updated.length;
+}
+
+export async function resolvePendingAction(
+  db: Db,
+  id: string,
+  opts: {
+    status: Exclude<PendingActionStatus, "pending">;
+    result?: Record<string, unknown>;
+  },
+): Promise<PendingActionRow | null> {
+  const [row] = await db
+    .update(pendingActions)
+    .set({
+      status: opts.status,
+      result: opts.result ?? {},
+      resolvedAt: new Date(),
+    })
+    .where(eq(pendingActions.id, id))
+    .returning();
+  return row ?? null;
+}
+
+export async function updatePendingPayload(
+  db: Db,
+  id: string,
+  payload: Record<string, unknown>,
+  summary?: string,
+): Promise<PendingActionRow | null> {
+  const [row] = await db
+    .update(pendingActions)
+    .set({
+      payload,
+      ...(summary ? { summary: summary.slice(0, 1000) } : {}),
+    })
+    .where(and(eq(pendingActions.id, id), eq(pendingActions.status, "pending")))
+    .returning();
+  return row ?? null;
+}
+
+export async function appendAudit(
+  db: Db,
+  opts: {
+    userId: string;
+    action: string;
+    detail?: Record<string, unknown>;
+    confirmed?: boolean;
+  },
+): Promise<void> {
+  await db.insert(auditLog).values({
+    userId: opts.userId,
+    action: opts.action.slice(0, 80),
+    detail: opts.detail ?? {},
+    confirmed: opts.confirmed ?? false,
+  });
+}
+
+export async function logEvalEvent(
+  db: Db,
+  opts: {
+    userId?: string | null;
+    bot?: string;
+    channel?: string;
+    event: string;
+    score?: number | null;
+    note?: string | null;
+    meta?: Record<string, unknown>;
+  },
+): Promise<void> {
+  await db.insert(evalEvents).values({
+    userId: opts.userId ?? null,
+    bot: opts.bot ?? "amilo-wa",
+    channel: opts.channel ?? "whatsapp",
+    event: opts.event.slice(0, 80),
+    score: opts.score ?? null,
+    note: opts.note ?? null,
+    meta: opts.meta ?? {},
+  });
+}
+
 

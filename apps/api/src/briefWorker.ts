@@ -9,6 +9,7 @@ import {
 import {
   buildFlatBriefDigest,
   listUsersForScheduledBriefs,
+  logEvalEvent,
   logMessage,
   patchUserPrefs,
   summarizeCalendarToday,
@@ -128,6 +129,12 @@ export function startBriefWorker(opts: {
                 day,
               }),
             );
+            await logEvalEvent(opts.db, {
+              userId: u.id,
+              event: "brief_sent",
+              note: "morning",
+              meta: { day },
+            });
           } catch (err) {
             console.error(
               JSON.stringify({
@@ -164,6 +171,12 @@ export function startBriefWorker(opts: {
                 day,
               }),
             );
+            await logEvalEvent(opts.db, {
+              userId: u.id,
+              event: "brief_sent",
+              note: "evening",
+              meta: { day },
+            });
           } catch (err) {
             console.error(
               JSON.stringify({
