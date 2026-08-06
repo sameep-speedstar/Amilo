@@ -7,6 +7,7 @@ import {
 } from "@amilo/google";
 import {
   appendAudit,
+  deleteCalendarEventByGoogleId,
   getGoogleAccount,
   listGoogleAccounts,
   logEvalEvent,
@@ -174,6 +175,7 @@ export async function executePendingAction(
       const eventId = str(payload.eventId);
       if (!eventId) throw new Error("Missing eventId to cancel");
       await cancelCalendarEvent(accessToken, eventId);
+      await deleteCalendarEventByGoogleId(db, row.userId, eventId);
       await resolvePendingAction(db, row.id, {
         status: "confirmed",
         result: { eventId, accountLabel: label },

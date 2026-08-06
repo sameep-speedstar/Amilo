@@ -111,12 +111,24 @@ export async function cancelCalendarEvent(
   accessToken: string,
   eventId: string,
 ): Promise<void> {
-  const res = await fetch(`${BASE}/${encodeURIComponent(eventId)}`, {
+  const url = `${BASE}/${encodeURIComponent(eventId)}?sendUpdates=all`;
+  const res = await fetch(url, {
     method: "DELETE",
     headers: { Authorization: `Bearer ${accessToken}` },
   });
-  if (!res.ok && res.status !== 410) {
+  if (!res.ok && res.status !== 410 && res.status !== 404) {
     throw new Error(`Calendar cancel ${res.status}: ${(await res.text()).slice(0, 300)}`);
+  }
+
+  // calendar.events DELETE soft-cancels; confirm it's gone from the active calendar.
+  const check = await fetch(`${BASE}/${encodeURIComponent(eventId)}`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  if (check.status === 404 || check.status === 410) return;
+  if (check.ok) {
+    const body = (await check.json()) as { status?: string };
+    if (String(body.status ?? "").toLowerCase() === "cancelled") return;
+    throw new Error(`Calendar cancel did not remove event ${eventId} (status=${body.status})`);
   }
 }
 

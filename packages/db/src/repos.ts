@@ -637,6 +637,64 @@ export async function upsertEvent(
     });
 }
 
+/** Drop local calendar rows for a Google event id (after cancel). */
+export async function deleteCalendarEventByGoogleId(
+  db: Db,
+  userId: string,
+  googleEventId: string,
+): Promise<number> {
+  const id = googleEventId.trim();
+  if (!id) return 0;
+  const deleted = await db
+    .delete(events)
+    .where(
+      and(
+        eq(events.userId, userId),
+        eq(events.source, "calendar"),
+        sql`(
+          ${events.meta}->>'calendarId' = ${id}
+          OR ${events.sourceId} LIKE ${"%:" + id}
+        )`,
+      ),
+    )
+    .returning({ id: events.id });
+  return deleted.length;
+}
+
+/**
+ * Remove local calendar rows in [timeMin, timeMax] for an account that are no
+ * longer present in the latest Google list (cancelled/deleted remotely).
+ */
+export async function pruneMissingCalendarEvents(
+  db: Db,
+  opts: {
+    userId: string;
+    accountId: string;
+    timeMin: Date;
+    timeMax: Date;
+    keepGoogleIds: Set<string>;
+  },
+): Promise<number> {
+  const rows = await db.query.events.findMany({
+    where: and(
+      eq(events.userId, opts.userId),
+      eq(events.source, "calendar"),
+      gte(events.occursAt, opts.timeMin),
+      lte(events.occursAt, opts.timeMax),
+    ),
+    limit: 100,
+  });
+  let n = 0;
+  for (const row of rows) {
+    if (!row.sourceId.startsWith(`${opts.accountId}:`)) continue;
+    const gid = googleCalendarIdFromEvent(row);
+    if (!gid || opts.keepGoogleIds.has(gid)) continue;
+    await db.delete(events).where(eq(events.id, row.id));
+    n += 1;
+  }
+  return n;
+}
+
 function googleCalendarIdFromEvent(e: {
   sourceId: string;
   meta: Record<string, unknown> | null;

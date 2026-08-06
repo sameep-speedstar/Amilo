@@ -6,10 +6,12 @@ import {
   type GoogleOAuthConfig,
 } from "@amilo/google";
 import { decryptToken, encryptToken } from "@amilo/google";
+import { localDayBoundsUtc } from "@amilo/core";
 import {
   getGoogleAccount,
   listGoogleAccounts,
   matchesMutedPattern,
+  pruneMissingCalendarEvents,
   updateGoogleSyncCursors,
   updateGoogleTokens,
   upsertEvent,
@@ -91,8 +93,10 @@ async function syncOneAccount(
 
   const cal = await listCalendarToday(accessToken, timezone);
   let calendar = 0;
+  const keepGoogleIds = new Set<string>();
   for (const ev of cal) {
     if (ev.status === "cancelled") continue;
+    keepGoogleIds.add(ev.id);
     await upsertEvent(db, {
       userId,
       source: "calendar",
@@ -112,6 +116,15 @@ async function syncOneAccount(
     });
     calendar += 1;
   }
+
+  const { timeMin, timeMax } = localDayBoundsUtc(timezone);
+  await pruneMissingCalendarEvents(db, {
+    userId,
+    accountId: acct.id,
+    timeMin,
+    timeMax,
+    keepGoogleIds,
+  });
 
   await updateGoogleSyncCursors(db, acct.id, {
     gmailHistoryId: gmail.historyId,
