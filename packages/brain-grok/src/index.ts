@@ -215,6 +215,8 @@ function buildSystemPrompt(docs: string): string {
     "graphUpdates: only durable facts; empty array if nothing new.",
     "Reply text: short, concrete, ranked; usually under 500 characters; no therapist mode; no sycophancy.",
     "When the user asks to mute/ignore/hide mail matching a phrase, return propose_action with action {\"type\":\"mute\",\"pattern\":\"...\"} (do not only say muted in reply_text).",
+    "When the user asks to be reminded at a time, return propose_action with action {\"type\":\"remind\",\"title\":\"...\",\"dueAt\":\"ISO-8601 in user timezone converted to UTC\"}. Prefer letting the orchestrator parse times; still ack briefly.",
+    "All times the user mentions are in their timezone (see User line). Never assume UTC.",
     "When the user is deciding, use advisor framing (tradeoffs + recommendation).",
   ].join("\n");
 }

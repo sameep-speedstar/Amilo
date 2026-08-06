@@ -73,6 +73,8 @@ export const commitments = pgTable("commitments", {
   title: text("title").notNull(),
   status: varchar("status", { length: 20 }).notNull().default("open"),
   dueAt: timestamp("due_at", { withTimezone: true }),
+  /** Set when a due reminder was pushed to the user. */
+  notifiedAt: timestamp("notified_at", { withTimezone: true }),
   sourceEventId: uuid("source_event_id").references(() => events.id, {
     onDelete: "set null",
   }),

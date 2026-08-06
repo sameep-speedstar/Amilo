@@ -1,5 +1,6 @@
-import { and, desc, eq, gte, ne, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, isNull, lte, ne, sql } from "drizzle-orm";
 import type { GraphUpdate } from "@amilo/brain-contract";
+import { formatLocalHm, guessTimezoneFromPhone, localDayBoundsUtc } from "@amilo/core";
 import type { Db } from "./index.js";
 import {
   channels,
@@ -56,7 +57,9 @@ export async function upsertWhatsAppUser(
       .values({
         phoneE164: opts.phoneE164,
         name: opts.profileName ?? null,
+        timezone: guessTimezoneFromPhone(opts.phoneE164),
         status: "active",
+        prefs: { mutedPatterns: [], vipList: [], tzConfirmed: false },
       })
       .returning();
     if (!created) throw new Error("failed to create user");
@@ -88,6 +91,42 @@ export async function setUserStatus(
   status: "active" | "paused" | "deleted",
 ): Promise<void> {
   await db.update(users).set({ status }).where(eq(users.id, userId));
+}
+
+export async function setUserTimezone(
+  db: Db,
+  userId: string,
+  timezone: string,
+  opts?: { confirmed?: boolean },
+): Promise<void> {
+  const prefs = await getUserPrefs(db, userId);
+  const nextPrefs = {
+    mutedPatterns: prefs.mutedPatterns,
+    vipList: prefs.vipList,
+    tzConfirmed: opts?.confirmed ?? prefs.tzConfirmed,
+  };
+  await db
+    .update(users)
+    .set({ timezone, prefs: nextPrefs })
+    .where(eq(users.id, userId));
+}
+
+export async function setTimezoneConfirmed(
+  db: Db,
+  userId: string,
+  confirmed: boolean,
+): Promise<void> {
+  const prefs = await getUserPrefs(db, userId);
+  await db
+    .update(users)
+    .set({
+      prefs: {
+        mutedPatterns: prefs.mutedPatterns,
+        vipList: prefs.vipList,
+        tzConfirmed: confirmed,
+      },
+    })
+    .where(eq(users.id, userId));
 }
 
 export async function setCursorAgentId(db: Db, userId: string, agentId: string): Promise<void> {
@@ -546,14 +585,18 @@ export async function upsertEvent(
     });
 }
 
-export async function summarizeCalendarToday(db: Db, userId: string): Promise<string> {
-  const start = new Date();
-  start.setHours(0, 0, 0, 0);
+export async function summarizeCalendarToday(
+  db: Db,
+  userId: string,
+  timezone = "Asia/Kolkata",
+): Promise<string> {
+  const { timeMin, timeMax } = localDayBoundsUtc(timezone);
   const rows = await db.query.events.findMany({
     where: and(
       eq(events.userId, userId),
       eq(events.source, "calendar"),
-      gte(events.occursAt, start),
+      gte(events.occursAt, timeMin),
+      lte(events.occursAt, timeMax),
     ),
     orderBy: [events.occursAt],
     limit: 20,
@@ -561,7 +604,9 @@ export async function summarizeCalendarToday(db: Db, userId: string): Promise<st
   if (!rows.length) return "none yet";
   return rows
     .map((e) => {
-      const when = e.occursAt ? e.occursAt.toISOString().slice(11, 16) : "?";
+      const allDay = Boolean((e.meta as { allDay?: unknown })?.allDay);
+      const when =
+        allDay || !e.occursAt ? "all day" : formatLocalHm(e.occursAt, timezone);
       return `• ${when} ${e.title ?? "(untitled)"}`;
     })
     .join("\n");
@@ -586,6 +631,7 @@ export function matchesMutedPattern(
 export type UserPrefs = {
   mutedPatterns: string[];
   vipList: string[];
+  tzConfirmed: boolean;
 };
 
 export function parseUserPrefs(raw: Record<string, unknown> | null | undefined): UserPrefs {
@@ -595,7 +641,8 @@ export function parseUserPrefs(raw: Record<string, unknown> | null | undefined):
   const vip = Array.isArray(raw?.vipList)
     ? raw!.vipList.map(String).map((s) => s.trim()).filter(Boolean)
     : [];
-  return { mutedPatterns: muted, vipList: vip };
+  const tzConfirmed = raw?.tzConfirmed === true;
+  return { mutedPatterns: muted, vipList: vip, tzConfirmed };
 }
 
 export async function getUserPrefs(db: Db, userId: string): Promise<UserPrefs> {
@@ -614,7 +661,7 @@ export async function addMutedPattern(
   const next = [...new Set([...prefs.mutedPatterns, cleaned])];
   await db
     .update(users)
-    .set({ prefs: { mutedPatterns: next, vipList: prefs.vipList } })
+    .set({ prefs: { mutedPatterns: next, vipList: prefs.vipList, tzConfirmed: prefs.tzConfirmed } })
     .where(eq(users.id, userId));
   // Hide already-synced matching mail so brief updates without waiting for re-sync.
   await markMatchingMailMuted(db, userId, cleaned);
@@ -655,7 +702,7 @@ export async function removeMutedPattern(
   const next = prefs.mutedPatterns.filter((p) => p.toLowerCase() !== needle);
   await db
     .update(users)
-    .set({ prefs: { mutedPatterns: next, vipList: prefs.vipList } })
+    .set({ prefs: { mutedPatterns: next, vipList: prefs.vipList, tzConfirmed: prefs.tzConfirmed } })
     .where(eq(users.id, userId));
   return next;
 }
@@ -710,12 +757,106 @@ function shortActor(actor: string | null | undefined): string {
   return actor.slice(0, 40);
 }
 
-export async function summarizeOpenCommitments(db: Db, userId: string): Promise<string> {
+export async function summarizeOpenCommitments(
+  db: Db,
+  userId: string,
+  timezone = "Asia/Kolkata",
+): Promise<string> {
   const rows = await db.query.commitments.findMany({
     where: and(eq(commitments.userId, userId), eq(commitments.status, "open")),
-    orderBy: [desc(commitments.createdAt)],
+    orderBy: [asc(commitments.dueAt), desc(commitments.createdAt)],
     limit: 10,
   });
   if (!rows.length) return "none yet";
-  return rows.map((c) => `• ${c.title}`).join("\n");
+  return rows
+    .map((c) => {
+      if (!c.dueAt) return `• ${c.title}`;
+      return `• ${formatLocalHm(c.dueAt, timezone)} ${c.title}`;
+    })
+    .join("\n");
+}
+
+export async function createReminder(
+  db: Db,
+  opts: { userId: string; title: string; dueAt: Date },
+): Promise<{ id: string }> {
+  const [row] = await db
+    .insert(commitments)
+    .values({
+      userId: opts.userId,
+      title: opts.title.slice(0, 500),
+      status: "open",
+      dueAt: opts.dueAt,
+      reason: "reminder",
+    })
+    .returning({ id: commitments.id });
+  if (!row) throw new Error("failed to create reminder");
+  return row;
+}
+
+export type DueReminder = {
+  id: string;
+  userId: string;
+  title: string;
+  dueAt: Date;
+  userName: string | null;
+  timezone: string;
+  status: string;
+};
+
+/** Open reminders that are due and not yet notified (within lookback). */
+export async function listDueReminders(
+  db: Db,
+  opts?: { lookbackMs?: number; now?: Date },
+): Promise<DueReminder[]> {
+  const now = opts?.now ?? new Date();
+  const lookbackMs = opts?.lookbackMs ?? 6 * 60 * 60 * 1000;
+  const earliest = new Date(now.getTime() - lookbackMs);
+  const rows = await db
+    .select({
+      id: commitments.id,
+      userId: commitments.userId,
+      title: commitments.title,
+      dueAt: commitments.dueAt,
+      userName: users.name,
+      timezone: users.timezone,
+      status: users.status,
+    })
+    .from(commitments)
+    .innerJoin(users, eq(users.id, commitments.userId))
+    .where(
+      and(
+        eq(commitments.status, "open"),
+        eq(commitments.reason, "reminder"),
+        isNull(commitments.notifiedAt),
+        lte(commitments.dueAt, now),
+        gte(commitments.dueAt, earliest),
+      ),
+    )
+    .orderBy(asc(commitments.dueAt))
+    .limit(50);
+
+  return rows
+    .filter((r): r is typeof r & { dueAt: Date } => r.dueAt != null)
+    .map((r) => ({
+      id: r.id,
+      userId: r.userId,
+      title: r.title,
+      dueAt: r.dueAt,
+      userName: r.userName,
+      timezone: r.timezone,
+      status: r.status,
+    }));
+}
+
+export async function markReminderNotified(db: Db, id: string): Promise<void> {
+  const now = new Date();
+  await db
+    .update(commitments)
+    .set({
+      notifiedAt: now,
+      status: "done",
+      resolvedAt: now,
+    })
+    .where(eq(commitments.id, id));
 }

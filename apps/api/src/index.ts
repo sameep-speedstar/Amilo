@@ -19,8 +19,8 @@ import {
   applyGraphUpdates,
   claimWebhookMessage,
   createDb,
+  createReminder,
   deleteGoogleAccount,
-  getGoogleAccount,
   getUserById,
   getUserPrefs,
   getWhatsAppAddress,
@@ -29,7 +29,9 @@ import {
   logMessage,
   removeMutedPattern,
   setCursorAgentId,
+  setTimezoneConfirmed,
   setUserStatus,
+  setUserTimezone,
   summarizeCalendarToday,
   summarizeContextGraph,
   summarizeOpenCommitments,
@@ -49,6 +51,7 @@ import {
 } from "@amilo/google";
 import { googleConfigured, loadSettings, resolveBrainLabel } from "./config.js";
 import { syncGoogleForUser } from "./googleSync.js";
+import { startReminderWorker } from "./reminders.js";
 
 loadEnv();
 
@@ -174,8 +177,8 @@ function orchestratorDeps(): OrchestratorDeps {
       const timezone = u?.timezone ?? "Asia/Kolkata";
       return {
         timezone,
-        openCommitmentsSummary: await summarizeOpenCommitments(db, userId),
-        calendarToday: await summarizeCalendarToday(db, userId),
+        openCommitmentsSummary: await summarizeOpenCommitments(db, userId, timezone),
+        calendarToday: await summarizeCalendarToday(db, userId, timezone),
         recentMail: await summarizeRecentMail(db, userId, prefs.mutedPatterns),
         ignoredPatterns: prefs.mutedPatterns,
         vipList: prefs.vipList,
@@ -189,6 +192,28 @@ function orchestratorDeps(): OrchestratorDeps {
     addMutedPattern: (userId, pattern) => addMutedPattern(db, userId, pattern),
     removeMutedPattern: (userId, pattern) => removeMutedPattern(db, userId, pattern),
     listMutedPatterns: async (userId) => (await getUserPrefs(db, userId)).mutedPatterns,
+    getTimezoneState: async (userId) => {
+      const u = await getUserById(db, userId);
+      const prefs = await getUserPrefs(db, userId);
+      return {
+        timezone: u?.timezone ?? "Asia/Kolkata",
+        tzConfirmed: prefs.tzConfirmed,
+      };
+    },
+    setTimezone: async (userId, timezone, confirmed) => {
+      await setUserTimezone(db, userId, timezone, { confirmed });
+    },
+    confirmTimezone: async (userId) => {
+      await setTimezoneConfirmed(db, userId, true);
+    },
+    createReminders: async (userId, items) => {
+      const out: Array<{ title: string; dueAt: Date }> = [];
+      for (const item of items) {
+        await createReminder(db, { userId, title: item.title, dueAt: item.dueAt });
+        out.push(item);
+      }
+      return out;
+    },
   };
 }
 
@@ -319,7 +344,7 @@ app.get("/health", async (c) => {
     brain: brainLabel,
     google: googleOk ? "configured" : "off",
     db: dbOk ? "up" : "down",
-    milestone: "M4",
+    milestone: "M4.1",
   });
 });
 
@@ -455,6 +480,14 @@ app.post("/dev/chat", async (c) => {
 const port = settings.port;
 serve({ fetch: app.fetch, port, createServer }, (info) => {
   console.log(
-    `Amilo API listening on :${info.port} (brain=${brainLabel}, google=${googleOk ? "on" : "off"}, milestone=M4)`,
+    `Amilo API listening on :${info.port} (brain=${brainLabel}, google=${googleOk ? "on" : "off"}, milestone=M4.1)`,
   );
+});
+
+startReminderWorker({
+  db,
+  channel: waChannel,
+  alertTemplate: settings.wabaTemplateAlert,
+  languageCode: "en",
+  intervalMs: 30_000,
 });

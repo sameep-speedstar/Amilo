@@ -1,5 +1,12 @@
 import type { BrainPort, GraphUpdate } from "@amilo/brain-contract";
 import type { ChannelPort, InboundMessage, OutboundMessage } from "./channel.js";
+import {
+  formatLocalHm,
+  isTimezoneAffirmative,
+  parseReminderMessage,
+  parseTimezoneUpdateMessage,
+  timezoneFriendlyLabel,
+} from "./time.js";
 
 const STANDING: Record<string, string> = {
   help: [
@@ -12,6 +19,8 @@ const STANDING: Record<string, string> = {
     "unmute <phrase> / mutes — manage muted phrases",
     "sync — pull mail + today's calendar from all linked accounts",
     "brief / morning / evening — on-demand briefing",
+    "timezone — show or set your local time (travel: I'm in Dubai)",
+    "remind me … at 12:30 — schedule a ping in your timezone",
     "help — show this message",
     "",
     "Talk normally for everything else.",
@@ -75,20 +84,29 @@ export interface OrchestratorDeps {
   addMutedPattern?: (userId: string, pattern: string) => Promise<string[]>;
   removeMutedPattern?: (userId: string, pattern: string) => Promise<string[]>;
   listMutedPatterns?: (userId: string) => Promise<string[]>;
+  /** Timezone + reminders. */
+  getTimezoneState?: (userId: string) => Promise<{
+    timezone: string;
+    tzConfirmed: boolean;
+  }>;
+  setTimezone?: (
+    userId: string,
+    timezone: string,
+    confirmed: boolean,
+  ) => Promise<void>;
+  confirmTimezone?: (userId: string) => Promise<void>;
+  createReminders?: (
+    userId: string,
+    items: Array<{ title: string; dueAt: Date }>,
+  ) => Promise<Array<{ title: string; dueAt: Date }>>;
 }
 
-/** Sanitize vars for WABA template body parameters. */
-function waTemplateParam(s: string, max = 900): string {
-  return s.replace(/\r\n/g, "\n").replace(/[ \t]+\n/g, "\n").trim().slice(0, max) || "—";
-}
-
-function formatBriefDate(timezone: string): string {
-  return new Intl.DateTimeFormat("en-GB", {
-    timeZone: timezone,
-    weekday: "long",
-    day: "numeric",
-    month: "long",
-  }).format(new Date());
+function extractMutePatternFromMessage(message: string): string | null {
+  const m = message.trim().match(
+    /^(?:please\s+)?(?:mute|ignore|hide|don't show|do not show)\s+(.+?)(?:\s+emails?)?$/i,
+  );
+  if (!m?.[1]) return null;
+  return m[1].replace(/^(the\s+|all\s+)/i, "").trim();
 }
 
 function buildStructuredBrief(opts: {
@@ -117,12 +135,37 @@ function buildStructuredBrief(opts: {
   return lines.join("\n").trim();
 }
 
-function extractMutePatternFromMessage(message: string): string | null {
-  const m = message.trim().match(
-    /^(?:please\s+)?(?:mute|ignore|hide|don't show|do not show)\s+(.+?)(?:\s+emails?)?$/i,
+function tzConfirmPrompt(timezone: string): string {
+  const label = timezoneFriendlyLabel(timezone);
+  return [
+    `I guessed your local time as ${label} (${timezone}) from your phone number.`,
+    "Reply yes to keep it, or say where you are (e.g. Dubai / I'm in London).",
+    "You can change anytime when travelling.",
+  ].join("\n");
+}
+
+async function scheduleRemindersReply(
+  userId: string,
+  timezone: string,
+  items: Array<{ title: string; dueAt: Date }>,
+  deps: OrchestratorDeps,
+): Promise<OutboundMessage[]> {
+  if (!deps.createReminders) {
+    return [{ text: "Reminders aren't wired yet." }];
+  }
+  const saved = await deps.createReminders(userId, items);
+  const lines = saved.map(
+    (r) => `• ${formatLocalHm(r.dueAt, timezone)} — ${r.title}`,
   );
-  if (!m?.[1]) return null;
-  return m[1].replace(/^(the\s+|all\s+)/i, "").trim();
+  return [
+    {
+      text: [
+        saved.length === 1 ? "Reminder set:" : `${saved.length} reminders set:`,
+        ...lines,
+        `(${timezoneFriendlyLabel(timezone)})`,
+      ].join("\n"),
+    },
+  ];
 }
 
 /**
@@ -150,20 +193,94 @@ export async function handleInbound(
   if (await deps.isPaused(msg.userId)) {
     return [{ text: "I'm paused. Send resume to continue." }];
   }
-  if (lower === "hi" || lower === "hello" || lower === "/start") {
-    const name = await deps.resolveUserName(msg.userId);
+
+  // --- Timezone confirm / update (before other chat) ---
+  const tzState = deps.getTimezoneState
+    ? await deps.getTimezoneState(msg.userId)
+    : { timezone: "Asia/Kolkata", tzConfirmed: true };
+
+  if (deps.setTimezone) {
+    const tzUpdate = parseTimezoneUpdateMessage(text);
+    if (tzUpdate) {
+      await deps.setTimezone(msg.userId, tzUpdate, true);
+      return [
+        {
+          text: `Timezone set to ${timezoneFriendlyLabel(tzUpdate)} (${tzUpdate}). Briefs and reminders use this.`,
+        },
+      ];
+    }
+  }
+
+  if (
+    deps.getTimezoneState &&
+    deps.confirmTimezone &&
+    !tzState.tzConfirmed &&
+    isTimezoneAffirmative(text)
+  ) {
+    await deps.confirmTimezone(msg.userId);
     return [
       {
-        text: [
-          `Hi${name ? ` ${name}` : ""} — I'm Amilo, your chief of staff.`,
-          "",
-          "I watch your inbox and calendar, surface only what needs you,",
-          "and keep you on your commitments.",
-          "",
-          'Link mail with "connect google personal" (add work / more labels as needed), or help.',
-        ].join("\n"),
+        text: `Locked in — ${timezoneFriendlyLabel(tzState.timezone)}. Change anytime with “I'm in Dubai” or timezone <place>.`,
       },
     ];
+  }
+
+  if (lower === "timezone" || lower === "tz" || lower === "time zone") {
+    const label = timezoneFriendlyLabel(tzState.timezone);
+    const confirm = tzState.tzConfirmed
+      ? ""
+      : "\nNot confirmed yet — reply yes, or say where you are.";
+    return [
+      {
+        text: `Your timezone: ${label} (${tzState.timezone}).${confirm}\nTravel tip: “I'm in Dubai” or timezone Asia/Dubai`,
+      },
+    ];
+  }
+
+  if (lower === "hi" || lower === "hello" || lower === "/start") {
+    const name = await deps.resolveUserName(msg.userId);
+    const lines = [
+      `Hi${name ? ` ${name}` : ""} — I'm Amilo, your chief of staff.`,
+      "",
+      "I watch your inbox and calendar, surface only what needs you,",
+      "and keep you on your commitments.",
+      "",
+      'Link mail with "connect google personal" (add work / more labels as needed), or help.',
+    ];
+    if (deps.getTimezoneState && !tzState.tzConfirmed) {
+      lines.push("", tzConfirmPrompt(tzState.timezone));
+    }
+    return [{ text: lines.join("\n") }];
+  }
+
+  // Unconfirmed TZ: nudge once on first non-trivial message if they never said hi.
+  if (
+    deps.getTimezoneState &&
+    !tzState.tzConfirmed &&
+    !isTimezoneAffirmative(text) &&
+    !parseTimezoneUpdateMessage(text) &&
+    /remind|brief|sync|connect/i.test(text) === false &&
+    text.length < 40
+  ) {
+    /* fall through — don't block short chat */
+  }
+
+  // --- Reminders (standing parse; reliable local times) ---
+  const reminderSpecs = parseReminderMessage(text, tzState.timezone);
+  if (reminderSpecs.length && deps.createReminders) {
+    if (!tzState.tzConfirmed && deps.getTimezoneState) {
+      const saved = await scheduleRemindersReply(
+        msg.userId,
+        tzState.timezone,
+        reminderSpecs,
+        deps,
+      );
+      return [
+        ...saved,
+        { text: tzConfirmPrompt(tzState.timezone) },
+      ];
+    }
+    return scheduleRemindersReply(msg.userId, tzState.timezone, reminderSpecs, deps);
   }
 
   if (lower === "google" || lower === "google accounts" || lower === "list google") {
@@ -426,7 +543,7 @@ export async function handleInbound(
         openCommitmentsSummary: "none yet",
         calendarToday: "none yet",
         recentMail: "none yet",
-        timezone: "Asia/Kolkata",
+        timezone: tzState.timezone,
         ignoredPatterns: [] as string[],
         vipList: [] as string[],
       };
@@ -502,6 +619,31 @@ export async function handleInbound(
           ].join("\n"),
         },
       ];
+    }
+  }
+
+  // Brain-proposed reminder (fallback if standing parse missed).
+  if (
+    result.intent.type === "propose_action" &&
+    deps.createReminders &&
+    /remind/i.test(String(result.intent.action.type ?? ""))
+  ) {
+    const action = result.intent.action;
+    const dueIso = String(action.dueAt ?? action.at ?? "").trim();
+    const title = String(action.title ?? action.summary ?? result.intent.summary ?? "Reminder").trim();
+    let dueAt: Date | null = dueIso ? new Date(dueIso) : null;
+    if (!dueAt || Number.isNaN(dueAt.getTime())) {
+      const fromText = parseReminderMessage(text, briefCtx.timezone);
+      if (fromText.length) {
+        return scheduleRemindersReply(msg.userId, briefCtx.timezone, fromText, deps);
+      }
+    } else {
+      return scheduleRemindersReply(
+        msg.userId,
+        briefCtx.timezone,
+        [{ title, dueAt }],
+        deps,
+      );
     }
   }
 

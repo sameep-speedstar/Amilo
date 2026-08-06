@@ -1,0 +1,104 @@
+import { formatLocalHm, type ChannelPort } from "@amilo/core";
+import {
+  listDueReminders,
+  logMessage,
+  markReminderNotified,
+  type Db,
+} from "@amilo/db";
+
+/**
+ * Poll due reminders and push WhatsApp pings.
+ * Free-form inside 24h window; falls back to priority_update template outside.
+ */
+export function startReminderWorker(opts: {
+  db: Db;
+  channel: ChannelPort;
+  alertTemplate: string;
+  languageCode?: string;
+  intervalMs?: number;
+}): { stop: () => void } {
+  const intervalMs = opts.intervalMs ?? 30_000;
+  let running = false;
+
+  const tick = async () => {
+    if (running) return;
+    running = true;
+    try {
+      const due = await listDueReminders(opts.db);
+      for (const r of due) {
+        if (r.status === "paused" || r.status === "deleted") {
+          await markReminderNotified(opts.db, r.id);
+          continue;
+        }
+        const when = formatLocalHm(r.dueAt, r.timezone);
+        const body = `Reminder (${when}): ${r.title}`;
+        const name = r.userName?.split(/\s+/)[0] || "there";
+        try {
+          await opts.channel.send(r.userId, { text: body });
+          await logMessage(opts.db, {
+            userId: r.userId,
+            channel: "whatsapp",
+            direction: "out",
+            kind: "text",
+            bodyRef: body.slice(0, 500),
+            meta: { reminderId: r.id },
+          });
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          if (/Outside 24h|24h window/i.test(msg) && opts.alertTemplate) {
+            const param = body.replace(/\n/g, " ").replace(/\s{2,}/g, " ").slice(0, 900);
+            await opts.channel.send(r.userId, {
+              templateName: opts.alertTemplate,
+              languageCode: opts.languageCode ?? "en",
+              variables: [name, param],
+            });
+            await logMessage(opts.db, {
+              userId: r.userId,
+              channel: "whatsapp",
+              direction: "out",
+              kind: "template",
+              bodyRef: opts.alertTemplate,
+              meta: { reminderId: r.id, via: "template" },
+            });
+          } else {
+            console.error(
+              JSON.stringify({
+                event: "reminder_send_error",
+                id: r.id,
+                error: msg,
+              }),
+            );
+            continue;
+          }
+        }
+        await markReminderNotified(opts.db, r.id);
+        console.log(
+          JSON.stringify({
+            event: "reminder_sent",
+            id: r.id,
+            userId: r.userId,
+            title: r.title,
+          }),
+        );
+      }
+    } catch (err) {
+      console.error(
+        JSON.stringify({
+          event: "reminder_tick_error",
+          error: err instanceof Error ? err.message : String(err),
+        }),
+      );
+    } finally {
+      running = false;
+    }
+  };
+
+  const handle = setInterval(() => {
+    void tick();
+  }, intervalMs);
+  void tick();
+
+  return {
+    stop: () => clearInterval(handle),
+  };
+}

@@ -103,6 +103,7 @@ async function syncOneAccount(
       meta: {
         end: ev.endIso,
         status: ev.status,
+        allDay: ev.allDay,
         accountLabel: acct.label,
         accountEmail: emailTag,
         calendarId: ev.id,
