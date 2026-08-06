@@ -3,6 +3,7 @@ import type { ChannelPort, InboundMessage, OutboundMessage } from "./channel.js"
 import {
   formatLocalHm,
   isTimezoneAffirmative,
+  parseHmInput,
   parseReminderMessage,
   parseTimezoneUpdateMessage,
   timezoneFriendlyLabel,
@@ -19,6 +20,8 @@ const STANDING: Record<string, string> = {
     "unmute <phrase> / mutes — manage muted phrases",
     "sync — pull mail + today's calendar from all linked accounts",
     "brief / morning / evening — on-demand briefing",
+    "briefs — scheduled AM/PM (on/off, morning 7:30, evening 8pm)",
+    "quiet hours 22:00-07:00 — set quiet window",
     "timezone — show or set your local time (travel: I'm in Dubai)",
     "remind me … at 12:30 — schedule a ping in your timezone",
     "help — show this message",
@@ -99,6 +102,25 @@ export interface OrchestratorDeps {
     userId: string,
     items: Array<{ title: string; dueAt: Date }>,
   ) => Promise<Array<{ title: string; dueAt: Date }>>;
+  getBriefSchedule?: (userId: string) => Promise<{
+    enabled: boolean;
+    morningHm: string;
+    eveningHm: string;
+    quietStartHm: string;
+    quietEndHm: string;
+    timezone: string;
+  }>;
+  setBriefsEnabled?: (userId: string, enabled: boolean) => Promise<void>;
+  setBriefSlot?: (
+    userId: string,
+    slot: "morning" | "evening",
+    hm: string,
+  ) => Promise<void>;
+  setQuietHours?: (
+    userId: string,
+    startHm: string,
+    endHm: string,
+  ) => Promise<void>;
 }
 
 function extractMutePatternFromMessage(message: string): string | null {
@@ -235,6 +257,60 @@ export async function handleInbound(
         text: `Your timezone: ${label} (${tzState.timezone}).${confirm}\nTravel tip: “I'm in Dubai” or timezone Asia/Dubai`,
       },
     ];
+  }
+
+  // --- Scheduled briefs prefs ---
+  if (deps.getBriefSchedule) {
+    if (lower === "briefs" || lower === "brief schedule") {
+      const s = await deps.getBriefSchedule(msg.userId);
+      return [
+        {
+          text: [
+            `Scheduled briefs: ${s.enabled ? "on" : "off"}`,
+            `Morning ${s.morningHm} · Evening ${s.eveningHm} (${timezoneFriendlyLabel(s.timezone)})`,
+            `Quiet hours ${s.quietStartHm}–${s.quietEndHm}`,
+            "",
+            "briefs on | briefs off",
+            "brief morning 7:30 | brief evening 8pm",
+            "quiet hours 22:00-07:00",
+          ].join("\n"),
+        },
+      ];
+    }
+    if (lower === "briefs on" || lower === "briefs enable") {
+      if (!deps.setBriefsEnabled) return [{ text: "Brief schedule isn't wired yet." }];
+      await deps.setBriefsEnabled(msg.userId, true);
+      return [{ text: "Scheduled morning/evening briefs are on." }];
+    }
+    if (lower === "briefs off" || lower === "briefs disable") {
+      if (!deps.setBriefsEnabled) return [{ text: "Brief schedule isn't wired yet." }];
+      await deps.setBriefsEnabled(msg.userId, false);
+      return [{ text: "Scheduled briefs off. On-demand brief still works." }];
+    }
+
+    const slotMatch = text.match(/^brief\s+(morning|evening)\s+(.+)$/i);
+    if (slotMatch?.[1] && slotMatch[2] && deps.setBriefSlot) {
+      const hm = parseHmInput(slotMatch[2]);
+      if (!hm) {
+        return [{ text: "Couldn't parse that time. Try: brief morning 7:30" }];
+      }
+      const slot = slotMatch[1].toLowerCase() as "morning" | "evening";
+      await deps.setBriefSlot(msg.userId, slot, hm);
+      return [{ text: `${slot[0]!.toUpperCase()}${slot.slice(1)} brief set to ${hm} local time.` }];
+    }
+
+    const quietMatch = text.match(
+      /^quiet\s+hours\s+(\S+)\s*(?:-|–|—|to)\s*(\S+)$/i,
+    );
+    if (quietMatch?.[1] && quietMatch[2] && deps.setQuietHours) {
+      const startHm = parseHmInput(quietMatch[1]);
+      const endHm = parseHmInput(quietMatch[2]);
+      if (!startHm || !endHm) {
+        return [{ text: "Couldn't parse quiet hours. Try: quiet hours 22:00-07:00" }];
+      }
+      await deps.setQuietHours(msg.userId, startHm, endHm);
+      return [{ text: `Quiet hours set to ${startHm}–${endHm} local.` }];
+    }
   }
 
   if (lower === "hi" || lower === "hello" || lower === "/start") {

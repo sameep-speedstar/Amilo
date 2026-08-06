@@ -27,6 +27,7 @@ import {
   getWhatsAppLastInbound,
   listGoogleAccounts,
   logMessage,
+  patchUserPrefs,
   removeMutedPattern,
   setCursorAgentId,
   setTimezoneConfirmed,
@@ -51,6 +52,7 @@ import {
 } from "@amilo/google";
 import { googleConfigured, loadSettings, resolveBrainLabel } from "./config.js";
 import { syncGoogleForUser } from "./googleSync.js";
+import { startBriefWorker } from "./briefWorker.js";
 import { startReminderWorker } from "./reminders.js";
 
 loadEnv();
@@ -214,6 +216,31 @@ function orchestratorDeps(): OrchestratorDeps {
       }
       return out;
     },
+    getBriefSchedule: async (userId) => {
+      const u = await getUserById(db, userId);
+      const prefs = await getUserPrefs(db, userId);
+      return {
+        enabled: prefs.briefsEnabled,
+        morningHm: prefs.morningHm,
+        eveningHm: prefs.eveningHm,
+        quietStartHm: prefs.quietStartHm,
+        quietEndHm: prefs.quietEndHm,
+        timezone: u?.timezone ?? "Asia/Kolkata",
+      };
+    },
+    setBriefsEnabled: async (userId, enabled) => {
+      await patchUserPrefs(db, userId, { briefsEnabled: enabled });
+    },
+    setBriefSlot: async (userId, slot, hm) => {
+      if (slot === "morning") await patchUserPrefs(db, userId, { morningHm: hm });
+      else await patchUserPrefs(db, userId, { eveningHm: hm });
+    },
+    setQuietHours: async (userId, startHm, endHm) => {
+      await patchUserPrefs(db, userId, {
+        quietStartHm: startHm,
+        quietEndHm: endHm,
+      });
+    },
   };
 }
 
@@ -344,7 +371,7 @@ app.get("/health", async (c) => {
     brain: brainLabel,
     google: googleOk ? "configured" : "off",
     db: dbOk ? "up" : "down",
-    milestone: "M4.1",
+    milestone: "M4.2",
   });
 });
 
@@ -480,7 +507,7 @@ app.post("/dev/chat", async (c) => {
 const port = settings.port;
 serve({ fetch: app.fetch, port, createServer }, (info) => {
   console.log(
-    `Amilo API listening on :${info.port} (brain=${brainLabel}, google=${googleOk ? "on" : "off"}, milestone=M4.1)`,
+    `Amilo API listening on :${info.port} (brain=${brainLabel}, google=${googleOk ? "on" : "off"}, milestone=M4.2)`,
   );
 });
 
@@ -490,4 +517,14 @@ startReminderWorker({
   alertTemplate: settings.wabaTemplateAlert,
   languageCode: "en",
   intervalMs: 30_000,
+});
+
+startBriefWorker({
+  db,
+  channel: waChannel,
+  googleCfg,
+  morningTemplate: settings.wabaTemplateMorning,
+  eveningTemplate: settings.wabaTemplateEvening,
+  languageCode: "en",
+  intervalMs: 60_000,
 });

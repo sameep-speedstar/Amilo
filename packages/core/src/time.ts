@@ -271,3 +271,80 @@ export function isTimezoneAffirmative(message: string): boolean {
     message.trim(),
   );
 }
+
+/** Local wall-clock "HH:MM" (24h) in timezone. */
+export function localHm(at: Date, timeZone: string): string {
+  return formatLocalHm(at, timeZone);
+}
+
+/** Minutes since local midnight for "HH:MM". */
+export function hmToMinutes(hm: string): number | null {
+  const m = hm.trim().match(/^(\d{1,2}):(\d{2})$/);
+  if (!m) return null;
+  const h = Number(m[1]);
+  const min = Number(m[2]);
+  if (h > 23 || min > 59) return null;
+  return h * 60 + min;
+}
+
+/** Format minutes since midnight as "HH:MM". */
+export function minutesToHm(total: number): string {
+  const t = ((total % (24 * 60)) + 24 * 60) % (24 * 60);
+  const h = Math.floor(t / 60);
+  const m = t % 60;
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+}
+
+/**
+ * True if nowHm is in [targetHm, targetHm + windowMinutes) in the same local day.
+ * Used so a 60s poller can catch a scheduled brief without exact-second match.
+ */
+export function isHmInWindow(
+  nowHm: string,
+  targetHm: string,
+  windowMinutes = 5,
+): boolean {
+  const now = hmToMinutes(nowHm);
+  const target = hmToMinutes(targetHm);
+  if (now == null || target == null) return false;
+  if (now < target) return false;
+  return now < target + windowMinutes;
+}
+
+/**
+ * Quiet hours spanning midnight, e.g. 22:00–07:00.
+ * Inclusive of start, exclusive of end when overnight; both ends inclusive for same-day ranges.
+ */
+export function isInQuietHours(
+  at: Date,
+  timeZone: string,
+  quietStartHm: string,
+  quietEndHm: string,
+): boolean {
+  const now = hmToMinutes(localHm(at, timeZone));
+  const start = hmToMinutes(quietStartHm);
+  const end = hmToMinutes(quietEndHm);
+  if (now == null || start == null || end == null) return false;
+  if (start === end) return false;
+  if (start < end) {
+    return now >= start && now < end;
+  }
+  // Overnight: e.g. 22:00–07:00
+  return now >= start || now < end;
+}
+
+/** Meta WABA template body params: no newlines/tabs, no 4+ consecutive spaces. */
+export function flattenWaTemplateParam(s: string, max = 900): string {
+  return s
+    .replace(/[\r\n\t]+/g, " ")
+    .replace(/ {2,}/g, " ")
+    .trim()
+    .slice(0, max) || "—";
+}
+
+/** Parse "7:30", "8pm", "20:00" into "HH:MM" 24h. */
+export function parseHmInput(raw: string): string | null {
+  const clock = parseClockToken(raw.trim());
+  if (!clock) return null;
+  return minutesToHm(clock.hour * 60 + clock.minute);
+}

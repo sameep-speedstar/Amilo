@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
+  flattenWaTemplateParam,
   formatLocalHm,
   guessTimezoneFromPhone,
+  isHmInWindow,
+  isInQuietHours,
   localDayBoundsUtc,
   parseClockToken,
   parseReminderMessage,
@@ -57,5 +60,23 @@ describe("timezone helpers", () => {
     assert.equal(parseTimezoneUpdateMessage("I'm in Dubai"), "Asia/Dubai");
     assert.equal(resolveTimezoneInput("Asia/Kolkata"), "Asia/Kolkata");
     assert.equal(parseTimezoneUpdateMessage("timezone London"), "Europe/London");
+  });
+
+  it("fires brief window after target", () => {
+    assert.equal(isHmInWindow("07:30", "07:30", 5), true);
+    assert.equal(isHmInWindow("07:34", "07:30", 5), true);
+    assert.equal(isHmInWindow("07:35", "07:30", 5), false);
+    assert.equal(isHmInWindow("07:29", "07:30", 5), false);
+  });
+
+  it("quiet hours overnight", () => {
+    const late = new Date("2026-08-06T17:30:00.000Z"); // 23:00 IST
+    assert.equal(isInQuietHours(late, "Asia/Kolkata", "22:00", "07:00"), true);
+    const day = new Date("2026-08-06T04:30:00.000Z"); // 10:00 IST
+    assert.equal(isInQuietHours(day, "Asia/Kolkata", "22:00", "07:00"), false);
+  });
+
+  it("flattens WA template params", () => {
+    assert.equal(flattenWaTemplateParam("a\nb\tc    d"), "a b c d");
   });
 });

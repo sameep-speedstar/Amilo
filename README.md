@@ -45,7 +45,9 @@ npm run dev
 - **M1** — WhatsApp webhook round-trip (parse → orchestrator → send)
 - **M2** — Multi-tenant domain + standing commands
 - **M3** — Cursor brain (durable per-user agents + MCP)
-- **M4** — Google sync + morning/evening briefings
+- **M4** — Google sync + on-demand briefings
+- **M4.1** — Timezone + reminders
+- **M4.2** — Scheduled morning/evening template pushes
 - **M5** — Confirm-before-write + A/B eval
 - **M6** — App-ready shell (onboarding web, second channel)
 

@@ -100,14 +100,15 @@ export async function setUserTimezone(
   opts?: { confirmed?: boolean },
 ): Promise<void> {
   const prefs = await getUserPrefs(db, userId);
-  const nextPrefs = {
-    mutedPatterns: prefs.mutedPatterns,
-    vipList: prefs.vipList,
-    tzConfirmed: opts?.confirmed ?? prefs.tzConfirmed,
-  };
   await db
     .update(users)
-    .set({ timezone, prefs: nextPrefs })
+    .set({
+      timezone,
+      prefs: prefsToJson({
+        ...prefs,
+        tzConfirmed: opts?.confirmed ?? prefs.tzConfirmed,
+      }),
+    })
     .where(eq(users.id, userId));
 }
 
@@ -116,17 +117,7 @@ export async function setTimezoneConfirmed(
   userId: string,
   confirmed: boolean,
 ): Promise<void> {
-  const prefs = await getUserPrefs(db, userId);
-  await db
-    .update(users)
-    .set({
-      prefs: {
-        mutedPatterns: prefs.mutedPatterns,
-        vipList: prefs.vipList,
-        tzConfirmed: confirmed,
-      },
-    })
-    .where(eq(users.id, userId));
+  await patchUserPrefs(db, userId, { tzConfirmed: confirmed });
 }
 
 export async function setCursorAgentId(db: Db, userId: string, agentId: string): Promise<void> {
@@ -632,7 +623,37 @@ export type UserPrefs = {
   mutedPatterns: string[];
   vipList: string[];
   tzConfirmed: boolean;
+  briefsEnabled: boolean;
+  morningHm: string;
+  eveningHm: string;
+  quietStartHm: string;
+  quietEndHm: string;
+  lastMorningBriefDay: string | null;
+  lastEveningBriefDay: string | null;
 };
+
+const DEFAULT_PREFS: UserPrefs = {
+  mutedPatterns: [],
+  vipList: [],
+  tzConfirmed: false,
+  briefsEnabled: true,
+  morningHm: "07:30",
+  eveningHm: "20:00",
+  quietStartHm: "22:00",
+  quietEndHm: "07:00",
+  lastMorningBriefDay: null,
+  lastEveningBriefDay: null,
+};
+
+function asHm(raw: unknown, fallback: string): string {
+  if (typeof raw !== "string") return fallback;
+  const m = raw.trim().match(/^(\d{1,2}):(\d{2})$/);
+  if (!m) return fallback;
+  const h = Number(m[1]);
+  const min = Number(m[2]);
+  if (h > 23 || min > 59) return fallback;
+  return `${String(h).padStart(2, "0")}:${String(min).padStart(2, "0")}`;
+}
 
 export function parseUserPrefs(raw: Record<string, unknown> | null | undefined): UserPrefs {
   const muted = Array.isArray(raw?.mutedPatterns)
@@ -641,13 +662,55 @@ export function parseUserPrefs(raw: Record<string, unknown> | null | undefined):
   const vip = Array.isArray(raw?.vipList)
     ? raw!.vipList.map(String).map((s) => s.trim()).filter(Boolean)
     : [];
-  const tzConfirmed = raw?.tzConfirmed === true;
-  return { mutedPatterns: muted, vipList: vip, tzConfirmed };
+  return {
+    mutedPatterns: muted,
+    vipList: vip,
+    tzConfirmed: raw?.tzConfirmed === true,
+    briefsEnabled: raw?.briefsEnabled === false ? false : true,
+    morningHm: asHm(raw?.morningHm, DEFAULT_PREFS.morningHm),
+    eveningHm: asHm(raw?.eveningHm, DEFAULT_PREFS.eveningHm),
+    quietStartHm: asHm(raw?.quietStartHm, DEFAULT_PREFS.quietStartHm),
+    quietEndHm: asHm(raw?.quietEndHm, DEFAULT_PREFS.quietEndHm),
+    lastMorningBriefDay:
+      typeof raw?.lastMorningBriefDay === "string" && raw.lastMorningBriefDay
+        ? raw.lastMorningBriefDay
+        : null,
+    lastEveningBriefDay:
+      typeof raw?.lastEveningBriefDay === "string" && raw.lastEveningBriefDay
+        ? raw.lastEveningBriefDay
+        : null,
+  };
+}
+
+export function prefsToJson(prefs: UserPrefs): Record<string, unknown> {
+  return {
+    mutedPatterns: prefs.mutedPatterns,
+    vipList: prefs.vipList,
+    tzConfirmed: prefs.tzConfirmed,
+    briefsEnabled: prefs.briefsEnabled,
+    morningHm: prefs.morningHm,
+    eveningHm: prefs.eveningHm,
+    quietStartHm: prefs.quietStartHm,
+    quietEndHm: prefs.quietEndHm,
+    lastMorningBriefDay: prefs.lastMorningBriefDay,
+    lastEveningBriefDay: prefs.lastEveningBriefDay,
+  };
 }
 
 export async function getUserPrefs(db: Db, userId: string): Promise<UserPrefs> {
   const u = await getUserById(db, userId);
   return parseUserPrefs(u?.prefs ?? {});
+}
+
+export async function patchUserPrefs(
+  db: Db,
+  userId: string,
+  patch: Partial<UserPrefs>,
+): Promise<UserPrefs> {
+  const prefs = await getUserPrefs(db, userId);
+  const next: UserPrefs = { ...prefs, ...patch };
+  await db.update(users).set({ prefs: prefsToJson(next) }).where(eq(users.id, userId));
+  return next;
 }
 
 export async function addMutedPattern(
@@ -659,10 +722,7 @@ export async function addMutedPattern(
   const cleaned = pattern.trim().replace(/^["']|["']$/g, "");
   if (!cleaned) return prefs.mutedPatterns;
   const next = [...new Set([...prefs.mutedPatterns, cleaned])];
-  await db
-    .update(users)
-    .set({ prefs: { mutedPatterns: next, vipList: prefs.vipList, tzConfirmed: prefs.tzConfirmed } })
-    .where(eq(users.id, userId));
+  await patchUserPrefs(db, userId, { mutedPatterns: next });
   // Hide already-synced matching mail so brief updates without waiting for re-sync.
   await markMatchingMailMuted(db, userId, cleaned);
   return next;
@@ -700,10 +760,7 @@ export async function removeMutedPattern(
   const prefs = await getUserPrefs(db, userId);
   const needle = pattern.trim().toLowerCase();
   const next = prefs.mutedPatterns.filter((p) => p.toLowerCase() !== needle);
-  await db
-    .update(users)
-    .set({ prefs: { mutedPatterns: next, vipList: prefs.vipList, tzConfirmed: prefs.tzConfirmed } })
-    .where(eq(users.id, userId));
+  await patchUserPrefs(db, userId, { mutedPatterns: next });
   return next;
 }
 
@@ -860,3 +917,62 @@ export async function markReminderNotified(db: Db, id: string): Promise<void> {
     })
     .where(eq(commitments.id, id));
 }
+
+export type ScheduledBriefUser = {
+  id: string;
+  name: string | null;
+  timezone: string;
+  status: string;
+  prefs: UserPrefs;
+};
+
+/** Active users who have at least one Google account linked. */
+export async function listUsersForScheduledBriefs(db: Db): Promise<ScheduledBriefUser[]> {
+  const rows = await db
+    .select({
+      id: users.id,
+      name: users.name,
+      timezone: users.timezone,
+      status: users.status,
+      prefs: users.prefs,
+    })
+    .from(users)
+    .innerJoin(googleAccounts, eq(googleAccounts.userId, users.id))
+    .where(eq(users.status, "active"))
+    .limit(200);
+
+  const seen = new Set<string>();
+  const out: ScheduledBriefUser[] = [];
+  for (const r of rows) {
+    if (seen.has(r.id)) continue;
+    seen.add(r.id);
+    out.push({
+      id: r.id,
+      name: r.name,
+      timezone: r.timezone,
+      status: r.status,
+      prefs: parseUserPrefs(r.prefs as Record<string, unknown>),
+    });
+  }
+  return out;
+}
+
+export function buildFlatBriefDigest(opts: {
+  calendarToday: string;
+  recentMail: string;
+  openCommitmentsSummary: string;
+}): string {
+  const parts: string[] = [];
+  const cal =
+    opts.calendarToday === "none yet" ? "Calendar: none today." : `Calendar: ${opts.calendarToday}`;
+  const mail =
+    opts.recentMail === "none yet"
+      ? "Mail: none needing you."
+      : `Mail: ${opts.recentMail}`;
+  parts.push(cal, mail);
+  if (opts.openCommitmentsSummary && opts.openCommitmentsSummary !== "none yet") {
+    parts.push(`Open: ${opts.openCommitmentsSummary}`);
+  }
+  return parts.join(" | ").replace(/\n/g, " • ");
+}
+
