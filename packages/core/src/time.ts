@@ -55,6 +55,131 @@ export function formatLocalDateLong(date: Date, timeZone: string): string {
   }).format(date);
 }
 
+/** Wall-clock ISO without offset for Google Calendar + timeZone field. */
+export function formatLocalIsoWall(date: Date, timeZone: string): string {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).formatToParts(date);
+  const get = (t: string) => parts.find((p) => p.type === t)?.value ?? "00";
+  return `${get("year")}-${get("month")}-${get("day")}T${get("hour")}:${get("minute")}:${get("second")}`;
+}
+
+/** Human confirm line, e.g. "Thursday, 7 August · 1:00 pm" (no raw ISO). */
+export function formatLocalWhenFriendly(date: Date, timeZone: string): string {
+  const day = new Intl.DateTimeFormat("en-GB", {
+    timeZone,
+    weekday: "long",
+    day: "numeric",
+    month: "long",
+  }).format(date);
+  const time = new Intl.DateTimeFormat("en-GB", {
+    timeZone,
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+  })
+    .format(date)
+    .toLowerCase()
+    .replace(/\s+/g, " ");
+  return `${day} · ${time}`;
+}
+
+/** Parse ISO / offset string into Date; null if invalid. */
+export function parseIsoDate(raw: unknown): Date | null {
+  if (raw == null) return null;
+  const s = String(raw).trim();
+  if (!s) return null;
+  const d = new Date(s);
+  if (Number.isNaN(d.getTime())) return null;
+  return d;
+}
+
+/**
+ * Prefer parsing a calendar create from the user message (relative days + clock)
+ * so we don't trust a hallucinated year from the model.
+ */
+export function parseCalendarCreateHint(
+  message: string,
+  timeZone: string,
+  now: Date = new Date(),
+): { title: string; startIso: string; endIso: string } | null {
+  const text = message.trim();
+  if (
+    !/\b(add|schedule|book|create|put|block)\b/i.test(text) &&
+    !/\b(meeting|lunch|call|event|appointment)\b/i.test(text)
+  ) {
+    return null;
+  }
+  if (/^remind\b/i.test(text)) return null;
+
+  const { day: today } = localDayBoundsUtc(timeZone, now);
+  let day = today;
+  const lower = text.toLowerCase();
+  if (/\btomorrow\b/.test(lower)) day = addCalendarDays(today, 1);
+  else if (/\btoday\b/.test(lower)) day = today;
+  else {
+    const inDays = lower.match(/\bin\s+(\d+)\s+days?\b/);
+    if (inDays) day = addCalendarDays(today, Number(inDays[1]));
+  }
+
+  // Clock: at 1pm / 13:00 / 1:00 pm
+  const clockMatch = text.match(
+    /\b(?:at|@)?\s*(\d{1,2}(?::\d{2})?\s*(?:am|pm)?|\d{1,2}:\d{2})\b/i,
+  );
+  let clock = clockMatch?.[1] ? parseClockToken(clockMatch[1]) : null;
+  if (!clock) {
+    // bare "1pm" without at
+    const bare = text.match(/\b(\d{1,2}(?::\d{2})?\s*(?:am|pm))\b/i);
+    clock = bare?.[1] ? parseClockToken(bare[1]) : null;
+  }
+  if (!clock) return null;
+
+  let title = text
+    .replace(/^(?:please\s+)?(?:add|schedule|book|create|put|block)\s+(?:a\s+|an\s+)?/i, "")
+    .replace(/\b(?:today|tomorrow|in\s+\d+\s+days?)\b/gi, "")
+    .replace(/\b(?:at|@)\s*\d{1,2}(?::\d{2})?\s*(?:am|pm)?\b/gi, "")
+    .replace(/\b\d{1,2}(?::\d{2})?\s*(?:am|pm)\b/gi, "")
+    .replace(/\b\d{1,2}:\d{2}\b/g, "")
+    .replace(/\bon\s+(?:personal|work|excro|speedstar)\b/gi, "")
+    .replace(/\s+/g, " ")
+    .replace(/^[\s,.\-–—]+|[\s,.\-–—]+$/g, "")
+    .trim();
+  if (!title) title = "Event";
+
+  const start = zonedLocalDateTime(timeZone, day, clock.hour, clock.minute);
+  const end = new Date(start.getTime() + 60 * 60 * 1000);
+  return {
+    title,
+    startIso: start.toISOString(),
+    endIso: end.toISOString(),
+  };
+}
+
+export function formatCalendarProposalSummary(opts: {
+  kind: string;
+  title: string;
+  startIso?: string | null;
+  endIso?: string | null;
+  timeZone: string;
+}): string {
+  const start = parseIsoDate(opts.startIso);
+  const when = start ? formatLocalWhenFriendly(start, opts.timeZone) : "time TBD";
+  const verb =
+    opts.kind === "calendar_update"
+      ? "Update"
+      : opts.kind === "calendar_cancel"
+        ? "Cancel"
+        : "Create";
+  return `${verb}: ${opts.title} — ${when}`;
+}
+
 /** Friendly label for confirmations. */
 export function timezoneFriendlyLabel(timeZone: string): string {
   const map: Record<string, string> = {

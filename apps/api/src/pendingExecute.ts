@@ -1,3 +1,4 @@
+import { formatLocalIsoWall, parseIsoDate } from "@amilo/core";
 import {
   cancelCalendarEvent,
   createCalendarEvent,
@@ -17,6 +18,16 @@ import { ensureAccessToken } from "./googleSync.js";
 
 function str(v: unknown, fallback = ""): string {
   return v == null ? fallback : String(v).trim();
+}
+
+function toGoogleWall(iso: string, timezone: string): string {
+  const d = parseIsoDate(iso);
+  if (!d) return iso;
+  // Already a bare local datetime
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(iso) && !/[zZ]|[+-]\d{2}:?\d{2}$/.test(iso)) {
+    return iso.slice(0, 19);
+  }
+  return formatLocalIsoWall(d, timezone);
 }
 
 async function resolveAccountToken(
@@ -79,8 +90,8 @@ export async function executePendingAction(
       if (!startIso || !endIso) throw new Error("Missing start/end for calendar event");
       const created = await createCalendarEvent(accessToken, {
         title,
-        startIso,
-        endIso,
+        startIso: toGoogleWall(startIso, timezone),
+        endIso: toGoogleWall(endIso, timezone),
         timezone,
         location: payload.location ? str(payload.location) : null,
         description: payload.description ? str(payload.description) : null,
@@ -110,10 +121,10 @@ export async function executePendingAction(
       const patched = await patchCalendarEvent(accessToken, eventId, {
         ...(payload.title ? { title: str(payload.title) } : {}),
         ...(payload.start || payload.startIso
-          ? { startIso: str(payload.start ?? payload.startIso) }
+          ? { startIso: toGoogleWall(str(payload.start ?? payload.startIso), timezone) }
           : {}),
         ...(payload.end || payload.endIso
-          ? { endIso: str(payload.end ?? payload.endIso) }
+          ? { endIso: toGoogleWall(str(payload.end ?? payload.endIso), timezone) }
           : {}),
         timezone,
         ...(payload.location !== undefined ? { location: str(payload.location) } : {}),

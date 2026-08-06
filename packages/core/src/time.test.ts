@@ -3,10 +3,12 @@ import { describe, it } from "node:test";
 import {
   flattenWaTemplateParam,
   formatLocalHm,
+  formatLocalWhenFriendly,
   guessTimezoneFromPhone,
   isHmInWindow,
   isInQuietHours,
   localDayBoundsUtc,
+  parseCalendarCreateHint,
   parseClockToken,
   parseReminderMessage,
   parseTimezoneUpdateMessage,
@@ -78,5 +80,28 @@ describe("timezone helpers", () => {
 
   it("flattens WA template params", () => {
     assert.equal(flattenWaTemplateParam("a\nb\tc    d"), "a b c d");
+  });
+
+  it("formats friendly when without ISO", () => {
+    const d = new Date("2026-08-07T07:30:00.000Z"); // 1:00 pm IST
+    assert.equal(
+      formatLocalWhenFriendly(d, "Asia/Kolkata"),
+      "Friday 7 August · 1:00 pm",
+    );
+  });
+
+  it("parses calendar create hint for tomorrow 1pm", () => {
+    const now = new Date("2026-08-06T12:00:00.000Z");
+    const hint = parseCalendarCreateHint(
+      "add lunch with Raj tomorrow at 1pm",
+      "Asia/Kolkata",
+      now,
+    );
+    assert.ok(hint);
+    assert.match(hint!.title, /lunch/i);
+    assert.equal(
+      formatLocalWhenFriendly(new Date(hint!.startIso), "Asia/Kolkata"),
+      "Friday 7 August · 1:00 pm",
+    );
   });
 });

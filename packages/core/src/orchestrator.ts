@@ -2,10 +2,14 @@ import type { BrainPort, GraphUpdate } from "@amilo/brain-contract";
 import type { ChannelPort, InboundMessage, OutboundMessage } from "./channel.js";
 import {
   formatLocalHm,
+  formatLocalIsoWall,
   isTimezoneAffirmative,
+  parseCalendarCreateHint,
   parseHmInput,
+  parseIsoDate,
   parseReminderMessage,
   parseTimezoneUpdateMessage,
+  formatCalendarProposalSummary,
   timezoneFriendlyLabel,
 } from "./time.js";
 
@@ -827,18 +831,34 @@ export async function handleInbound(
       delete payload.type;
       if (!payload.accountLabel) payload.accountLabel = "personal";
 
-      let summary =
-        result.intent.summary?.trim() ||
-        String(action.summary ?? "").trim() ||
-        "";
-      if (!summary) {
-        if (kind === "email_draft") {
-          summary = `Email draft to ${String(action.to ?? "?")}: ${String(action.subject ?? "(no subject)")}`;
-        } else if (kind === "calendar_cancel") {
-          summary = `Cancel calendar: ${String(action.title ?? action.eventId ?? "event")}`;
-        } else {
-          summary = `${kind === "calendar_update" ? "Update" : "Create"} calendar: ${String(action.title ?? "event")} @ ${String(action.start ?? action.startIso ?? "?")}`;
+      // Prefer local parse of the user message over model ISO (avoids wrong year/raw stamps).
+      if (kind === "calendar_create") {
+        const hint = parseCalendarCreateHint(text, briefCtx.timezone);
+        if (hint) {
+          payload.title = hint.title;
+          payload.start = hint.startIso;
+          payload.end = hint.endIso;
+          payload.startIso = hint.startIso;
+          payload.endIso = hint.endIso;
         }
+      }
+
+      let summary: string;
+      if (kind === "email_draft") {
+        summary = `Email draft to ${String(payload.to ?? action.to ?? "?")}: ${String(payload.subject ?? action.subject ?? "(no subject)")}`;
+      } else if (kind.startsWith("calendar_")) {
+        summary = formatCalendarProposalSummary({
+          kind,
+          title: String(payload.title ?? action.title ?? "event"),
+          startIso: String(payload.start ?? payload.startIso ?? action.start ?? action.startIso ?? ""),
+          endIso: String(payload.end ?? payload.endIso ?? action.end ?? action.endIso ?? ""),
+          timeZone: briefCtx.timezone,
+        });
+      } else {
+        summary =
+          result.intent.summary?.trim() ||
+          String(action.summary ?? "").trim() ||
+          "Proposed action";
       }
 
       const pending = await deps.createPending({

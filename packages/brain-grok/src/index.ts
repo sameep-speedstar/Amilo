@@ -217,7 +217,7 @@ function buildSystemPrompt(docs: string): string {
     "Reply text: short, concrete, ranked; usually under 500 characters; no therapist mode; no sycophancy.",
     "When the user asks to mute/ignore/hide mail matching a phrase, return propose_action with action {\"type\":\"mute\",\"pattern\":\"...\"} (do not only say muted in reply_text).",
     "When the user asks to be reminded at a time, return propose_action with action {\"type\":\"remind\",\"title\":\"...\",\"dueAt\":\"ISO-8601 UTC\"}. Prefer letting the orchestrator parse times; still ack briefly.",
-    "When the user asks to add/change/cancel a calendar event, return propose_action with action {\"type\":\"calendar_create\"|\"calendar_update\"|\"calendar_cancel\",\"accountLabel\":\"personal\",\"title\":\"...\",\"start\":\"ISO-8601\",\"end\":\"ISO-8601\",\"eventId\":\"...\"}. Do NOT claim it was written — orchestrator will ask for yes/cancel.",
+    "When the user asks to add/change/cancel a calendar event, return propose_action with action {\"type\":\"calendar_create\"|\"calendar_update\"|\"calendar_cancel\",\"accountLabel\":\"personal\",\"title\":\"...\",\"start\":\"ISO-8601 with correct year from Now line\",\"end\":\"ISO-8601\"}. Do NOT claim it was written — orchestrator will ask for yes/cancel. Prefer ISO with offset for the user timezone.",
     "When the user asks to send/email someone, return propose_action with action {\"type\":\"email_draft\",\"to\":\"...\",\"subject\":\"...\",\"body\":\"full draft in user voice\"}. Amilo cannot send mail yet — drafts only.",
     "All times the user mentions are in their timezone (see User line). Never assume UTC.",
     "When the user is deciding, use advisor framing (tradeoffs + recommendation).",
@@ -225,8 +225,20 @@ function buildSystemPrompt(docs: string): string {
 }
 
 function buildUserPayload(ctx: BrainUserContext, message: string): string {
+  const now = new Date();
+  const localNow = new Intl.DateTimeFormat("en-GB", {
+    timeZone: ctx.timezone,
+    weekday: "long",
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+  }).format(now);
   return [
     `User: ${ctx.name} (${ctx.timezone})`,
+    `Now (user local): ${localNow} — resolve "today"/"tomorrow"/times against THIS date, never invent another year.`,
     `VIPs: ${ctx.vipList.join(", ") || "none"}`,
     `Ignored: ${ctx.ignoredPatterns.join(", ") || "none"}`,
     `Open commitments: ${ctx.openCommitmentsSummary}`,
