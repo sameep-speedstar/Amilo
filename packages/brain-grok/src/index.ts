@@ -212,15 +212,17 @@ function buildSystemPrompt(docs: string): string {
     "For normal chat: use reply_text. Never use noop — silence looks like a broken bot.",
     "For calendar writes or email drafts: use propose_action (orchestrator confirms before any Google write).",
     "If the user only shared a durable fact, still reply with one short concrete ack (e.g. next useful question or a crisp confirmation) — do NOT perform memory ('as you told me').",
-    "Never claim a Google write succeeded.",
+    "Never claim a Google write succeeded — and never say an event was cancelled/created/updated unless you returned propose_action (orchestrator confirms).",
     "graphUpdates: only durable facts; empty array if nothing new.",
     "Reply text: short, concrete, ranked; usually under 500 characters; no therapist mode; no sycophancy.",
     "When the user asks to mute/ignore/hide mail matching a phrase, return propose_action with action {\"type\":\"mute\",\"pattern\":\"...\"} (do not only say muted in reply_text).",
     "When the user asks to be reminded at a time, return propose_action with action {\"type\":\"remind\",\"title\":\"...\",\"dueAt\":\"ISO-8601 UTC\"}. Prefer letting the orchestrator parse times; still ack briefly.",
-    "When the user asks to add/change/cancel a calendar event, return propose_action with action {\"type\":\"calendar_create\"|\"calendar_update\"|\"calendar_cancel\",\"accountLabel\":\"personal\",\"title\":\"...\",\"start\":\"ISO-8601 with correct year from Now line\",\"end\":\"ISO-8601\"}. Do NOT claim it was written — orchestrator will ask for yes/cancel. Prefer ISO with offset for the user timezone.",
+    "When the user asks to add/change/cancel a calendar event, return propose_action with action {\"type\":\"calendar_create\"|\"calendar_update\"|\"calendar_cancel\",\"accountLabel\":\"personal\",\"title\":\"...\",\"start\":\"ISO-8601 with correct year from Now line\",\"end\":\"ISO-8601\",\"eventId\":\"from Calendar today [id:…] if present\"}. Do NOT claim it was written — orchestrator will ask for yes/cancel. Prefer ISO with offset for the user timezone. For cancel/update always include eventId from Calendar today when available, and title matching the event.",
     "When the user asks to send/email someone, return propose_action with action {\"type\":\"email_draft\",\"to\":\"...\",\"subject\":\"...\",\"body\":\"full draft in user voice\"}. Amilo cannot send mail yet — drafts only.",
     "All times the user mentions are in their timezone (see User line). Never assume UTC.",
     "When the user is deciding, use advisor framing (tradeoffs + recommendation).",
+    "If Reply-to is set, the user quoted that exact prior message — treat it as the target event/item (cancel/update/remind/clarify THAT), not a vague guess from calendar alone.",
+    "Use Recent chat for continuity across turns; do not re-ask what was just discussed.",
   ].join("\n");
 }
 
@@ -236,7 +238,7 @@ function buildUserPayload(ctx: BrainUserContext, message: string): string {
     minute: "2-digit",
     hour12: true,
   }).format(now);
-  return [
+  const lines = [
     `User: ${ctx.name} (${ctx.timezone})`,
     `Now (user local): ${localNow} — resolve "today"/"tomorrow"/times against THIS date, never invent another year.`,
     `VIPs: ${ctx.vipList.join(", ") || "none"}`,
@@ -244,9 +246,13 @@ function buildUserPayload(ctx: BrainUserContext, message: string): string {
     `Open commitments: ${ctx.openCommitmentsSummary}`,
     `Calendar today: ${ctx.calendarToday}`,
     `Silent context graph:\n${ctx.contextGraphSummary ?? "none yet"}`,
-    "",
-    `Message:\n${message}`,
-  ].join("\n");
+    `Recent chat (oldest→newest):\n${ctx.recentChatSummary ?? "none yet"}`,
+  ];
+  if (ctx.replyToSummary) {
+    lines.push(`Reply-to (user quoted this message):\n${ctx.replyToSummary}`);
+  }
+  lines.push("", `Message:\n${message}`);
+  return lines.join("\n");
 }
 
 /**

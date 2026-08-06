@@ -36,11 +36,18 @@ export function isInside24hWindow(lastInbound: Date | null, now = new Date()): b
   return now.getTime() - lastInbound.getTime() < MS_24H;
 }
 
+async function parseSendResponse(res: Response): Promise<string | undefined> {
+  const json = (await res.json().catch(() => null)) as {
+    messages?: Array<{ id?: string }>;
+  } | null;
+  return json?.messages?.[0]?.id;
+}
+
 export async function sendWhatsAppText(
   cfg: WabaConfig,
   toE164Digits: string,
   text: string,
-): Promise<void> {
+): Promise<string | undefined> {
   const version = cfg.apiVersion ?? "v21.0";
   const url = `https://graph.facebook.com/${version}/${cfg.phoneNumberId}/messages`;
   const res = await fetch(url, {
@@ -60,13 +67,14 @@ export async function sendWhatsAppText(
     const body = await res.text();
     throw new Error(`WABA send text failed ${res.status}: ${body}`);
   }
+  return parseSendResponse(res);
 }
 
 export async function sendWhatsAppTemplate(
   cfg: WabaConfig,
   toE164Digits: string,
   template: OutboundTemplate,
-): Promise<void> {
+): Promise<string | undefined> {
   const version = cfg.apiVersion ?? "v21.0";
   const url = `https://graph.facebook.com/${version}/${cfg.phoneNumberId}/messages`;
   const res = await fetch(url, {
@@ -95,6 +103,7 @@ export async function sendWhatsAppTemplate(
     const body = await res.text();
     throw new Error(`WABA send template failed ${res.status}: ${body}`);
   }
+  return parseSendResponse(res);
 }
 
 /**
@@ -108,11 +117,10 @@ export function createWhatsAppChannel(opts: {
   resolveAddress: (userId: string) => Promise<string>;
 }): ChannelPort {
   return {
-    async send(userId: string, message: OutboundMessage): Promise<void> {
+    async send(userId: string, message: OutboundMessage): Promise<string | void> {
       const to = await opts.resolveAddress(userId);
       if ("templateName" in message) {
-        await sendWhatsAppTemplate(opts.cfg, to, message);
-        return;
+        return sendWhatsAppTemplate(opts.cfg, to, message);
       }
       const last = await opts.windows.getLastInbound(to);
       if (!isInside24hWindow(last)) {
@@ -120,7 +128,7 @@ export function createWhatsAppChannel(opts: {
           "Outside 24h window — free-form send blocked. Use an approved template.",
         );
       }
-      await sendWhatsAppText(opts.cfg, to, message.text);
+      return sendWhatsAppText(opts.cfg, to, message.text);
     },
   };
 }
@@ -136,6 +144,8 @@ export function toInboundMessage(
     content: parsed.content,
     ts: parsed.timestamp,
     ...(parsed.mediaId ? { mediaRef: parsed.mediaId } : {}),
+    ...(parsed.messageId ? { messageId: parsed.messageId } : {}),
+    ...(parsed.replyToMessageId ? { replyToMessageId: parsed.replyToMessageId } : {}),
   };
 }
 

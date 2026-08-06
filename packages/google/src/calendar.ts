@@ -21,12 +21,13 @@ export interface CalendarWriteInput {
 
 const BASE = "https://www.googleapis.com/calendar/v3/calendars/primary/events";
 
-/** Today's events in the given IANA timezone (default Asia/Kolkata). */
-export async function listCalendarToday(
+/** Events in [timeMin, timeMax] for the given IANA timezone. */
+export async function listCalendarRange(
   accessToken: string,
+  timeMin: Date,
+  timeMax: Date,
   timezone = "Asia/Kolkata",
 ): Promise<CalendarEvent[]> {
-  const { timeMin, timeMax } = localDayBoundsUtc(timezone);
   const url = new URL(BASE);
   url.searchParams.set("singleEvents", "true");
   url.searchParams.set("orderBy", "startTime");
@@ -42,6 +43,15 @@ export async function listCalendarToday(
     items?: Array<Record<string, unknown>>;
   };
   return (data.items ?? []).map(parseEvent);
+}
+
+/** Today's events in the given IANA timezone (default Asia/Kolkata). */
+export async function listCalendarToday(
+  accessToken: string,
+  timezone = "Asia/Kolkata",
+): Promise<CalendarEvent[]> {
+  const { timeMin, timeMax } = localDayBoundsUtc(timezone);
+  return listCalendarRange(accessToken, timeMin, timeMax, timezone);
 }
 
 export async function createCalendarEvent(

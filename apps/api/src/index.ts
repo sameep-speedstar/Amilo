@@ -22,7 +22,9 @@ import {
   createPendingAction,
   createReminder,
   deleteGoogleAccount,
+  findMessageByWaId,
   getOpenPendingAction,
+  getRecentChatSummary,
   getUserById,
   getUserPrefs,
   getWhatsAppAddress,
@@ -30,6 +32,7 @@ import {
   listGoogleAccounts,
   logEvalEvent,
   logMessage,
+  findCalendarEventMatches,
   patchUserPrefs,
   removeMutedPattern,
   setCursorAgentId,
@@ -44,6 +47,7 @@ import {
   updatePendingPayload,
   upsertGoogleAccount,
   upsertWhatsAppUser,
+  upsertEvent,
   type Db,
   type PendingActionKind,
 } from "@amilo/db";
@@ -53,13 +57,15 @@ import {
   encryptToken,
   exchangeCode,
   fetchEmail,
+  listCalendarRange,
   type GoogleOAuthConfig,
 } from "@amilo/google";
 import { googleConfigured, loadSettings, resolveBrainLabel } from "./config.js";
-import { syncGoogleForUser } from "./googleSync.js";
+import { ensureAccessToken, syncGoogleForUser } from "./googleSync.js";
 import { startBriefWorker } from "./briefWorker.js";
 import { executePendingAction, rejectPendingAction } from "./pendingExecute.js";
 import { startReminderWorker } from "./reminders.js";
+import { localDayBoundsUtc } from "@amilo/core";
 
 loadEnv();
 
@@ -142,6 +148,10 @@ function orchestratorDeps(): OrchestratorDeps {
       await setUserStatus(db, id, p ? "paused" : "active");
     },
     getContextGraphSummary: (id) => summarizeContextGraph(db, id),
+    getRecentChatSummary: (id, opts) =>
+      getRecentChatSummary(db, id, 14, {
+        ...(opts?.excludeMessageId ? { excludeWaMessageId: opts.excludeMessageId } : {}),
+      }),
     applyGraphUpdates: async (opts) => {
       await applyGraphUpdates(db, {
         userId: opts.userId,
@@ -257,6 +267,57 @@ function orchestratorDeps(): OrchestratorDeps {
         payload: row.payload as Record<string, unknown>,
       };
     },
+    resolveCalendarEvent: async (userId, opts) => {
+      let matches = await findCalendarEventMatches(db, userId, opts);
+      if (matches.length || !googleCfg) return matches;
+
+      // Live Google lookup (covers events created before we started upserting).
+      const accounts = await listGoogleAccounts(db, userId);
+      const today = localDayBoundsUtc(opts.timezone);
+      const timeMax = new Date(today.timeMax.getTime() + 24 * 60 * 60 * 1000);
+      for (const acct of accounts) {
+        try {
+          const { accessToken } = await ensureAccessToken(db, googleCfg, acct);
+          const live = await listCalendarRange(
+            accessToken,
+            today.timeMin,
+            timeMax,
+            opts.timezone,
+          );
+          for (const ev of live) {
+            if (ev.status === "cancelled") continue;
+            await upsertEvent(db, {
+              userId,
+              source: "calendar",
+              sourceId: `${acct.id}:${ev.id}`,
+              title: ev.summary,
+              snippet: ev.location,
+              kind: "meeting",
+              meta: {
+                end: ev.endIso,
+                status: ev.status,
+                allDay: ev.allDay,
+                accountLabel: acct.label,
+                accountEmail: acct.email,
+                calendarId: ev.id,
+              },
+              occursAt: ev.startIso ? new Date(ev.startIso) : null,
+            });
+          }
+        } catch (err) {
+          console.error(
+            JSON.stringify({
+              event: "calendar_resolve_live_error",
+              userId,
+              label: acct.label,
+              error: err instanceof Error ? err.message : String(err),
+            }),
+          );
+        }
+      }
+      matches = await findCalendarEventMatches(db, userId, opts);
+      return matches;
+    },
     createPending: async (opts) => {
       const row = await createPendingAction(db, {
         userId: opts.userId,
@@ -276,6 +337,9 @@ function orchestratorDeps(): OrchestratorDeps {
       const row = await getOpenPendingAction(db, userId);
       if (!row) return { ok: false, message: "Nothing pending to cancel." };
       await rejectPendingAction(db, row);
+      if (row.kind === "calendar_cancel") {
+        return { ok: true, message: "Kept — event not cancelled." };
+      }
       return { ok: true, message: "Cancelled — nothing written." };
     },
     editPending: async (userId, patch, summary) => {
@@ -298,6 +362,29 @@ function orchestratorDeps(): OrchestratorDeps {
       });
     },
   };
+}
+
+async function sendAndLogOutbound(
+  userId: string,
+  msg: { text: string } | { templateName: string; languageCode: string; variables: string[] },
+  extraMeta: Record<string, unknown> = {},
+): Promise<void> {
+  const waMessageId = await waChannel.send(userId, msg);
+  const isTemplate = "templateName" in msg;
+  await logMessage(db, {
+    userId,
+    channel: "whatsapp",
+    direction: "out",
+    kind: isTemplate ? "template" : "text",
+    bodyRef: isTemplate
+      ? (msg.variables.join(" · ").slice(0, 500) || msg.templateName)
+      : msg.text.slice(0, 500),
+    meta: {
+      ...(waMessageId ? { waMessageId } : {}),
+      ...(isTemplate ? { template: msg.templateName } : {}),
+      ...extraMeta,
+    },
+  });
 }
 
 async function processInbound(rawJson: unknown): Promise<void> {
@@ -326,25 +413,31 @@ async function processInbound(rawJson: unknown): Promise<void> {
     });
     await touchWhatsAppInbound(db, parsed.waId, parsed.timestamp);
 
+    let replyToContent: string | undefined;
+    let replyToDirection: "in" | "out" | undefined;
+    if (parsed.replyToMessageId) {
+      const prior = await findMessageByWaId(db, user.id, parsed.replyToMessageId);
+      if (prior?.bodyRef) {
+        replyToContent = prior.bodyRef;
+        replyToDirection = prior.direction === "out" ? "out" : "in";
+      }
+    }
+
     await logMessage(db, {
       userId: user.id,
       channel: "whatsapp",
       direction: "in",
       kind: parsed.kind,
       bodyRef: parsed.content.slice(0, 500),
-      meta: { waMessageId: parsed.messageId },
+      meta: {
+        waMessageId: parsed.messageId,
+        ...(parsed.replyToMessageId ? { replyToMessageId: parsed.replyToMessageId } : {}),
+      },
     });
 
     if (parsed.kind === "voice") {
       const text = "Voice notes land in a later milestone — send text for now, or help.";
-      await waChannel.send(user.id, { text });
-      await logMessage(db, {
-        userId: user.id,
-        channel: "whatsapp",
-        direction: "out",
-        kind: "text",
-        bodyRef: text,
-      });
+      await sendAndLogOutbound(user.id, { text });
       continue;
     }
 
@@ -356,6 +449,9 @@ async function processInbound(rawJson: unknown): Promise<void> {
       messageId: parsed.messageId,
       ts: parsed.timestamp,
       ...(parsed.mediaId ? { mediaRef: parsed.mediaId } : {}),
+      ...(parsed.replyToMessageId ? { replyToMessageId: parsed.replyToMessageId } : {}),
+      ...(replyToContent ? { replyToContent } : {}),
+      ...(replyToDirection ? { replyToDirection } : {}),
     };
 
     console.log(
@@ -366,6 +462,7 @@ async function processInbound(rawJson: unknown): Promise<void> {
         kind: parsed.kind,
         chars: parsed.content.length,
         brain: brainLabel,
+        ...(parsed.replyToMessageId ? { replyTo: parsed.replyToMessageId } : {}),
       }),
     );
 
@@ -373,15 +470,7 @@ async function processInbound(rawJson: unknown): Promise<void> {
       const outbound = await handleInbound(inbound, orchestratorDeps());
 
       for (const msg of outbound) {
-        await waChannel.send(user.id, msg);
-        await logMessage(db, {
-          userId: user.id,
-          channel: "whatsapp",
-          direction: "out",
-          kind: "templateName" in msg ? "template" : "text",
-          bodyRef: "templateName" in msg ? msg.templateName : msg.text.slice(0, 500),
-          meta: "templateName" in msg ? { template: msg.templateName } : {},
-        });
+        await sendAndLogOutbound(user.id, msg);
       }
       console.log(
         JSON.stringify({
@@ -398,14 +487,7 @@ async function processInbound(rawJson: unknown): Promise<void> {
           /permission-denied|credits or licenses/i.test(errMsg)
             ? "Grok API has no credits on this xAI team — add billing at console.x.ai, then try again."
             : "Something went wrong on my side — try again in a moment.";
-        await waChannel.send(user.id, { text });
-        await logMessage(db, {
-          userId: user.id,
-          channel: "whatsapp",
-          direction: "out",
-          kind: "text",
-          bodyRef: text,
-        });
+        await sendAndLogOutbound(user.id, { text });
       } catch {
         /* already logged */
       }

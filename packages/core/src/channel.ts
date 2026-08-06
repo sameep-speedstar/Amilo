@@ -10,6 +10,12 @@ export interface InboundMessage {
   mediaRef?: string;
   /** Upstream message id (e.g. WhatsApp wamid) for graph observation audit. */
   messageId?: string;
+  /** If the user replied to a specific message (WhatsApp quote). */
+  replyToMessageId?: string;
+  /** Body of the quoted message when we can resolve it from message_log. */
+  replyToContent?: string;
+  /** in | out for the quoted message. */
+  replyToDirection?: "in" | "out";
   ts: Date;
 }
 
@@ -26,5 +32,6 @@ export interface OutboundTemplate {
 export type OutboundMessage = OutboundText | OutboundTemplate;
 
 export interface ChannelPort {
-  send(userId: string, message: OutboundMessage): Promise<void>;
+  /** Returns upstream message id when the channel provides one (e.g. wamid). */
+  send(userId: string, message: OutboundMessage): Promise<string | void>;
 }

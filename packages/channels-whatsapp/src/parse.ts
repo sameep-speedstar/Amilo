@@ -9,6 +9,8 @@ export interface ParsedWhatsAppMessage {
   content: string;
   mediaId?: string;
   messageId: string;
+  /** wamid of the message the user replied to (WhatsApp quote). */
+  replyToMessageId?: string;
   timestamp: Date;
   profileName?: string;
 }
@@ -31,6 +33,7 @@ export interface WhatsAppWebhookPayload {
           id?: string;
           timestamp?: string;
           type?: string;
+          context?: { id?: string; from?: string };
           text?: { body?: string };
           button?: { text?: string; payload?: string };
           interactive?: {
@@ -101,6 +104,7 @@ function normalizeMessage(
     id?: string;
     timestamp?: string;
     type?: string;
+    context?: { id?: string; from?: string };
     text?: { body?: string };
     button?: { text?: string; payload?: string };
     interactive?: {
@@ -115,12 +119,14 @@ function normalizeMessage(
   const timestamp = msg.timestamp
     ? new Date(Number(msg.timestamp) * 1000)
     : new Date();
+  const replyToMessageId = msg.context?.id?.trim() || undefined;
   const base: Omit<ParsedWhatsAppMessage, "kind" | "content" | "mediaId"> = {
     waId,
     phoneE164: toE164(waId),
     messageId: msg.id!,
     timestamp,
     ...(profileName ? { profileName } : {}),
+    ...(replyToMessageId ? { replyToMessageId } : {}),
   };
 
   switch (msg.type) {

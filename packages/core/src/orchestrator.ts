@@ -38,6 +38,10 @@ const STANDING: Record<string, string> = {
   resume: "Back. Watching quietly again.",
 };
 
+function strPayload(v: unknown): string {
+  return v == null ? "" : String(v).trim();
+}
+
 /** Sanitize account label: personal|work|custom slug. */
 export function normalizeGoogleLabel(raw: string): string {
   const s = raw.trim().toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "");
@@ -52,6 +56,11 @@ export interface OrchestratorDeps {
   isPaused: (userId: string) => Promise<boolean>;
   setPaused: (userId: string, paused: boolean) => Promise<void>;
   getContextGraphSummary?: (userId: string) => Promise<string>;
+  /** Recent WhatsApp turns for multi-turn continuity. */
+  getRecentChatSummary?: (
+    userId: string,
+    opts?: { excludeMessageId?: string },
+  ) => Promise<string>;
   applyGraphUpdates?: (opts: {
     userId: string;
     userName: string;
@@ -134,6 +143,25 @@ export interface OrchestratorDeps {
     summary: string;
     payload: Record<string, unknown>;
   } | null>;
+  /** Resolve Google calendar event id from synced events (cancel/update). */
+  resolveCalendarEvent?: (
+    userId: string,
+    opts: {
+      timezone: string;
+      titleHint?: string;
+      aroundHm?: string;
+      hintText?: string;
+    },
+  ) => Promise<
+    Array<{
+      eventId: string;
+      title: string;
+      occursAt: Date | null;
+      accountLabel: string;
+      startIso: string | null;
+      endIso: string | null;
+    }>
+  >;
   createPending?: (opts: {
     userId: string;
     kind: string;
@@ -249,15 +277,29 @@ export async function handleInbound(
     : null;
 
   if (openPending && deps.confirmPending && deps.rejectPending) {
-    if (
-      /^(yes|y|yeah|yep|ok|okay|confirm|do it|go ahead|approved?)$/i.test(lower)
-    ) {
+    const isCancelKind = openPending.kind === "calendar_cancel";
+    const affirm = isCancelKind
+      ? /^(yes|y|yeah|yep|ok|okay|confirm|do it|go ahead|approved?|cancel( it| this| now)?)$/i.test(
+          lower,
+        )
+      : /^(yes|y|yeah|yep|ok|okay|confirm|do it|go ahead|approved?)$/i.test(lower);
+    const reject = isCancelKind
+      ? /^(no|nope|keep( it)?|never ?mind|abort|drop|don't|dont)$/i.test(lower)
+      : /^(cancel|no|nope|reject|don't|dont|never ?mind|abort)$/i.test(lower);
+
+    if (affirm) {
       const r = await deps.confirmPending(msg.userId);
       return [{ text: r.ok ? r.message : `Couldn't complete: ${r.message}` }];
     }
-    if (/^(cancel|no|nope|reject|don't|dont|never ?mind|abort)$/i.test(lower)) {
+    if (reject) {
       const r = await deps.rejectPending(msg.userId);
-      return [{ text: r.message || "Cancelled — nothing written." }];
+      return [
+        {
+          text: isCancelKind
+            ? r.message?.replace(/^Cancelled/, "Kept") || "Kept — event not cancelled."
+            : r.message || "Cancelled — nothing written.",
+        },
+      ];
     }
     const editMatch = text.match(/^edit\s+(.+)$/i);
     if (editMatch?.[1] && deps.editPending) {
@@ -270,7 +312,11 @@ export async function handleInbound(
       return [
         {
           text: r.ok
-            ? `Updated proposal:\n${r.message}\n\nReply yes to confirm, cancel to drop.`
+            ? `Updated proposal:\n${r.message}\n\n${
+                isCancelKind
+                  ? "Reply yes to cancel it on Google, or no to keep it."
+                  : "Reply yes to confirm, cancel to drop."
+              }`
             : r.message,
         },
       ];
@@ -281,7 +327,9 @@ export async function handleInbound(
         {
           text: [
             `Pending: ${openPending.summary}`,
-            "Reply yes to confirm, cancel to drop, or edit <change>.",
+            isCancelKind
+              ? "Reply yes to cancel it on Google, or no to keep it."
+              : "Reply yes to confirm, cancel to drop, or edit <change>.",
           ].join("\n"),
         },
       ];
@@ -692,6 +740,16 @@ export async function handleInbound(
   const contextGraphSummary = deps.getContextGraphSummary
     ? await deps.getContextGraphSummary(msg.userId)
     : "none yet";
+  const recentChatSummary = deps.getRecentChatSummary
+    ? await deps.getRecentChatSummary(msg.userId, {
+        ...(msg.messageId ? { excludeMessageId: msg.messageId } : {}),
+      })
+    : undefined;
+  const replyToSummary = msg.replyToContent
+    ? `${msg.replyToDirection === "in" ? "User" : "Amilo"}: ${msg.replyToContent}`
+    : msg.replyToMessageId
+      ? "(user replied to a prior WhatsApp message we could not resolve from message_log)"
+      : undefined;
   const briefCtx = deps.getBriefingContext
     ? await deps.getBriefingContext(msg.userId)
     : {
@@ -728,6 +786,8 @@ export async function handleInbound(
       openCommitmentsSummary: briefCtx.openCommitmentsSummary,
       calendarToday: briefCtx.calendarToday,
       contextGraphSummary,
+      ...(recentChatSummary ? { recentChatSummary } : {}),
+      ...(replyToSummary ? { replyToSummary } : {}),
     },
     text,
   );
@@ -843,6 +903,85 @@ export async function handleInbound(
         }
       }
 
+      // Resolve Google event id for cancel/update from synced calendar rows.
+      if (
+        (kind === "calendar_cancel" || kind === "calendar_update") &&
+        !strPayload(payload.eventId) &&
+        deps.resolveCalendarEvent
+      ) {
+        let titleHint = strPayload(payload.title) || undefined;
+        if (!titleHint && kind === "calendar_cancel") {
+          const cleaned = text
+            .replace(
+              /^(please\s+)?(cancel|delete|remove|drop)\s+(the\s+|my\s+|this\s+)?/i,
+              "",
+            )
+            .replace(
+              /\b(tomorrow'?s?|tomorow'?s?|tommorow'?s?|today'?s?|from\s+(?:the\s+)?calendar|on\s+(?:the\s+)?calendar)\b/gi,
+              "",
+            )
+            .replace(/\s+/g, " ")
+            .trim();
+          if (cleaned.length >= 3) titleHint = cleaned;
+        }
+        const hintText = [text, msg.replyToContent, replyToSummary]
+          .filter(Boolean)
+          .join("\n");
+        const matches = await deps.resolveCalendarEvent(msg.userId, {
+          timezone: briefCtx.timezone,
+          ...(titleHint ? { titleHint } : {}),
+          hintText,
+        });
+        if (matches.length === 1) {
+          const m = matches[0]!;
+          payload.eventId = m.eventId;
+          payload.title = m.title;
+          if (m.startIso) {
+            payload.start = m.startIso;
+            payload.startIso = m.startIso;
+          }
+          if (m.endIso) {
+            payload.end = m.endIso;
+            payload.endIso = m.endIso;
+          }
+          if (m.accountLabel) payload.accountLabel = m.accountLabel;
+        } else if (matches.length === 0) {
+          return [
+            {
+              text: [
+                "Couldn't match that to a synced calendar event.",
+                "Send sync, then name the event (and time if needed), or reply to the brief line.",
+              ].join("\n"),
+            },
+          ];
+        } else {
+          const lines = matches.slice(0, 5).map((m) => {
+            const when = m.occursAt
+              ? formatLocalHm(m.occursAt, briefCtx.timezone)
+              : "?";
+            return `• ${when} ${m.title}`;
+          });
+          return [
+            {
+              text: ["Which event?", ...lines, "", "Reply with the title (or time + title)."].join(
+                "\n",
+              ),
+            },
+          ];
+        }
+      }
+
+      if (
+        (kind === "calendar_cancel" || kind === "calendar_update") &&
+        !strPayload(payload.eventId)
+      ) {
+        return [
+          {
+            text: "I need a specific event for that — reply to it in the brief, or say the title and time.",
+          },
+        ];
+      }
+
       let summary: string;
       if (kind === "email_draft") {
         summary = `Email draft to ${String(payload.to ?? action.to ?? "?")}: ${String(payload.subject ?? action.subject ?? "(no subject)")}`;
@@ -883,6 +1022,19 @@ export async function handleInbound(
             ].join("\n"),
           },
           { text: draftLines.join("\n") },
+        ];
+      }
+
+      if (kind === "calendar_cancel") {
+        return [
+          {
+            text: [
+              `Proposed cancel:`,
+              pending.summary,
+              "",
+              "Reply yes to remove it from Google Calendar, or no to keep it.",
+            ].join("\n"),
+          },
         ];
       }
 

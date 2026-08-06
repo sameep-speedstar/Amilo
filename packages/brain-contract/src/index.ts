@@ -86,6 +86,10 @@ export interface BrainUserContext {
   calendarToday: string;
   /** Compact silent context from the personal graph. */
   contextGraphSummary?: string;
+  /** Last few WhatsApp turns (user + Amilo), newest last. */
+  recentChatSummary?: string;
+  /** When the user quoted/replied to a specific message. */
+  replyToSummary?: string;
 }
 
 export interface BrainPort {

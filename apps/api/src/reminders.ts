@@ -34,20 +34,23 @@ export function startReminderWorker(opts: {
         const body = `Reminder (${when}): ${r.title}`;
         const name = r.userName?.split(/\s+/)[0] || "there";
         try {
-          await opts.channel.send(r.userId, { text: body });
+          const waMessageId = await opts.channel.send(r.userId, { text: body });
           await logMessage(opts.db, {
             userId: r.userId,
             channel: "whatsapp",
             direction: "out",
             kind: "text",
             bodyRef: body.slice(0, 500),
-            meta: { reminderId: r.id },
+            meta: {
+              reminderId: r.id,
+              ...(waMessageId ? { waMessageId } : {}),
+            },
           });
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           if (/Outside 24h|24h window/i.test(msg) && opts.alertTemplate) {
             const param = body.replace(/\n/g, " ").replace(/\s{2,}/g, " ").slice(0, 900);
-            await opts.channel.send(r.userId, {
+            const waMessageId = await opts.channel.send(r.userId, {
               templateName: opts.alertTemplate,
               languageCode: opts.languageCode ?? "en",
               variables: [name, param],
@@ -57,8 +60,13 @@ export function startReminderWorker(opts: {
               channel: "whatsapp",
               direction: "out",
               kind: "template",
-              bodyRef: opts.alertTemplate,
-              meta: { reminderId: r.id, via: "template" },
+              bodyRef: param.slice(0, 500),
+              meta: {
+                reminderId: r.id,
+                via: "template",
+                template: opts.alertTemplate,
+                ...(waMessageId ? { waMessageId } : {}),
+              },
             });
           } else {
             console.error(

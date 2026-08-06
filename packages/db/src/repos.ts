@@ -165,15 +165,73 @@ export async function logMessage(
     bodyRef?: string;
     meta?: Record<string, unknown>;
   },
-): Promise<void> {
-  await db.insert(messageLog).values({
-    userId: row.userId ?? null,
-    channel: row.channel,
-    direction: row.direction,
-    kind: row.kind,
-    bodyRef: row.bodyRef ?? null,
-    meta: row.meta ?? {},
+): Promise<{ id: string }> {
+  const [inserted] = await db
+    .insert(messageLog)
+    .values({
+      userId: row.userId ?? null,
+      channel: row.channel,
+      direction: row.direction,
+      kind: row.kind,
+      bodyRef: row.bodyRef ?? null,
+      meta: row.meta ?? {},
+    })
+    .returning({ id: messageLog.id });
+  return { id: inserted?.id ?? "" };
+}
+
+/** Look up a prior WhatsApp message by Graph wamid (for reply-to). */
+export async function findMessageByWaId(
+  db: Db,
+  userId: string,
+  waMessageId: string,
+): Promise<{
+  direction: string;
+  bodyRef: string | null;
+  kind: string;
+} | null> {
+  const rows = await db.query.messageLog.findMany({
+    where: and(eq(messageLog.userId, userId), eq(messageLog.channel, "whatsapp")),
+    orderBy: [desc(messageLog.ts)],
+    limit: 80,
   });
+  for (const r of rows) {
+    const meta = (r.meta ?? {}) as { waMessageId?: unknown };
+    if (String(meta.waMessageId ?? "") === waMessageId) {
+      return { direction: r.direction, bodyRef: r.bodyRef, kind: r.kind };
+    }
+  }
+  return null;
+}
+
+/** Recent chat turns for brain context (oldest → newest). */
+export async function getRecentChatSummary(
+  db: Db,
+  userId: string,
+  limit = 12,
+  opts?: { excludeWaMessageId?: string },
+): Promise<string> {
+  const rows = await db.query.messageLog.findMany({
+    where: and(eq(messageLog.userId, userId), eq(messageLog.channel, "whatsapp")),
+    orderBy: [desc(messageLog.ts)],
+    limit: opts?.excludeWaMessageId ? limit + 4 : limit,
+  });
+  const filtered = opts?.excludeWaMessageId
+    ? rows.filter((r) => {
+        const meta = (r.meta ?? {}) as { waMessageId?: unknown };
+        return String(meta.waMessageId ?? "") !== opts.excludeWaMessageId;
+      })
+    : rows;
+  const slice = filtered.slice(0, limit);
+  if (!slice.length) return "none yet";
+  return [...slice]
+    .reverse()
+    .map((r) => {
+      const who = r.direction === "in" ? "User" : "Amilo";
+      const body = (r.bodyRef ?? "").replace(/\s+/g, " ").trim().slice(0, 280);
+      return `${who}: ${body || `(${r.kind})`}`;
+    })
+    .join("\n");
 }
 
 /** Best-effort cleanup of old dedupe rows (keep ~7 days). */
@@ -579,6 +637,17 @@ export async function upsertEvent(
     });
 }
 
+function googleCalendarIdFromEvent(e: {
+  sourceId: string;
+  meta: Record<string, unknown> | null;
+}): string | null {
+  const metaId = e.meta?.calendarId;
+  if (typeof metaId === "string" && metaId.trim()) return metaId.trim();
+  const parts = e.sourceId.split(":");
+  const tail = parts.length > 1 ? parts.slice(1).join(":") : e.sourceId;
+  return tail.trim() || null;
+}
+
 export async function summarizeCalendarToday(
   db: Db,
   userId: string,
@@ -601,9 +670,150 @@ export async function summarizeCalendarToday(
       const allDay = Boolean((e.meta as { allDay?: unknown })?.allDay);
       const when =
         allDay || !e.occursAt ? "all day" : formatLocalHm(e.occursAt, timezone);
-      return `• ${when} ${e.title ?? "(untitled)"}`;
+      const gid = googleCalendarIdFromEvent(e);
+      const idBit = gid ? ` [id:${gid}]` : "";
+      return `• ${when} ${e.title ?? "(untitled)"}${idBit}`;
     })
     .join("\n");
+}
+
+export type CalendarMatch = {
+  eventId: string;
+  title: string;
+  occursAt: Date | null;
+  accountLabel: string;
+  startIso: string | null;
+  endIso: string | null;
+};
+
+/** Match synced calendar rows by title / local time (today + tomorrow). */
+export async function findCalendarEventMatches(
+  db: Db,
+  userId: string,
+  opts: {
+    timezone: string;
+    titleHint?: string;
+    /** Local HH:MM to prefer nearby events. */
+    aroundHm?: string;
+    hintText?: string;
+  },
+): Promise<CalendarMatch[]> {
+  const today = localDayBoundsUtc(opts.timezone);
+  const tomorrowStart = new Date(today.timeMax.getTime() + 1);
+  const tomorrowEnd = new Date(tomorrowStart.getTime() + 24 * 60 * 60 * 1000 - 1);
+  const rows = await db.query.events.findMany({
+    where: and(
+      eq(events.userId, userId),
+      eq(events.source, "calendar"),
+      gte(events.occursAt, today.timeMin),
+      lte(events.occursAt, tomorrowEnd),
+    ),
+    orderBy: [asc(events.occursAt)],
+    limit: 40,
+  });
+
+  const titleHint = (opts.titleHint ?? "").trim().toLowerCase();
+  const hintBlob = `${opts.hintText ?? ""} ${titleHint}`.toLowerCase();
+
+  const idFromHint = `${opts.hintText ?? ""} ${opts.titleHint ?? ""}`.match(
+    /\[id:([^\]]+)\]/i,
+  );
+  if (idFromHint?.[1]) {
+    const want = idFromHint[1].trim();
+    for (const e of rows) {
+      const eventId = googleCalendarIdFromEvent(e);
+      if (eventId === want) {
+        const meta = (e.meta ?? {}) as { accountLabel?: unknown; end?: unknown };
+        return [
+          {
+            eventId,
+            title: (e.title ?? "").trim() || "(untitled)",
+            occursAt: e.occursAt,
+            accountLabel:
+              typeof meta.accountLabel === "string" ? meta.accountLabel : "personal",
+            startIso: e.occursAt ? e.occursAt.toISOString() : null,
+            endIso: typeof meta.end === "string" ? meta.end : null,
+          },
+        ];
+      }
+    }
+  }
+
+  let targetMinutes: number | null = null;
+  if (opts.aroundHm) {
+    const parts = opts.aroundHm.split(":").map(Number);
+    const h = parts[0];
+    const m = parts[1] ?? 0;
+    if (Number.isFinite(h) && Number.isFinite(m)) targetMinutes = (h as number) * 60 + m;
+  }
+  if (targetMinutes == null) {
+    const clock = hintBlob.match(/\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b/i);
+    if (clock) {
+      let h = Number(clock[1]);
+      const min = clock[2] ? Number(clock[2]) : 0;
+      const ap = (clock[3] ?? "").toLowerCase();
+      if (ap === "pm" && h < 12) h += 12;
+      if (ap === "am" && h === 12) h = 0;
+      if (h >= 0 && h < 24) targetMinutes = h * 60 + min;
+    }
+  }
+
+  const scored: Array<CalendarMatch & { score: number }> = [];
+  for (const e of rows) {
+    const eventId = googleCalendarIdFromEvent(e);
+    if (!eventId) continue;
+    const title = (e.title ?? "").trim() || "(untitled)";
+    const titleLower = title.toLowerCase();
+    let score = 0;
+    if (titleHint) {
+      if (titleLower === titleHint) score += 50;
+      else if (titleLower.includes(titleHint) || titleHint.includes(titleLower)) score += 30;
+      else {
+        const tokens = titleHint.split(/\s+/).filter((t) => t.length >= 3);
+        const hits = tokens.filter((t) => titleLower.includes(t)).length;
+        if (hits) score += hits * 8;
+        else if (tokens.length) continue;
+      }
+    } else if (hintBlob) {
+      const tokens = titleLower.split(/\s+/).filter((t) => t.length >= 3);
+      const hits = tokens.filter((t) => hintBlob.includes(t)).length;
+      if (hits) score += hits * 6;
+    }
+
+    if (targetMinutes != null && e.occursAt) {
+      const hm = formatLocalHm(e.occursAt, opts.timezone);
+      const hmParts = hm.split(":").map(Number);
+      const hh = hmParts[0] ?? 0;
+      const mm = hmParts[1] ?? 0;
+      const mins = hh * 60 + mm;
+      const delta = Math.abs(mins - targetMinutes);
+      if (delta <= 5) score += 40;
+      else if (delta <= 30) score += 20;
+      else if (delta <= 90) score += 5;
+      else if (titleHint) {
+        /* title match can still win */
+      } else {
+        continue;
+      }
+    }
+
+    if (!titleHint && targetMinutes == null && !hintBlob) score += 1;
+    if (score <= 0) continue;
+
+    const meta = (e.meta ?? {}) as { accountLabel?: unknown; end?: unknown };
+    scored.push({
+      eventId,
+      title,
+      occursAt: e.occursAt,
+      accountLabel: typeof meta.accountLabel === "string" ? meta.accountLabel : "personal",
+      startIso: e.occursAt ? e.occursAt.toISOString() : null,
+      endIso: typeof meta.end === "string" ? meta.end : null,
+      score,
+    });
+  }
+
+  scored.sort((a, b) => b.score - a.score || (a.occursAt?.getTime() ?? 0) - (b.occursAt?.getTime() ?? 0));
+  return scored.map(({ score: _s, ...rest }) => rest);
 }
 
 export function matchesMutedPattern(

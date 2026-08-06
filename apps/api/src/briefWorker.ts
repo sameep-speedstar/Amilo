@@ -103,7 +103,7 @@ export function startBriefWorker(opts: {
         if (dueMorning) {
           const dateLong = flattenWaTemplateParam(formatLocalDateLong(now, tz), 80);
           try {
-            await opts.channel.send(u.id, {
+            const waMessageId = await opts.channel.send(u.id, {
               templateName: opts.morningTemplate,
               languageCode: lang,
               variables: [
@@ -118,8 +118,13 @@ export function startBriefWorker(opts: {
               channel: "whatsapp",
               direction: "out",
               kind: "template",
-              bodyRef: opts.morningTemplate,
-              meta: { scheduled: "morning", day },
+              bodyRef: `Morning brief · ${bodyFlat}`.slice(0, 500),
+              meta: {
+                scheduled: "morning",
+                day,
+                template: opts.morningTemplate,
+                ...(waMessageId ? { waMessageId } : {}),
+              },
             });
             console.log(
               JSON.stringify({
@@ -149,7 +154,7 @@ export function startBriefWorker(opts: {
 
         if (dueEvening) {
           try {
-            await opts.channel.send(u.id, {
+            const waMessageId = await opts.channel.send(u.id, {
               templateName: opts.eveningTemplate,
               languageCode: lang,
               variables: [flattenWaTemplateParam(name, 60), bodyFlat],
@@ -160,8 +165,13 @@ export function startBriefWorker(opts: {
               channel: "whatsapp",
               direction: "out",
               kind: "template",
-              bodyRef: opts.eveningTemplate,
-              meta: { scheduled: "evening", day },
+              bodyRef: `Evening wrap · ${bodyFlat}`.slice(0, 500),
+              meta: {
+                scheduled: "evening",
+                day,
+                template: opts.eveningTemplate,
+                ...(waMessageId ? { waMessageId } : {}),
+              },
             });
             console.log(
               JSON.stringify({

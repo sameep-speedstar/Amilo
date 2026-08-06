@@ -11,6 +11,7 @@ import {
   listGoogleAccounts,
   logEvalEvent,
   resolvePendingAction,
+  upsertEvent,
   type Db,
   type PendingActionRow,
 } from "@amilo/db";
@@ -96,6 +97,27 @@ export async function executePendingAction(
         location: payload.location ? str(payload.location) : null,
         description: payload.description ? str(payload.description) : null,
       });
+      const account = (await getGoogleAccount(db, row.userId, label)) ??
+        (await listGoogleAccounts(db, row.userId))[0];
+      if (account) {
+        await upsertEvent(db, {
+          userId: row.userId,
+          source: "calendar",
+          sourceId: `${account.id}:${created.id}`,
+          title: created.summary ?? title,
+          snippet: created.location,
+          kind: "meeting",
+          meta: {
+            end: created.endIso,
+            status: created.status,
+            allDay: created.allDay,
+            accountLabel: label,
+            accountEmail: account.email,
+            calendarId: created.id,
+          },
+          occursAt: created.startIso ? new Date(created.startIso) : null,
+        });
+      }
       await resolvePendingAction(db, row.id, {
         status: "confirmed",
         result: { eventId: created.id, accountLabel: label },

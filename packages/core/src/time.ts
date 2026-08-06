@@ -122,8 +122,9 @@ export function parseCalendarCreateHint(
   const { day: today } = localDayBoundsUtc(timeZone, now);
   let day = today;
   const lower = text.toLowerCase();
-  if (/\btomorrow\b/.test(lower)) day = addCalendarDays(today, 1);
-  else if (/\btoday\b/.test(lower)) day = today;
+  if (/\btomorr?ow\b/.test(lower) || /\btommorow\b/.test(lower)) {
+    day = addCalendarDays(today, 1);
+  } else if (/\btoday\b/.test(lower)) day = today;
   else {
     const inDays = lower.match(/\bin\s+(\d+)\s+days?\b/);
     if (inDays) day = addCalendarDays(today, Number(inDays[1]));
@@ -326,8 +327,9 @@ export function parseReminderMessage(
   const { day: today } = localDayBoundsUtc(timeZone, now);
   let day = today;
   const lower = text.toLowerCase();
-  if (/\btomorrow\b/.test(lower)) day = addCalendarDays(today, 1);
-  else {
+  if (/\btomorr?ow\b/.test(lower) || /\btommorow\b/.test(lower)) {
+    day = addCalendarDays(today, 1);
+  } else {
     const inDays = lower.match(/\bin\s+(\d+)\s+days?\b/);
     if (inDays) day = addCalendarDays(today, Number(inDays[1]));
   }
