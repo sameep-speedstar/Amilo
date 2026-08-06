@@ -17,6 +17,7 @@
     "@amilo/channels-whatsapp": "*",
     "@amilo/core": "*",
     "@amilo/db": "*",
+    "@amilo/google": "*",
     "@hono/node-server": "^1.14.1",
     "dotenv": "^17.4.2",
     "hono": "^4.7.8"

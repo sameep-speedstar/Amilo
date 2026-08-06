@@ -1,11 +1,14 @@
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, gte, sql } from "drizzle-orm";
 import type { GraphUpdate } from "@amilo/brain-contract";
 import type { Db } from "./index.js";
 import {
   channels,
+  commitments,
   contextEdges,
   contextNodes,
   contextObservations,
+  events,
+  googleAccounts,
   messageLog,
   users,
   webhookDedupe,
@@ -14,6 +17,8 @@ import {
 export type UserRow = typeof users.$inferSelect;
 export type ChannelRow = typeof channels.$inferSelect;
 export type ContextNodeRow = typeof contextNodes.$inferSelect;
+export type GoogleAccountRow = typeof googleAccounts.$inferSelect;
+export type EventRow = typeof events.$inferSelect;
 
 export async function claimWebhookMessage(db: Db, messageId: string): Promise<boolean> {
   const inserted = await db
@@ -370,4 +375,216 @@ export async function summarizeContextGraph(db: Db, userId: string): Promise<str
   ]
     .filter(Boolean)
     .join("\n");
+}
+
+export async function getGoogleAccount(
+  db: Db,
+  userId: string,
+  label = "personal",
+): Promise<GoogleAccountRow | undefined> {
+  return db.query.googleAccounts.findFirst({
+    where: and(eq(googleAccounts.userId, userId), eq(googleAccounts.label, label)),
+  });
+}
+
+export async function listGoogleAccounts(
+  db: Db,
+  userId: string,
+): Promise<GoogleAccountRow[]> {
+  return db.query.googleAccounts.findMany({
+    where: eq(googleAccounts.userId, userId),
+    orderBy: [googleAccounts.label],
+  });
+}
+
+export async function upsertGoogleAccount(
+  db: Db,
+  row: {
+    userId: string;
+    label?: string;
+    email: string;
+    scopes: string;
+    accessTokenEnc: string;
+    refreshTokenEnc: string;
+    expiresAt: Date;
+  },
+): Promise<GoogleAccountRow> {
+  const label = row.label ?? "personal";
+  const existing = await getGoogleAccount(db, row.userId, label);
+  if (existing) {
+    const [updated] = await db
+      .update(googleAccounts)
+      .set({
+        email: row.email,
+        scopes: row.scopes,
+        accessTokenEnc: row.accessTokenEnc,
+        refreshTokenEnc: row.refreshTokenEnc,
+        expiresAt: row.expiresAt,
+        updatedAt: new Date(),
+      })
+      .where(eq(googleAccounts.id, existing.id))
+      .returning();
+    if (!updated) throw new Error("failed to update google account");
+    return updated;
+  }
+  const [created] = await db
+    .insert(googleAccounts)
+    .values({
+      userId: row.userId,
+      label,
+      email: row.email,
+      scopes: row.scopes,
+      accessTokenEnc: row.accessTokenEnc,
+      refreshTokenEnc: row.refreshTokenEnc,
+      expiresAt: row.expiresAt,
+    })
+    .returning();
+  if (!created) throw new Error("failed to create google account");
+  return created;
+}
+
+/** Local disconnect only — never revoke at Google (shared OAuth client with LifeOS). */
+export async function deleteGoogleAccount(
+  db: Db,
+  userId: string,
+  label?: string,
+): Promise<{ deleted: number; labels: string[] }> {
+  if (label) {
+    const deleted = await db
+      .delete(googleAccounts)
+      .where(and(eq(googleAccounts.userId, userId), eq(googleAccounts.label, label)))
+      .returning({ label: googleAccounts.label });
+    return { deleted: deleted.length, labels: deleted.map((d) => d.label) };
+  }
+  const deleted = await db
+    .delete(googleAccounts)
+    .where(eq(googleAccounts.userId, userId))
+    .returning({ label: googleAccounts.label });
+  return { deleted: deleted.length, labels: deleted.map((d) => d.label) };
+}
+
+export async function updateGoogleTokens(
+  db: Db,
+  accountId: string,
+  tokens: {
+    accessTokenEnc: string;
+    refreshTokenEnc?: string;
+    expiresAt: Date;
+  },
+): Promise<void> {
+  await db
+    .update(googleAccounts)
+    .set({
+      accessTokenEnc: tokens.accessTokenEnc,
+      ...(tokens.refreshTokenEnc ? { refreshTokenEnc: tokens.refreshTokenEnc } : {}),
+      expiresAt: tokens.expiresAt,
+      updatedAt: new Date(),
+    })
+    .where(eq(googleAccounts.id, accountId));
+}
+
+export async function updateGoogleSyncCursors(
+  db: Db,
+  accountId: string,
+  cursors: {
+    gmailHistoryId?: string | null;
+    calendarSyncToken?: string | null;
+  },
+): Promise<void> {
+  await db
+    .update(googleAccounts)
+    .set({
+      ...(cursors.gmailHistoryId !== undefined
+        ? { gmailHistoryId: cursors.gmailHistoryId }
+        : {}),
+      ...(cursors.calendarSyncToken !== undefined
+        ? { calendarSyncToken: cursors.calendarSyncToken }
+        : {}),
+      lastSyncAt: new Date(),
+      updatedAt: new Date(),
+    })
+    .where(eq(googleAccounts.id, accountId));
+}
+
+export async function upsertEvent(
+  db: Db,
+  row: {
+    userId: string;
+    source: string;
+    sourceId: string;
+    actor?: string | null;
+    title?: string | null;
+    snippet?: string | null;
+    kind?: string | null;
+    meta?: Record<string, unknown>;
+    occursAt?: Date | null;
+  },
+): Promise<void> {
+  await db
+    .insert(events)
+    .values({
+      userId: row.userId,
+      source: row.source,
+      sourceId: row.sourceId,
+      actor: row.actor ?? null,
+      title: row.title ?? null,
+      snippet: row.snippet ?? null,
+      kind: row.kind ?? null,
+      meta: row.meta ?? {},
+      occursAt: row.occursAt ?? null,
+    })
+    .onConflictDoUpdate({
+      target: [events.userId, events.source, events.sourceId],
+      set: {
+        actor: row.actor ?? null,
+        title: row.title ?? null,
+        snippet: row.snippet ?? null,
+        kind: row.kind ?? null,
+        meta: row.meta ?? {},
+        occursAt: row.occursAt ?? null,
+      },
+    });
+}
+
+export async function summarizeCalendarToday(db: Db, userId: string): Promise<string> {
+  const start = new Date();
+  start.setHours(0, 0, 0, 0);
+  const rows = await db.query.events.findMany({
+    where: and(
+      eq(events.userId, userId),
+      eq(events.source, "calendar"),
+      gte(events.occursAt, start),
+    ),
+    orderBy: [events.occursAt],
+    limit: 20,
+  });
+  if (!rows.length) return "none yet";
+  return rows
+    .map((e) => {
+      const when = e.occursAt ? e.occursAt.toISOString().slice(11, 16) : "?";
+      return `- ${when} ${e.title ?? "(untitled)"}`;
+    })
+    .join("\n");
+}
+
+export async function summarizeRecentMail(db: Db, userId: string): Promise<string> {
+  const rows = await db.query.events.findMany({
+    where: and(eq(events.userId, userId), eq(events.source, "gmail")),
+    orderBy: [desc(events.createdAt)],
+    limit: 15,
+  });
+  if (!rows.length) return "none yet";
+  return rows
+    .map((e) => `- ${e.actor ?? "?"} | ${e.title ?? "(no subject)"} — ${(e.snippet ?? "").slice(0, 80)}`)
+    .join("\n");
+}
+
+export async function summarizeOpenCommitments(db: Db, userId: string): Promise<string> {
+  const rows = await db.query.commitments.findMany({
+    where: and(eq(commitments.userId, userId), eq(commitments.status, "open")),
+    orderBy: [desc(commitments.createdAt)],
+    limit: 10,
+  });
+  if (!rows.length) return "none yet";
+  return rows.map((c) => `- ${c.title}`).join("\n");
 }

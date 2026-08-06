@@ -100,6 +100,11 @@ az webapp config appsettings set --name "$APP_NAME" --resource-group "$RESOURCE_
     CURSOR_BRAIN_REF="${CURSOR_BRAIN_REF:-main}" \
     XAI_API_KEY="${XAI_API_KEY:-}" \
     GROK_MODEL="${GROK_MODEL:-grok-4-1-fast-non-reasoning}" \
+    PUBLIC_BASE_URL="${PUBLIC_BASE_URL:-https://api.amilo.io}" \
+    GOOGLE_CLIENT_ID="${GOOGLE_CLIENT_ID:-}" \
+    GOOGLE_CLIENT_SECRET="${GOOGLE_CLIENT_SECRET:-}" \
+    GOOGLE_REDIRECT_URI="${GOOGLE_REDIRECT_URI:-https://api.amilo.io/oauth/google/callback}" \
+    TOKEN_ENCRYPTION_KEY="${TOKEN_ENCRYPTION_KEY:-}" \
     DOCKER_ENABLE_CI=true \
     WEBSITE_PULL_IMAGE_OVER_VNET=false \
   >/dev/null

@@ -41,24 +41,28 @@ export const channels = pgTable(
   (t) => [uniqueIndex("channels_kind_address_uidx").on(t.kind, t.address)],
 );
 
-export const events = pgTable("events", {
-  id: uuid("id").defaultRandom().primaryKey(),
-  userId: uuid("user_id")
-    .notNull()
-    .references(() => users.id, { onDelete: "cascade" }),
-  source: varchar("source", { length: 20 }).notNull(),
-  sourceId: varchar("source_id", { length: 500 }).notNull(),
-  actor: varchar("actor", { length: 320 }),
-  title: text("title"),
-  snippet: text("snippet"),
-  kind: varchar("kind", { length: 50 }),
-  priority: varchar("priority", { length: 20 }),
-  score: integer("score"),
-  reason: text("reason"),
-  meta: jsonb("meta").$type<Record<string, unknown>>().notNull().default({}),
-  occursAt: timestamp("occurs_at", { withTimezone: true }),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-});
+export const events = pgTable(
+  "events",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    source: varchar("source", { length: 20 }).notNull(),
+    sourceId: varchar("source_id", { length: 500 }).notNull(),
+    actor: varchar("actor", { length: 320 }),
+    title: text("title"),
+    snippet: text("snippet"),
+    kind: varchar("kind", { length: 50 }),
+    priority: varchar("priority", { length: 20 }),
+    score: integer("score"),
+    reason: text("reason"),
+    meta: jsonb("meta").$type<Record<string, unknown>>().notNull().default({}),
+    occursAt: timestamp("occurs_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex("events_user_source_source_id_uidx").on(t.userId, t.source, t.sourceId)],
+);
 
 /** First-class commitments — not buried in events.meta. */
 export const commitments = pgTable("commitments", {
@@ -168,3 +172,26 @@ export const contextObservations = pgTable("context_observations", {
   raw: jsonb("raw").$type<Record<string, unknown>>().notNull().default({}),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
+
+/** Google OAuth tokens — Amilo Postgres only; never revoke on disconnect (shared client with LifeOS). */
+export const googleAccounts = pgTable(
+  "google_accounts",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    label: varchar("label", { length: 40 }).notNull().default("personal"),
+    email: varchar("email", { length: 320 }),
+    scopes: text("scopes").notNull().default(""),
+    accessTokenEnc: text("access_token_enc").notNull(),
+    refreshTokenEnc: text("refresh_token_enc").notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    gmailHistoryId: varchar("gmail_history_id", { length: 80 }),
+    calendarSyncToken: text("calendar_sync_token"),
+    lastSyncAt: timestamp("last_sync_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex("google_accounts_user_label_uidx").on(t.userId, t.label)],
+);

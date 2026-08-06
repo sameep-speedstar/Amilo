@@ -18,18 +18,34 @@ import {
   applyGraphUpdates,
   claimWebhookMessage,
   createDb,
+  deleteGoogleAccount,
+  getGoogleAccount,
   getUserById,
   getWhatsAppAddress,
   getWhatsAppLastInbound,
+  listGoogleAccounts,
   logMessage,
   setCursorAgentId,
   setUserStatus,
+  summarizeCalendarToday,
   summarizeContextGraph,
+  summarizeOpenCommitments,
+  summarizeRecentMail,
   touchWhatsAppInbound,
+  upsertGoogleAccount,
   upsertWhatsAppUser,
   type Db,
 } from "@amilo/db";
-import { loadSettings, resolveBrainLabel } from "./config.js";
+import {
+  buildAuthUrl,
+  decodeState,
+  encryptToken,
+  exchangeCode,
+  fetchEmail,
+  type GoogleOAuthConfig,
+} from "@amilo/google";
+import { googleConfigured, loadSettings, resolveBrainLabel } from "./config.js";
+import { syncGoogleForUser } from "./googleSync.js";
 
 loadEnv();
 
@@ -37,6 +53,16 @@ const settings = loadSettings();
 const app = new Hono();
 const db: Db = createDb(settings.databaseUrl);
 const brainLabel = resolveBrainLabel(settings);
+const googleOk = googleConfigured(settings);
+
+const googleCfg: GoogleOAuthConfig | null = googleOk
+  ? {
+      clientId: settings.googleClientId,
+      clientSecret: settings.googleClientSecret,
+      redirectUri: settings.googleRedirectUri,
+      encryptionKey: settings.tokenEncryptionKey,
+    }
+  : null;
 
 function createBrain(): BrainPort {
   if (settings.xaiApiKey) {
@@ -110,6 +136,37 @@ function orchestratorDeps(): OrchestratorDeps {
         updates: opts.updates,
         ...(opts.sourceMessageId ? { sourceMessageId: opts.sourceMessageId } : {}),
       });
+    },
+    getGoogleAuthUrl: async (userId, label) => {
+      if (!googleCfg) return null;
+      return buildAuthUrl(googleCfg, userId, label);
+    },
+    listGoogleAccounts: async (userId) => {
+      const rows = await listGoogleAccounts(db, userId);
+      return rows.map((r) => ({ label: r.label, email: r.email }));
+    },
+    disconnectGoogle: async (userId, label) => {
+      if (label === "all") return deleteGoogleAccount(db, userId);
+      return deleteGoogleAccount(db, userId, label);
+    },
+    syncGoogle: async (userId) => {
+      if (!googleCfg) throw new Error("Google OAuth not configured");
+      const u = await getUserById(db, userId);
+      return syncGoogleForUser(db, googleCfg, userId, u?.timezone ?? "Asia/Kolkata");
+    },
+    isGoogleConnected: async (userId) => {
+      const rows = await listGoogleAccounts(db, userId);
+      return rows.length > 0;
+    },
+    getBriefingContext: async (userId) => {
+      const u = await getUserById(db, userId);
+      const timezone = u?.timezone ?? "Asia/Kolkata";
+      return {
+        timezone,
+        openCommitmentsSummary: await summarizeOpenCommitments(db, userId),
+        calendarToday: await summarizeCalendarToday(db, userId),
+        recentMail: await summarizeRecentMail(db, userId),
+      };
     },
   };
 }
@@ -239,9 +296,64 @@ app.get("/health", async (c) => {
     ok: true,
     service: "amilo",
     brain: brainLabel,
+    google: googleOk ? "configured" : "off",
     db: dbOk ? "up" : "down",
-    milestone: "M3",
+    milestone: "M4",
   });
+});
+
+app.get("/oauth/google/callback", async (c) => {
+  if (!googleCfg) {
+    return c.html("<h1>Google OAuth not configured</h1>", 503);
+  }
+  const err = c.req.query("error");
+  if (err) {
+    return c.html(`<h1>Google connect cancelled</h1><p>${err}</p>`, 400);
+  }
+  const code = c.req.query("code");
+  const state = c.req.query("state");
+  if (!code || !state) {
+    return c.html("<h1>Missing code/state</h1>", 400);
+  }
+  try {
+    const { userId, label } = decodeState(googleCfg, state);
+    const tokens = await exchangeCode(googleCfg, code);
+    if (!tokens.refreshToken) {
+      return c.html(
+        "<h1>No refresh token</h1><p>Revoke Amilo access in Google Account permissions and try connect google again with consent.</p>",
+        400,
+      );
+    }
+    const email = await fetchEmail(tokens.accessToken);
+    await upsertGoogleAccount(db, {
+      userId,
+      label,
+      email,
+      scopes: tokens.scope || googleCfg.clientId,
+      accessTokenEnc: encryptToken(googleCfg.encryptionKey, tokens.accessToken),
+      refreshTokenEnc: encryptToken(googleCfg.encryptionKey, tokens.refreshToken),
+      expiresAt: tokens.expiresAt,
+    });
+    console.log(JSON.stringify({ event: "google_connected", userId, email, label }));
+    return c.html(
+      `<!doctype html><html><body style="font-family:system-ui;padding:2rem">
+        <h1>Amilo connected</h1>
+        <p>Linked <strong>${email}</strong> as <code>${label}</code>. Return to WhatsApp and send <code>sync</code> or <code>brief</code>.</p>
+        <p>Add another inbox: <code>connect google work</code> (or any label).</p>
+      </body></html>`,
+    );
+  } catch (e) {
+    console.error(
+      JSON.stringify({
+        event: "google_oauth_error",
+        error: e instanceof Error ? e.message : String(e),
+      }),
+    );
+    return c.html(
+      `<h1>Connect failed</h1><p>${e instanceof Error ? e.message : String(e)}</p>`,
+      400,
+    );
+  }
 });
 
 app.get("/webhooks/whatsapp", (c) => {
@@ -322,6 +434,6 @@ app.post("/dev/chat", async (c) => {
 const port = settings.port;
 serve({ fetch: app.fetch, port, createServer }, (info) => {
   console.log(
-    `Amilo API listening on :${info.port} (brain=${brainLabel}, milestone=M3)`,
+    `Amilo API listening on :${info.port} (brain=${brainLabel}, google=${googleOk ? "on" : "off"}, milestone=M4)`,
   );
 });

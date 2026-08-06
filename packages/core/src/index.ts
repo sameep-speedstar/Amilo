@@ -7,4 +7,4 @@ export type {
   User,
   UserStatus,
 } from "./domain.js";
-export { handleInbound, type OrchestratorDeps } from "./orchestrator.js";
+export { handleInbound, normalizeGoogleLabel, type OrchestratorDeps } from "./orchestrator.js";

@@ -2,6 +2,7 @@ export interface Settings {
   port: number;
   nodeEnv: string;
   databaseUrl: string;
+  publicBaseUrl: string;
   allowedPhones: string[];
   wabaVerifyToken: string;
   wabaAppSecret: string;
@@ -13,6 +14,10 @@ export interface Settings {
   cursorModel: string;
   cursorBrainRepo: string;
   cursorBrainRef: string;
+  googleClientId: string;
+  googleClientSecret: string;
+  googleRedirectUri: string;
+  tokenEncryptionKey: string;
 }
 
 function req(name: string, fallback?: string): string {
@@ -27,10 +32,17 @@ export function loadSettings(): Settings {
     .map((p) => p.trim())
     .filter(Boolean);
 
+  const publicBaseUrl = req("PUBLIC_BASE_URL", "http://localhost:8080").replace(/\/$/, "");
+  const googleRedirectUri = req(
+    "GOOGLE_REDIRECT_URI",
+    `${publicBaseUrl}/oauth/google/callback`,
+  );
+
   return {
     port: Number(req("PORT", "8080")),
     nodeEnv: req("NODE_ENV", "development"),
     databaseUrl: req("DATABASE_URL", "postgresql://amilo:amilo@localhost:5432/amilo"),
+    publicBaseUrl,
     allowedPhones: phones,
     wabaVerifyToken: req("WABA_VERIFY_TOKEN", "change-me"),
     wabaAppSecret: req("WABA_APP_SECRET"),
@@ -42,6 +54,10 @@ export function loadSettings(): Settings {
     cursorModel: req("CURSOR_MODEL", "composer-2.5"),
     cursorBrainRepo: req("CURSOR_BRAIN_REPO", "https://github.com/sameep-speedstar/Amilo"),
     cursorBrainRef: req("CURSOR_BRAIN_REF", "main"),
+    googleClientId: req("GOOGLE_CLIENT_ID"),
+    googleClientSecret: req("GOOGLE_CLIENT_SECRET"),
+    googleRedirectUri,
+    tokenEncryptionKey: req("TOKEN_ENCRYPTION_KEY"),
   };
 }
 
@@ -50,4 +66,8 @@ export function resolveBrainLabel(s: Settings): "grok" | "cursor-cloud" | "stub"
   if (s.xaiApiKey) return "grok";
   if (s.cursorApiKey) return "cursor-cloud";
   return "stub";
+}
+
+export function googleConfigured(s: Settings): boolean {
+  return Boolean(s.googleClientId && s.googleClientSecret && s.tokenEncryptionKey);
 }

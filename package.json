@@ -11,7 +11,7 @@
     "packages/*"
   ],
   "scripts": {
-    "build": "npm run build -w @amilo/brain-contract -w @amilo/core -w @amilo/db -w @amilo/channels-whatsapp -w @amilo/brain-cursor -w @amilo/brain-grok -w @amilo/api",
+    "build": "npm run build -w @amilo/brain-contract -w @amilo/core -w @amilo/db -w @amilo/channels-whatsapp -w @amilo/brain-cursor -w @amilo/brain-grok -w @amilo/google -w @amilo/api",
     "dev": "npm run dev -w @amilo/api",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",
