@@ -7,14 +7,12 @@ import {
   type ChannelPort,
 } from "@amilo/core";
 import {
-  buildFlatBriefDigest,
+  buildPriorityBriefPayload,
+  getUserPrefs,
   listUsersForScheduledBriefs,
   logEvalEvent,
   logMessage,
   patchUserPrefs,
-  summarizeCalendarToday,
-  summarizeOpenCommitments,
-  summarizeRecentMail,
   type Db,
 } from "@amilo/db";
 import type { GoogleOAuthConfig } from "@amilo/google";
@@ -81,24 +79,15 @@ export function startBriefWorker(opts: {
           continue;
         }
 
-        const calendarToday = await summarizeCalendarToday(opts.db, u.id, tz);
-        const recentMail = await summarizeRecentMail(
-          opts.db,
-          u.id,
-          u.prefs.mutedPatterns,
-        );
-        const openCommitmentsSummary = await summarizeOpenCommitments(
+        const prefs = await getUserPrefs(opts.db, u.id);
+        const brief = await buildPriorityBriefPayload(
           opts.db,
           u.id,
           tz,
+          prefs.mutedPatterns,
+          prefs.vipList,
         );
-        const bodyFlat = flattenWaTemplateParam(
-          buildFlatBriefDigest({
-            calendarToday,
-            recentMail,
-            openCommitmentsSummary,
-          }),
-        );
+        const bodyFlat = flattenWaTemplateParam(brief.digestFlat, 900);
 
         if (dueMorning) {
           const dateLong = flattenWaTemplateParam(formatLocalDateLong(now, tz), 80);
@@ -112,7 +101,11 @@ export function startBriefWorker(opts: {
                 bodyFlat,
               ],
             });
-            await patchUserPrefs(opts.db, u.id, { lastMorningBriefDay: day });
+            await patchUserPrefs(opts.db, u.id, {
+              lastMorningBriefDay: day,
+              lastBriefItems: brief.items,
+              lastBriefMore: brief.moreText,
+            });
             await logMessage(opts.db, {
               userId: u.id,
               channel: "whatsapp",
@@ -123,6 +116,7 @@ export function startBriefWorker(opts: {
                 scheduled: "morning",
                 day,
                 template: opts.morningTemplate,
+                briefItems: brief.items.map((i) => i.label),
                 ...(waMessageId ? { waMessageId } : {}),
               },
             });
@@ -132,13 +126,14 @@ export function startBriefWorker(opts: {
                 kind: "morning",
                 userId: u.id,
                 day,
+                priorities: brief.items.length,
               }),
             );
             await logEvalEvent(opts.db, {
               userId: u.id,
               event: "brief_sent",
               note: "morning",
-              meta: { day },
+              meta: { day, priorities: brief.items.length },
             });
           } catch (err) {
             console.error(
@@ -159,7 +154,11 @@ export function startBriefWorker(opts: {
               languageCode: lang,
               variables: [flattenWaTemplateParam(name, 60), bodyFlat],
             });
-            await patchUserPrefs(opts.db, u.id, { lastEveningBriefDay: day });
+            await patchUserPrefs(opts.db, u.id, {
+              lastEveningBriefDay: day,
+              lastBriefItems: brief.items,
+              lastBriefMore: brief.moreText,
+            });
             await logMessage(opts.db, {
               userId: u.id,
               channel: "whatsapp",
@@ -170,6 +169,7 @@ export function startBriefWorker(opts: {
                 scheduled: "evening",
                 day,
                 template: opts.eveningTemplate,
+                briefItems: brief.items.map((i) => i.label),
                 ...(waMessageId ? { waMessageId } : {}),
               },
             });
@@ -179,13 +179,14 @@ export function startBriefWorker(opts: {
                 kind: "evening",
                 userId: u.id,
                 day,
+                priorities: brief.items.length,
               }),
             );
             await logEvalEvent(opts.db, {
               userId: u.id,
               event: "brief_sent",
               note: "evening",
-              meta: { day },
+              meta: { day, priorities: brief.items.length },
             });
           } catch (err) {
             console.error(
@@ -202,7 +203,7 @@ export function startBriefWorker(opts: {
     } catch (err) {
       console.error(
         JSON.stringify({
-          event: "brief_tick_error",
+          event: "brief_worker_tick_error",
           error: err instanceof Error ? err.message : String(err),
         }),
       );
@@ -215,6 +216,7 @@ export function startBriefWorker(opts: {
     void tick();
   }, intervalMs);
   void tick();
-
-  return { stop: () => clearInterval(handle) };
+  return {
+    stop: () => clearInterval(handle),
+  };
 }

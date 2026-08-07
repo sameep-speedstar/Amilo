@@ -93,6 +93,15 @@ export interface OrchestratorDeps {
     ignoredPatterns: string[];
     vipList: string[];
   }>;
+  /** Build curated brief + store 1/2/3 detail items. */
+  buildPriorityBrief?: (userId: string) => Promise<{
+    digestText: string;
+    items: Array<{ index: number; label: string; detail: string }>;
+  }>;
+  getLastBriefItems?: (userId: string) => Promise<{
+    items: Array<{ index: number; label: string; detail: string }>;
+    more: string | null;
+  }>;
   /** Approved WABA template names for briefings (channel-blind names). */
   briefingTemplates?: {
     morning: string;
@@ -269,6 +278,39 @@ export async function handleInbound(
   }
   if (await deps.isPaused(msg.userId)) {
     return [{ text: "I'm paused. Send resume to continue." }];
+  }
+
+  // Brief follow-ups: 1 / 2 / 3 / M (must not go to the LLM).
+  if (/^[123]$/.test(lower) || lower === "m") {
+    if (deps.getLastBriefItems) {
+      const stored = await deps.getLastBriefItems(msg.userId);
+      if (lower === "m") {
+        if (stored.more?.trim()) {
+          return [
+            {
+              text: ["More from your brief:", stored.more, "", "Reply 1–3 for a top item."].join(
+                "\n",
+              ),
+            },
+          ];
+        }
+        return [{ text: "Nothing more queued from the last brief." }];
+      }
+      const item = stored.items.find((i) => i.index === Number(lower));
+      if (item) {
+        return [{ text: `${item.index}) ${item.label}\n\n${item.detail}` }];
+      }
+      if (!stored.items.length) {
+        return [{ text: "No brief items stored yet — send brief (or wait for the morning update)." }];
+      }
+      return [
+        {
+          text: `No item ${lower} in the last brief. Available: ${stored.items
+            .map((i) => i.index)
+            .join(", ")}.`,
+        },
+      ];
+    }
   }
 
   // --- Pending confirm-before-write (prefer over timezone yes) ---
@@ -715,6 +757,17 @@ export async function handleInbound(
       /* structured body still works without Grok headline */
     }
 
+    if (deps.buildPriorityBrief) {
+      const brief = await deps.buildPriorityBrief(msg.userId);
+      const quietBits = [
+        skippedPromo ? `${skippedPromo} promo` : "",
+        skippedMuted ? `${skippedMuted} muted` : "",
+      ].filter(Boolean);
+      const footer = quietBits.length ? `\nFiltered quietly: ${quietBits.join(", ")}.` : "";
+      const textOut = `${headline}\n\n${brief.digestText}${footer}`.slice(0, 3500);
+      return [{ text: textOut || "Nothing urgent — you're clear." }];
+    }
+
     const quietBits = [
       skippedPromo ? `${skippedPromo} promo` : "",
       skippedMuted ? `${skippedMuted} muted` : "",
@@ -723,8 +776,6 @@ export async function handleInbound(
     if (quietBits.length) footer.push(`Filtered quietly: ${quietBits.join(", ")}.`);
     if (ctx.ignoredPatterns.length) footer.push(`Mutes: ${ctx.ignoredPatterns.join(", ")}`);
 
-    // On-demand brief is always inside the 24h window (user just messaged).
-    // Free-form keeps CALENDAR / MAIL bullets; WABA templates flatten newlines.
     const textOut = buildStructuredBrief({
       headline,
       calendarToday: ctx.calendarToday,

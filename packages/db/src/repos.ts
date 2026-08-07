@@ -710,6 +710,7 @@ export async function summarizeCalendarToday(
   db: Db,
   userId: string,
   timezone = "Asia/Kolkata",
+  opts?: { includeIds?: boolean },
 ): Promise<string> {
   const { timeMin, timeMax } = localDayBoundsUtc(timezone);
   const rows = await db.query.events.findMany({
@@ -728,7 +729,7 @@ export async function summarizeCalendarToday(
       const allDay = Boolean((e.meta as { allDay?: unknown })?.allDay);
       const when =
         allDay || !e.occursAt ? "all day" : formatLocalHm(e.occursAt, timezone);
-      const gid = googleCalendarIdFromEvent(e);
+      const gid = opts?.includeIds ? googleCalendarIdFromEvent(e) : null;
       const idBit = gid ? ` [id:${gid}]` : "";
       return `• ${when} ${e.title ?? "(untitled)"}${idBit}`;
     })
@@ -890,6 +891,13 @@ export function matchesMutedPattern(
   });
 }
 
+export type BriefPriorityItem = {
+  index: number;
+  label: string;
+  detail: string;
+  kind: "calendar" | "mail" | "commitment";
+};
+
 export type UserPrefs = {
   mutedPatterns: string[];
   vipList: string[];
@@ -901,6 +909,9 @@ export type UserPrefs = {
   quietEndHm: string;
   lastMorningBriefDay: string | null;
   lastEveningBriefDay: string | null;
+  /** Last scheduled/on-demand brief priorities for 1/2/3/M replies. */
+  lastBriefItems: BriefPriorityItem[];
+  lastBriefMore: string | null;
 };
 
 const DEFAULT_PREFS: UserPrefs = {
@@ -914,6 +925,8 @@ const DEFAULT_PREFS: UserPrefs = {
   quietEndHm: "07:00",
   lastMorningBriefDay: null,
   lastEveningBriefDay: null,
+  lastBriefItems: [],
+  lastBriefMore: null,
 };
 
 function asHm(raw: unknown, fallback: string): string {
@@ -933,6 +946,7 @@ export function parseUserPrefs(raw: Record<string, unknown> | null | undefined):
   const vip = Array.isArray(raw?.vipList)
     ? raw!.vipList.map(String).map((s) => s.trim()).filter(Boolean)
     : [];
+  const lastBriefItems = parseBriefItems(raw?.lastBriefItems);
   return {
     mutedPatterns: muted,
     vipList: vip,
@@ -950,7 +964,36 @@ export function parseUserPrefs(raw: Record<string, unknown> | null | undefined):
       typeof raw?.lastEveningBriefDay === "string" && raw.lastEveningBriefDay
         ? raw.lastEveningBriefDay
         : null,
+    lastBriefItems,
+    lastBriefMore:
+      typeof raw?.lastBriefMore === "string" && raw.lastBriefMore.trim()
+        ? raw.lastBriefMore.trim().slice(0, 1500)
+        : null,
   };
+}
+
+function parseBriefItems(raw: unknown): BriefPriorityItem[] {
+  if (!Array.isArray(raw)) return [];
+  const out: BriefPriorityItem[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const o = item as Record<string, unknown>;
+    const index = Number(o.index);
+    const label = String(o.label ?? "").trim();
+    const detail = String(o.detail ?? "").trim();
+    const kind = String(o.kind ?? "mail");
+    if (!label || !Number.isFinite(index)) continue;
+    out.push({
+      index,
+      label: label.slice(0, 160),
+      detail: (detail || label).slice(0, 1200),
+      kind:
+        kind === "calendar" || kind === "commitment" || kind === "mail"
+          ? kind
+          : "mail",
+    });
+  }
+  return out.slice(0, 8);
 }
 
 export function prefsToJson(prefs: UserPrefs): Record<string, unknown> {
@@ -965,6 +1008,8 @@ export function prefsToJson(prefs: UserPrefs): Record<string, unknown> {
     quietEndHm: prefs.quietEndHm,
     lastMorningBriefDay: prefs.lastMorningBriefDay,
     lastEveningBriefDay: prefs.lastEveningBriefDay,
+    lastBriefItems: prefs.lastBriefItems,
+    lastBriefMore: prefs.lastBriefMore,
   };
 }
 
@@ -1040,6 +1085,60 @@ export async function summarizeRecentMail(
   userId: string,
   mutedPatterns: string[] = [],
 ): Promise<string> {
+  const rows = await listMailCandidates(db, userId, mutedPatterns, 12);
+  if (!rows.length) return "none yet";
+  return rows
+    .map((e) => `• ${shortActor(e.actor)} — ${cleanSubject(e.title)}`)
+    .join("\n");
+}
+
+function cleanSubject(title: string | null | undefined): string {
+  const t = (title ?? "(no subject)").replace(/\s+/g, " ").trim();
+  return t.slice(0, 100);
+}
+
+function shortActor(actor: string | null | undefined): string {
+  if (!actor) return "Someone";
+  const named = actor.match(/^"?([^"<]+?)"?\s*<[^>]+>/);
+  if (named?.[1]?.trim()) return named[1].trim().slice(0, 40);
+  if (actor.includes("@")) {
+    const email = (actor.match(/[\w.+-]+@[\w.-]+/)?.[0] ?? actor).toLowerCase();
+    const domain = email.split("@")[1] ?? "";
+    const brand = humanizeMailDomain(domain);
+    if (brand) return brand;
+    const local = email.split("@")[0] ?? "mail";
+    return local.replace(/[._-]+/g, " ").slice(0, 30);
+  }
+  return actor.slice(0, 40);
+}
+
+function humanizeMailDomain(domain: string): string | null {
+  const d = domain.toLowerCase().replace(/^mail\./, "").replace(/^email\./, "");
+  const map: Record<string, string> = {
+    "yes.bank.in": "Yes Bank",
+    "icicisecurities.com": "ICICI Securities",
+    "axisbank.com": "Axis Bank",
+    "easemytrip.com": "EaseMyTrip",
+    "practo.net": "Practo",
+    "practo.com": "Practo",
+    "getonecard.app": "OneCard",
+    "greenhouse-mail.io": "Greenhouse",
+    "us.greenhouse-mail.io": "Greenhouse",
+  };
+  if (map[d]) return map[d];
+  const root = d.split(".").slice(-2).join(".");
+  if (map[root]) return map[root];
+  const company = d.split(".")[0];
+  if (!company || company.length < 3) return null;
+  return company.charAt(0).toUpperCase() + company.slice(1);
+}
+
+async function listMailCandidates(
+  db: Db,
+  userId: string,
+  mutedPatterns: string[],
+  limit: number,
+) {
   const rows = await db.query.events.findMany({
     where: and(
       eq(events.userId, userId),
@@ -1051,7 +1150,7 @@ export async function summarizeRecentMail(
     orderBy: [desc(events.createdAt)],
     limit: 40,
   });
-  const filtered = rows
+  return rows
     .filter((e) => {
       const labels = (e.meta as { labelIds?: unknown })?.labelIds;
       if (Array.isArray(labels)) {
@@ -1065,24 +1164,34 @@ export async function summarizeRecentMail(
       }
       const hay = `${e.actor ?? ""} ${e.title ?? ""} ${e.snippet ?? ""}`;
       if (matchesMutedPattern(hay, mutedPatterns)) return false;
+      if (looksLikePromoMail(hay)) return false;
       return e.kind === "mail" || !e.kind;
     })
-    .slice(0, 12);
-  if (!filtered.length) return "none yet";
-  return filtered
-    .map(
-      (e) =>
-        `• ${shortActor(e.actor)} | ${e.title ?? "(no subject)"}`,
-    )
-    .join("\n");
+    .slice(0, limit);
 }
 
-function shortActor(actor: string | null | undefined): string {
-  if (!actor) return "?";
-  const m = actor.match(/<([^>]+)>/);
-  if (m?.[1]) return m[1];
-  if (actor.includes("@")) return actor.split(/\s+/).pop() ?? actor;
-  return actor.slice(0, 40);
+function looksLikePromoMail(hay: string): boolean {
+  const h = hay.toLowerCase();
+  return (
+    /\b(mubarak|newsletter|unsubscribe|% off|flat \d+%|travel budget|flash sale|limited time)\b/.test(
+      h,
+    ) || /\b(deal|offer|promo)\b/.test(h)
+  );
+}
+
+function mailPriorityScore(title: string, actor: string, vipList: string[]): number {
+  const t = title.toLowerCase();
+  const a = actor.toLowerCase();
+  let score = 20;
+  if (/\b(fail|failed|insufficient|overdue|action required|urgent|verify|confirm|receipt|invoice|payment|sip|margin|debit|credit)\b/.test(t)) {
+    score += 40;
+  }
+  if (/\b(application|interview|offer letter)\b/.test(t)) score += 25;
+  if (vipList.some((v) => v && (a.includes(v.toLowerCase()) || t.includes(v.toLowerCase())))) {
+    score += 35;
+  }
+  if (looksLikePromoMail(`${actor} ${title}`)) score -= 50;
+  return score;
 }
 
 export async function summarizeOpenCommitments(
@@ -1233,6 +1342,7 @@ export function buildFlatBriefDigest(opts: {
   recentMail: string;
   openCommitmentsSummary: string;
 }): string {
+  // Legacy fallback — prefer buildPriorityBriefPayload.
   const parts: string[] = [];
   const cal =
     opts.calendarToday === "none yet" ? "Calendar: none today." : `Calendar: ${opts.calendarToday}`;
@@ -1244,7 +1354,129 @@ export function buildFlatBriefDigest(opts: {
   if (opts.openCommitmentsSummary && opts.openCommitmentsSummary !== "none yet") {
     parts.push(`Open: ${opts.openCommitmentsSummary}`);
   }
-  return parts.join(" | ").replace(/\n/g, " • ");
+  return parts.join(" · ").replace(/\n/g, " · ");
+}
+
+/** Curated morning/evening brief: top 3 priorities + calendar line (WABA-safe flat + free-form). */
+export async function buildPriorityBriefPayload(
+  db: Db,
+  userId: string,
+  timezone: string,
+  mutedPatterns: string[] = [],
+  vipList: string[] = [],
+): Promise<{
+  digestFlat: string;
+  digestText: string;
+  items: BriefPriorityItem[];
+  quieterCount: number;
+  moreText: string | null;
+}> {
+  const { timeMin, timeMax } = localDayBoundsUtc(timezone);
+  type Cand = { score: number; label: string; detail: string; kind: BriefPriorityItem["kind"] };
+  const cands: Cand[] = [];
+
+  const calRows = await db.query.events.findMany({
+    where: and(
+      eq(events.userId, userId),
+      eq(events.source, "calendar"),
+      gte(events.occursAt, timeMin),
+      lte(events.occursAt, timeMax),
+    ),
+    orderBy: [asc(events.occursAt)],
+    limit: 8,
+  });
+
+  const commits = await db.query.commitments.findMany({
+    where: and(eq(commitments.userId, userId), eq(commitments.status, "open")),
+    orderBy: [asc(commitments.dueAt), desc(commitments.createdAt)],
+    limit: 8,
+  });
+  for (const c of commits) {
+    const due =
+      c.dueAt && c.dueAt >= timeMin && c.dueAt <= timeMax
+        ? formatLocalHm(c.dueAt, timezone)
+        : c.dueAt
+          ? formatLocalHm(c.dueAt, timezone)
+          : null;
+    const dueToday = Boolean(c.dueAt && c.dueAt >= timeMin && c.dueAt <= timeMax);
+    cands.push({
+      score: dueToday ? 85 : 45,
+      kind: "commitment",
+      label: (due ? `${due} ${c.title}` : c.title).slice(0, 80),
+      detail: [`Reminder: ${c.title}`, due ? `Due: ${due}` : "No due time set"].join("\n"),
+    });
+  }
+
+  const mailRows = await listMailCandidates(db, userId, mutedPatterns, 20);
+  for (const e of mailRows) {
+    const from = shortActor(e.actor);
+    const subject = cleanSubject(e.title);
+    const snippet = (e.snippet ?? "").replace(/\s+/g, " ").trim().slice(0, 220);
+    cands.push({
+      score: mailPriorityScore(subject, e.actor ?? "", vipList),
+      kind: "mail",
+      label: `${subject} — ${from}`.slice(0, 90),
+      detail: [`From: ${from}`, `Subject: ${subject}`, snippet ? `Preview: ${snippet}` : null]
+        .filter(Boolean)
+        .join("\n"),
+    });
+  }
+
+  cands.sort((a, b) => b.score - a.score);
+  const ranked = cands.filter((c) => c.score > 0);
+  const top = ranked.slice(0, 3);
+  const rest = ranked.slice(3, 8);
+  const quieterCount = Math.max(0, ranked.length - top.length);
+  const items: BriefPriorityItem[] = top.map((c, i) => ({
+    index: i + 1,
+    label: c.label,
+    detail: c.detail,
+    kind: c.kind,
+  }));
+  const moreText = rest.length
+    ? rest.map((c, i) => `${i + 4}) ${c.label}`).join("\n")
+    : null;
+
+  const calLine =
+    calRows.length === 0
+      ? "Calendar: none today."
+      : `Calendar: ${calRows
+          .slice(0, 3)
+          .map((e) => {
+            const allDay = Boolean((e.meta as { allDay?: unknown })?.allDay);
+            const when =
+              allDay || !e.occursAt ? "all day" : formatLocalHm(e.occursAt, timezone);
+            return `${when} ${(e.title ?? "Event").trim()}`;
+          })
+          .join("; ")}${calRows.length > 3 ? ` (+${calRows.length - 3})` : ""}.`;
+
+  const priorityLines = items.map((it) => `${it.index}) ${it.label}`);
+  const quietBit =
+    quieterCount > 0 ? ` +${quieterCount} quieter.` : items.length ? "" : " Inbox clear.";
+
+  const digestFlat = [
+    calLine,
+    items.length ? `Top ${items.length}: ${priorityLines.join(" · ")}.` : "No priorities flagged.",
+    quietBit.trim(),
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  const digestText = [
+    calLine.replace(/\.$/, ""),
+    "",
+    "PRIORITIES",
+    ...(items.length ? items.map((it) => `${it.index}) ${it.label}`) : ["• none needing you"]),
+    quieterCount > 0 ? "" : null,
+    quieterCount > 0 ? `+${quieterCount} quieter. Reply 1–3 for detail, M for more.` : "Reply 1–3 for detail.",
+  ]
+    .filter((l) => l != null)
+    .join("\n")
+    .trim();
+
+  return { digestFlat, digestText, items, quieterCount, moreText };
 }
 
 export type PendingActionKind =

@@ -17,6 +17,7 @@ import { handleInbound, type InboundMessage, type OrchestratorDeps } from "@amil
 import {
   addMutedPattern,
   applyGraphUpdates,
+  buildPriorityBriefPayload,
   claimWebhookMessage,
   createDb,
   createPendingAction,
@@ -196,11 +197,34 @@ function orchestratorDeps(): OrchestratorDeps {
       return {
         timezone,
         openCommitmentsSummary: await summarizeOpenCommitments(db, userId, timezone),
-        calendarToday: await summarizeCalendarToday(db, userId, timezone),
+        calendarToday: await summarizeCalendarToday(db, userId, timezone, {
+          includeIds: true,
+        }),
         recentMail: await summarizeRecentMail(db, userId, prefs.mutedPatterns),
         ignoredPatterns: prefs.mutedPatterns,
         vipList: prefs.vipList,
       };
+    },
+    buildPriorityBrief: async (userId) => {
+      const u = await getUserById(db, userId);
+      const prefs = await getUserPrefs(db, userId);
+      const timezone = u?.timezone ?? "Asia/Kolkata";
+      const brief = await buildPriorityBriefPayload(
+        db,
+        userId,
+        timezone,
+        prefs.mutedPatterns,
+        prefs.vipList,
+      );
+      await patchUserPrefs(db, userId, {
+        lastBriefItems: brief.items,
+        lastBriefMore: brief.moreText,
+      });
+      return { digestText: brief.digestText, items: brief.items };
+    },
+    getLastBriefItems: async (userId) => {
+      const prefs = await getUserPrefs(db, userId);
+      return { items: prefs.lastBriefItems, more: prefs.lastBriefMore };
     },
     briefingTemplates: {
       morning: settings.wabaTemplateMorning,
