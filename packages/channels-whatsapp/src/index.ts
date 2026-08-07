@@ -157,6 +157,12 @@ export const TEMPLATE_NAMES = {
 } as const;
 
 export {
+  downloadWhatsAppMedia,
+  getWhatsAppMediaMeta,
+  type WhatsAppMediaMeta,
+} from "./media.js";
+
+export {
   isPhoneAllowed,
   normalizePhoneKey,
   parseWhatsAppWebhook,

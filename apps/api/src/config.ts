@@ -21,6 +21,9 @@ export interface Settings {
   wabaTemplateMorning: string;
   wabaTemplateEvening: string;
   wabaTemplateAlert: string;
+  sarvamApiKey: string;
+  sarvamModel: string;
+  sarvamLanguageCode: string;
 }
 
 function req(name: string, fallback?: string): string {
@@ -64,6 +67,9 @@ export function loadSettings(): Settings {
     wabaTemplateMorning: req("WABA_TEMPLATE_MORNING", "morning_update"),
     wabaTemplateEvening: req("WABA_TEMPLATE_EVENING", "evening_wrap"),
     wabaTemplateAlert: req("WABA_TEMPLATE_ALERT", "priority_update"),
+    sarvamApiKey: req("SARVAM_API_KEY"),
+    sarvamModel: req("SARVAM_MODEL", "saarika:v2.5"),
+    sarvamLanguageCode: req("SARVAM_LANGUAGE_CODE", "unknown"),
   };
 }
 

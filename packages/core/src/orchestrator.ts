@@ -30,6 +30,7 @@ const STANDING: Record<string, string> = {
     "remind me … at 12:30 — schedule a ping in your timezone",
     "yes / cancel — confirm or drop a pending calendar/draft action",
     "eval log <note> — A/B quality note",
+    "Voice notes — speak; Amilo transcribes and acts like text",
     "help — show this message",
     "",
     "Talk normally for everything else.",

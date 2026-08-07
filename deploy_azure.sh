@@ -105,6 +105,9 @@ az webapp config appsettings set --name "$APP_NAME" --resource-group "$RESOURCE_
     GOOGLE_CLIENT_SECRET="${GOOGLE_CLIENT_SECRET:-}" \
     GOOGLE_REDIRECT_URI="${GOOGLE_REDIRECT_URI:-https://api.amilo.io/oauth/google/callback}" \
     TOKEN_ENCRYPTION_KEY="${TOKEN_ENCRYPTION_KEY:-}" \
+    SARVAM_API_KEY="${SARVAM_API_KEY:-}" \
+    SARVAM_MODEL="${SARVAM_MODEL:-saarika:v2.5}" \
+    SARVAM_LANGUAGE_CODE="${SARVAM_LANGUAGE_CODE:-unknown}" \
     DOCKER_ENABLE_CI=true \
     WEBSITE_PULL_IMAGE_OVER_VNET=false \
   >/dev/null

@@ -8,12 +8,14 @@ import { createGrokBrain } from "@amilo/brain-grok";
 import type { BrainPort } from "@amilo/brain-contract";
 import {
   createWhatsAppChannel,
+  downloadWhatsAppMedia,
   isPhoneAllowed,
   parseWhatsAppWebhook,
   verifyWebhookSignature,
   type WindowStore,
 } from "@amilo/channels-whatsapp";
 import { handleInbound, type InboundMessage, type OrchestratorDeps } from "@amilo/core";
+import { processVoiceNote } from "./voice/pipeline.js";
 import {
   addMutedPattern,
   applyGraphUpdates,
@@ -469,17 +471,80 @@ async function processInbound(rawJson: unknown): Promise<void> {
       },
     });
 
+    let content = parsed.content;
+    let voiceHeard: string | null = null;
+
     if (parsed.kind === "voice") {
-      const text = "Voice notes land in a later milestone — send text for now, or help.";
-      await sendAndLogOutbound(user.id, { text });
-      continue;
+      if (!parsed.mediaId) {
+        await sendAndLogOutbound(user.id, {
+          text: "Couldn't read that voice note — try again, or send text.",
+        });
+        continue;
+      }
+      if (!settings.sarvamApiKey) {
+        await sendAndLogOutbound(user.id, {
+          text: "Voice notes need Sarvam configured — send text for now, or help.",
+        });
+        continue;
+      }
+      try {
+        const { bytes } = await downloadWhatsAppMedia(
+          {
+            accessToken: settings.wabaAccessToken,
+            phoneNumberId: settings.wabaPhoneNumberId,
+            appSecret: settings.wabaAppSecret,
+          },
+          parsed.mediaId,
+        );
+        const result = await processVoiceNote(bytes, {
+          apiKey: settings.sarvamApiKey,
+          model: settings.sarvamModel,
+          languageCode: settings.sarvamLanguageCode,
+          ...(settings.sarvamModel.startsWith("saaras:")
+            ? { mode: "transcribe" as const }
+            : {}),
+        });
+        content = result.text.trim();
+        if (!content) {
+          await sendAndLogOutbound(user.id, {
+            text: "Couldn't make out that voice note — try again a bit clearer, or send text.",
+          });
+          continue;
+        }
+        voiceHeard = content;
+        await logMessage(db, {
+          userId: user.id,
+          channel: "whatsapp",
+          direction: "in",
+          kind: "voice_transcript",
+          bodyRef: content.slice(0, 500),
+          meta: {
+            waMessageId: parsed.messageId,
+            mediaId: parsed.mediaId,
+            asr: "sarvam",
+            model: settings.sarvamModel,
+          },
+        });
+      } catch (err) {
+        console.error(
+          JSON.stringify({
+            event: "voice_pipeline_failed",
+            userId: user.id,
+            error: err instanceof Error ? err.message : String(err),
+          }),
+        );
+        await sendAndLogOutbound(user.id, {
+          text: "Voice note failed to process — try again, or send text.",
+        });
+        continue;
+      }
     }
 
     const inbound: InboundMessage = {
       userId: user.id,
       channel: "whatsapp",
-      kind: parsed.kind,
-      content: parsed.content,
+      kind: parsed.kind === "voice" ? "text" : parsed.kind,
+      content,
       messageId: parsed.messageId,
       ts: parsed.timestamp,
       ...(parsed.mediaId ? { mediaRef: parsed.mediaId } : {}),
@@ -494,14 +559,22 @@ async function processInbound(rawJson: unknown): Promise<void> {
         userId: user.id,
         phone: parsed.phoneE164,
         kind: parsed.kind,
-        chars: parsed.content.length,
+        chars: content.length,
         brain: brainLabel,
+        ...(voiceHeard ? { transcript: voiceHeard.slice(0, 120) } : {}),
         ...(parsed.replyToMessageId ? { replyTo: parsed.replyToMessageId } : {}),
       }),
     );
 
     try {
-      const outbound = await handleInbound(inbound, orchestratorDeps());
+      let outbound = await handleInbound(inbound, orchestratorDeps());
+      // LifeOS lesson: echo Heard in the first reply — no separate transcript confirm.
+      if (voiceHeard && outbound.length) {
+        const first = outbound[0];
+        if (first && "text" in first && first.text && !first.text.startsWith("Heard:")) {
+          outbound = [{ text: `Heard: "${voiceHeard}"\n\n${first.text}` }, ...outbound.slice(1)];
+        }
+      }
 
       for (const msg of outbound) {
         await sendAndLogOutbound(user.id, msg);
@@ -543,7 +616,8 @@ app.get("/health", async (c) => {
     brain: brainLabel,
     google: googleOk ? "configured" : "off",
     db: dbOk ? "up" : "down",
-    milestone: "M5",
+    voice: settings.sarvamApiKey ? "sarvam" : "off",
+    milestone: "M5.1",
   });
 });
 
