@@ -1084,11 +1084,24 @@ export async function summarizeRecentMail(
   db: Db,
   userId: string,
   mutedPatterns: string[] = [],
+  vipList: string[] = [],
 ): Promise<string> {
-  const rows = await listMailCandidates(db, userId, mutedPatterns, 12);
-  if (!rows.length) return "none yet";
-  return rows
-    .map((e) => `• ${shortActor(e.actor)} — ${cleanSubject(e.title)}`)
+  const rows = await listMailCandidates(db, userId, mutedPatterns, 20, {
+    excludePassive: true,
+  });
+  const scored = rows
+    .map((e) => {
+      const title = (e.title ?? "").trim();
+      const snippet = (e.snippet ?? "").replace(/\s+/g, " ").trim().slice(0, 280);
+      const score = mailPriorityScore(title, e.actor ?? "", vipList, snippet);
+      return { e, score };
+    })
+    .filter((r) => r.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 8);
+  if (!scored.length) return "none yet";
+  return scored
+    .map(({ e }) => `• ${shortActor(e.actor)} — ${cleanSubject(e.title)}`)
     .join("\n");
 }
 
@@ -1174,24 +1187,44 @@ async function listMailCandidates(
 
 function looksLikePromoMail(hay: string): boolean {
   const h = hay.toLowerCase();
+  if (/\boffer letter\b/.test(h)) return false;
   return (
     /\b(mubarak|newsletter|unsubscribe|% off|flat \d+%|travel budget|flash sale|limited time)\b/.test(
       h,
-    ) || /\b(deal|offer|promo|latest updates on stocks)\b/.test(h)
+    ) || /\b(deal|special offer|promo|latest updates on stocks)\b/.test(h) ||
+    (/\boffer\b/.test(h) && /\b(discount|sale|coupon|deal)\b/.test(h))
   );
 }
 
-/** FYI bank/broker/app noise — no user action needed. */
+/** Recruiting status FYI (e.g. Greenhouse “we hired for the role”) — no action. */
+export function isFyiRecruitingMail(hay: string): boolean {
+  const h = hay.toLowerCase();
+  return (
+    /\b(recently )?hired for\b/.test(h) ||
+    /\bwe (have |recently )?hired\b/.test(h) ||
+    /\b(position|role|requisition) (has been |was )?filled\b/.test(h) ||
+    /\bdecided to (move|go) (forward )?with (another|other)\b/.test(h) ||
+    /\bnot moving forward (with )?your (application|candidacy)\b/.test(h) ||
+    /\bpursue other candidates\b/.test(h) ||
+    /\bapplication was unsuccessful\b/.test(h) ||
+    /\bother candidates\b/.test(h) && /\b(moving forward|selected|chosen)\b/.test(h)
+  );
+}
+
+/** FYI bank/broker/app/recruiting noise — no user action needed. */
 export function isPassiveTransactionalMail(hay: string): boolean {
   const h = hay.toLowerCase();
+  if (isFyiRecruitingMail(h)) return true;
   if (isActionDemandingMail(h)) return false;
   return (
     /\bupi\s+debit\b/.test(h) ||
     /\bdebit alert\b/.test(h) ||
     /\bcredit alert\b/.test(h) ||
-    /\btransaction (alert|notification|successful)\b/.test(h) ||
+    /\btransaction (alert|notification|successful|summary)\b/.test(h) ||
     (/\b(spent|paid|debited|credited)\b/.test(h) && /\balert\b/.test(h)) ||
     /\bspent on (credit )?card\b/.test(h) ||
+    /\b(inr|usd|eur|gbp|rs\.?)\s*[\d,]+\.?\d*\s+spent\b/.test(h) ||
+    /\bcard (transaction|purchase)\b/.test(h) && !/\b(due|failed|declined)\b/.test(h) ||
     /\bautopay\b/.test(h) && /\bactivated\b/.test(h) ||
     /\border and trade confirmation/.test(h) ||
     /\btrade confirmation/.test(h) ||
@@ -1210,6 +1243,7 @@ export function isPassiveTransactionalMail(hay: string): boolean {
 /** Needs the user to do something (pay, fix, reply, complete, show up). */
 export function isActionDemandingMail(hay: string): boolean {
   const h = hay.toLowerCase();
+  if (isFyiRecruitingMail(h)) return false;
   return (
     /\bappointment reminder\b/.test(h) ||
     (/\b(bill|payment|emi|sip instalment|sip installment|installment)\b/.test(h) &&
@@ -1224,9 +1258,12 @@ export function isActionDemandingMail(hay: string): boolean {
       /\b(kyc|details|contact|profile|account|document)\b/.test(h)) ||
     /\b(overdue|past due|due (today|tomorrow|on|by))\b/.test(h) ||
     (/\b(invoice|payment)\b/.test(h) && /\b(due|pay now|outstanding|unpaid)\b/.test(h)) ||
-    (/\b(credit )?card (bill|statement)\b/.test(h) &&
-      /\b(due|pay|outstanding|generated)\b/.test(h)) ||
-    /\b(application|interview|offer letter|schedule a call)\b/.test(h)
+    (/\b(credit )?card bill\b/.test(h) && /\b(due|pay|outstanding)\b/.test(h)) ||
+    (/\b(credit )?card statement\b/.test(h) && /\b(due|pay|outstanding)\b/.test(h)) ||
+    /\b(interview (invite|invitation|scheduled)|offer letter)\b/.test(h) ||
+    /\bschedule (a|an) (interview|call)\b/.test(h) ||
+    (/\byour application\b/.test(h) &&
+      /\b(incomplete|complete|deadline|submit|action|review|next step)\b/.test(h))
   );
 }
 
@@ -1347,6 +1384,8 @@ export function mailPriorityScore(
   );
   if (appt) return appt.score;
 
+  if (isFyiRecruitingMail(hay)) return 0;
+
   let score = 0;
   if (isActionDemandingMail(hay)) {
     score += 70;
@@ -1354,8 +1393,9 @@ export function mailPriorityScore(
     if (/\bbill\b/.test(t) && /\bdue\b/.test(t)) score += 15;
     if (/\b(amount due|minimum due|payment due)\b/.test(hay.toLowerCase())) score += 15;
   }
-  if (/\b(application|interview|offer letter)\b/.test(t)) score += 55;
-  if (isVipMail(hay, vipList)) score += 40;
+  if (/\b(interview (invite|invitation|scheduled)|offer letter)\b/.test(t)) score += 55;
+  // VIP boosts only already-actionable mail — never surfaces FYI alone.
+  if (score > 0 && isVipMail(hay, vipList)) score += 40;
 
   // Generic personal mail with no action signal stays out of top brief.
   return score;

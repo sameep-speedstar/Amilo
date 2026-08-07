@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
   isActionDemandingMail,
+  isFyiRecruitingMail,
   isPassiveTransactionalMail,
   mailPriorityScore,
   parseAppointmentReminder,
@@ -99,7 +100,28 @@ describe("brief mail action filter", () => {
     assert.ok(a.clockSort < c.clockSort);
   });
 
-  it("keeps credit card bill due phrasing", () => {
+  it("drops Greenhouse hire FYI even when subject says Application", () => {
+    const title = "Anthropic Application for Enterprise Account Executive, Industries";
+    const snippet =
+      "Hi Sameep, Thank you so much for your interest in Anthropic and for applying to the Enterprise Account Executive, Industries role. We wanted to let you know that we recently hired for the Enterprise";
+    const hay = `${title} ${snippet}`;
+    assert.equal(isFyiRecruitingMail(hay), true);
+    assert.equal(isActionDemandingMail(hay), false);
+    assert.equal(isPassiveTransactionalMail(`greenhouse ${hay}`), true);
+    assert.equal(
+      mailPriorityScore(title, "no-reply@us.greenhouse-mail.io", [], snippet),
+      0,
+    );
+  });
+
+  it("keeps interview invite / offer letter as actionable", () => {
+    assert.ok(
+      mailPriorityScore("Interview invitation — Tuesday 2pm", "recruiter@acme.com") >= 70,
+    );
+    assert.ok(mailPriorityScore("Your offer letter from Acme", "hr@acme.com") >= 70);
+  });
+
+  it("keeps credit card bill due phrasing and drops spend alerts", () => {
     assert.ok(
       mailPriorityScore("Your Axis Bank Credit Card bill is due today", "alerts@axis.bank.in") >=
         70,
@@ -114,6 +136,17 @@ describe("brief mail action filter", () => {
     );
     assert.equal(
       mailPriorityScore("INR 1050 spent on credit card no. XX9396", "alerts@axis.bank.in"),
+      0,
+    );
+    assert.equal(
+      mailPriorityScore("USD 5 spent on credit card no. XX9396", "alerts@axis.bank.in"),
+      0,
+    );
+  });
+
+  it("does not surface VIP-only FYI", () => {
+    assert.equal(
+      mailPriorityScore("Weekly digest", "ceo@acme.com", ["ceo@acme.com"], "FYI only"),
       0,
     );
   });

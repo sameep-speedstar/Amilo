@@ -200,7 +200,12 @@ function orchestratorDeps(): OrchestratorDeps {
         calendarToday: await summarizeCalendarToday(db, userId, timezone, {
           includeIds: true,
         }),
-        recentMail: await summarizeRecentMail(db, userId, prefs.mutedPatterns),
+        recentMail: await summarizeRecentMail(
+          db,
+          userId,
+          prefs.mutedPatterns,
+          prefs.vipList,
+        ),
         ignoredPatterns: prefs.mutedPatterns,
         vipList: prefs.vipList,
       };

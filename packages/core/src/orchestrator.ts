@@ -23,7 +23,7 @@ const STANDING: Record<string, string> = {
     "mute <phrase> — hide matching mail from sync/brief",
     "unmute <phrase> / mutes — manage muted phrases",
     "sync — pull mail + today's calendar from all linked accounts",
-    "brief / morning / evening — on-demand briefing",
+    "brief — on-demand briefing (also: latest brief please, morning, evening)",
     "briefs — scheduled AM/PM (on/off, morning 7:30, evening 8pm)",
     "quiet hours 22:00-07:00 — set quiet window",
     "timezone — show or set your local time (travel: I'm in Dubai)",
@@ -37,6 +37,36 @@ const STANDING: Record<string, string> = {
   pause: "Paused. Your data stays. Send resume when you want me back.",
   resume: "Back. Watching quietly again.",
 };
+
+/** On-demand briefing intent — exact commands + natural phrasing. */
+export function isBriefRequest(text: string): boolean {
+  const t = text.trim().toLowerCase().replace(/\s+/g, " ");
+  if (!t) return false;
+  if (t === "brief" || t === "briefing" || t === "morning" || t === "evening") return true;
+  // Avoid "briefly explain…"
+  if (/\bbriefly\b/.test(t)) return false;
+  if (
+    /\b(morning update|evening wrap|daily brief(ing)?|my brief(ing)?)\b/.test(t)
+  ) {
+    return true;
+  }
+  if (
+    /\b(latest|today'?s|this morning'?s|this evening'?s)\s+(brief|briefing)\b/.test(t)
+  ) {
+    return true;
+  }
+  if (/\b(brief|briefing)\s+(please|now|today)\b/.test(t)) return true;
+  if (
+    /^(send|give|show|get|pull)\s+(me\s+)?(a\s+|the\s+|my\s+|latest\s+)?(brief|briefing)\b/.test(
+      t,
+    )
+  ) {
+    return true;
+  }
+  // Bare "brief please" / "briefing please"
+  if (/^(the\s+)?(brief|briefing)(\s+please)?$/.test(t)) return true;
+  return false;
+}
 
 function strPayload(v: unknown): string {
   return v == null ? "" : String(v).trim();
@@ -713,13 +743,8 @@ export async function handleInbound(
     }
   }
 
-  // On-demand brief (exact commands + natural "latest brief please").
-  if (
-    lower === "brief" ||
-    lower === "morning" ||
-    lower === "evening" ||
-    /\b(brief|briefing|morning update|evening wrap)\b/i.test(text)
-  ) {
+  // On-demand brief — same curated path for exact + natural phrasing.
+  if (isBriefRequest(text)) {
     if (!deps.isGoogleConnected || !deps.getBriefingContext || !deps.syncGoogle) {
       return [{ text: "Briefings need Google sync — send: connect google personal" }];
     }
