@@ -58,4 +58,34 @@ describe("brief mail action filter", () => {
       ) > 0,
     );
   });
+
+  it("surfaces today's dental appointment reminders", () => {
+    const title =
+      "Appointment Reminder: Fri, 07 Aug 2026 04:30 pm @ LITTLE PEARLS ® Dental Clinic";
+    assert.equal(isActionDemandingMail(title), true);
+    const score = mailPriorityScore(title, "no-reply@practo.net", [], "", {
+      timezone: "Asia/Kolkata",
+      now: new Date("2026-08-07T03:00:00.000Z"),
+    });
+    assert.ok(score >= 90, `score=${score}`);
+  });
+
+  it("keeps credit card bill due phrasing", () => {
+    assert.ok(
+      mailPriorityScore("Your Axis Bank Credit Card bill is due today", "alerts@axis.bank.in") >=
+        70,
+    );
+    assert.ok(
+      mailPriorityScore(
+        "Payment due reminder",
+        "onecard",
+        [],
+        "Total amount due INR 12000. Payment due date 07-Aug-2026",
+      ) >= 70,
+    );
+    assert.equal(
+      mailPriorityScore("INR 1050 spent on credit card no. XX9396", "alerts@axis.bank.in"),
+      0,
+    );
+  });
 });

@@ -1191,6 +1191,8 @@ export function isPassiveTransactionalMail(hay: string): boolean {
     /\bcredit alert\b/.test(h) ||
     /\btransaction (alert|notification|successful)\b/.test(h) ||
     (/\b(spent|paid|debited|credited)\b/.test(h) && /\balert\b/.test(h)) ||
+    /\bspent on (credit )?card\b/.test(h) ||
+    /\bautopay\b/.test(h) && /\bactivated\b/.test(h) ||
     /\border and trade confirmation/.test(h) ||
     /\btrade confirmation/.test(h) ||
     /\bprovisional margin statement\b/.test(h) ||
@@ -1205,12 +1207,16 @@ export function isPassiveTransactionalMail(hay: string): boolean {
   );
 }
 
-/** Needs the user to do something (pay, fix, reply, complete). */
+/** Needs the user to do something (pay, fix, reply, complete, show up). */
 export function isActionDemandingMail(hay: string): boolean {
   const h = hay.toLowerCase();
   return (
+    /\bappointment reminder\b/.test(h) ||
     (/\b(bill|payment|emi|sip instalment|sip installment|installment)\b/.test(h) &&
       /\b(due|overdue|pending|failed|fail|insufficient|unpaid|outstanding)\b/.test(h)) ||
+    /\b(amount due|minimum (amount )?due|payment due( date)?|total (amount )?due|last date to pay|pay by)\b/.test(
+      h,
+    ) ||
     /\b(failed|failure|insufficient balance|could(?:n't| not) process)\b/.test(h) ||
     /\b(action required|action needed|immediate action)\b/.test(h) ||
     /\bplease (verify|update|confirm|add|complete|respond|reply)\b/.test(h) ||
@@ -1218,8 +1224,61 @@ export function isActionDemandingMail(hay: string): boolean {
       /\b(kyc|details|contact|profile|account|document)\b/.test(h)) ||
     /\b(overdue|past due|due (today|tomorrow|on|by))\b/.test(h) ||
     (/\b(invoice|payment)\b/.test(h) && /\b(due|pay now|outstanding|unpaid)\b/.test(h)) ||
+    (/\b(credit )?card (bill|statement)\b/.test(h) &&
+      /\b(due|pay|outstanding|generated)\b/.test(h)) ||
     /\b(application|interview|offer letter|schedule a call)\b/.test(h)
   );
+}
+
+/** Parse Practo-style "Appointment Reminder: Fri, 07 Aug 2026 04:30 pm @ Clinic". */
+export function parseAppointmentReminder(
+  title: string,
+  timeZone: string,
+  now: Date = new Date(),
+): { label: string; detail: string; score: number; dayOffset: number } | null {
+  if (!/appointment reminder/i.test(title)) return null;
+  const m = title.match(
+    /appointment reminder:\s*(.+?)\s+(\d{1,2}:\d{2}\s*[ap]m)\s*@\s*(.+)$/i,
+  );
+  const whenBlob = m?.[1]?.trim() ?? "";
+  const clock = m?.[2]?.trim() ?? "";
+  const place = (m?.[3] ?? "Appointment").replace(/\s+/g, " ").trim();
+  const dayMatch = whenBlob.match(/(\d{1,2})\s+([A-Za-z]{3,9})\s+(\d{4})/);
+  let dayOffset = 0;
+  let dayScore = 55;
+  if (dayMatch) {
+    const dayNum = Number(dayMatch[1]);
+    const mon = dayMatch[2]!;
+    const year = Number(dayMatch[3]);
+    const months: Record<string, number> = {
+      jan: 0, january: 0, feb: 1, february: 1, mar: 2, march: 2,
+      apr: 3, april: 3, may: 4, jun: 5, june: 5, jul: 6, july: 6,
+      aug: 7, august: 7, sep: 8, sept: 8, september: 8,
+      oct: 9, october: 9, nov: 10, november: 10, dec: 11, december: 11,
+    };
+    const mi = months[mon.toLowerCase()];
+    if (mi != null && Number.isFinite(dayNum) && Number.isFinite(year)) {
+      const { day: todayYmd } = localDayBoundsUtc(timeZone, now);
+      const apptYmd = `${year}-${String(mi + 1).padStart(2, "0")}-${String(dayNum).padStart(2, "0")}`;
+      const today = Date.parse(`${todayYmd}T12:00:00Z`);
+      const appt = Date.parse(`${apptYmd}T12:00:00Z`);
+      dayOffset = Math.round((appt - today) / 86_400_000);
+      if (dayOffset < 0 || dayOffset > 2) return null; // only today / tomorrow / +2
+      dayScore = dayOffset === 0 ? 95 : dayOffset === 1 ? 85 : 70;
+    }
+  }
+  const whenLabel = [clock, dayOffset === 0 ? "today" : dayOffset === 1 ? "tomorrow" : null]
+    .filter(Boolean)
+    .join(" ");
+  const clinic = place.replace(/\s*®\s*/g, " ").trim();
+  return {
+    score: dayScore,
+    label: `${whenLabel || "Appointment"} — ${clinic}`.slice(0, 90),
+    detail: [`Appointment: ${clinic}`, whenLabel ? `When: ${whenLabel}` : null, title]
+      .filter(Boolean)
+      .join("\n"),
+    dayOffset,
+  };
 }
 
 function isVipMail(hay: string, vipList: string[]): boolean {
@@ -1239,17 +1298,26 @@ export function mailPriorityScore(
   actor: string,
   vipList: string[] = [],
   snippet = "",
+  opts?: { timezone?: string; now?: Date },
 ): number {
   const hay = `${actor} ${title} ${snippet}`;
   const t = title.toLowerCase();
   if (looksLikePromoMail(hay)) return 0;
   if (isPassiveTransactionalMail(hay)) return 0;
 
+  const appt = parseAppointmentReminder(
+    title,
+    opts?.timezone ?? "Asia/Kolkata",
+    opts?.now,
+  );
+  if (appt) return appt.score;
+
   let score = 0;
   if (isActionDemandingMail(hay)) {
     score += 70;
     if (/\b(failed|insufficient|overdue|due today)\b/.test(t)) score += 20;
     if (/\bbill\b/.test(t) && /\bdue\b/.test(t)) score += 15;
+    if (/\b(amount due|minimum due|payment due)\b/.test(hay.toLowerCase())) score += 15;
   }
   if (/\b(application|interview|offer letter)\b/.test(t)) score += 55;
   if (isVipMail(hay, vipList)) score += 40;
@@ -1471,14 +1539,29 @@ export async function buildPriorityBriefPayload(
     });
   }
 
-  const mailRows = await listMailCandidates(db, userId, mutedPatterns, 25, {
+  const mailRows = await listMailCandidates(db, userId, mutedPatterns, 30, {
     excludePassive: true,
   });
+  const apptTodayBits: string[] = [];
   for (const e of mailRows) {
     const from = shortActor(e.actor);
     const subject = cleanSubject(e.title);
+    const fullTitle = (e.title ?? "").trim();
     const snippet = (e.snippet ?? "").replace(/\s+/g, " ").trim().slice(0, 220);
-    const score = mailPriorityScore(subject, e.actor ?? "", vipList, snippet);
+    const appt = parseAppointmentReminder(fullTitle, timezone);
+    if (appt) {
+      if (appt.dayOffset === 0) apptTodayBits.push(appt.label);
+      cands.push({
+        score: appt.score,
+        kind: "calendar",
+        label: appt.label,
+        detail: appt.detail,
+      });
+      continue;
+    }
+    const score = mailPriorityScore(fullTitle, e.actor ?? "", vipList, snippet, {
+      timezone,
+    });
     if (score <= 0) continue;
     cands.push({
       score,
@@ -1491,7 +1574,15 @@ export async function buildPriorityBriefPayload(
   }
 
   cands.sort((a, b) => b.score - a.score);
-  const ranked = cands.filter((c) => c.score > 0);
+  const seenLabels = new Set<string>();
+  const ranked: Cand[] = [];
+  for (const c of cands) {
+    if (c.score <= 0) continue;
+    const key = c.label.toLowerCase().replace(/\s+/g, " ").slice(0, 80);
+    if (seenLabels.has(key)) continue;
+    seenLabels.add(key);
+    ranked.push(c);
+  }
   const top = ranked.slice(0, 3);
   const rest = ranked.slice(3, 8);
   const quieterCount = Math.max(0, ranked.length - top.length);
@@ -1505,18 +1596,19 @@ export async function buildPriorityBriefPayload(
     ? rest.map((c, i) => `${i + 4}) ${c.label}`).join("\n")
     : null;
 
+  const calBits = [
+    ...calRows.map((e) => {
+      const allDay = Boolean((e.meta as { allDay?: unknown })?.allDay);
+      const when =
+        allDay || !e.occursAt ? "all day" : formatLocalHm(e.occursAt, timezone);
+      return `${when} ${(e.title ?? "Event").trim()}`;
+    }),
+    ...apptTodayBits,
+  ];
   const calLine =
-    calRows.length === 0
+    calBits.length === 0
       ? "Calendar: none today."
-      : `Calendar: ${calRows
-          .slice(0, 3)
-          .map((e) => {
-            const allDay = Boolean((e.meta as { allDay?: unknown })?.allDay);
-            const when =
-              allDay || !e.occursAt ? "all day" : formatLocalHm(e.occursAt, timezone);
-            return `${when} ${(e.title ?? "Event").trim()}`;
-          })
-          .join("; ")}${calRows.length > 3 ? ` (+${calRows.length - 3})` : ""}.`;
+      : `Calendar: ${calBits.slice(0, 4).join("; ")}${calBits.length > 4 ? ` (+${calBits.length - 4})` : ""}.`;
 
   const priorityLines = items.map((it) => `${it.index}) ${it.label}`);
   const quietBit =
