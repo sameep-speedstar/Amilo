@@ -204,6 +204,16 @@ export interface OrchestratorDeps {
       endIso: string | null;
     }>
   >;
+  /** Overlap check + next free slot for calendar_create proposals. */
+  checkCalendarConflict?: (
+    userId: string,
+    opts: { startIso: string; endIso: string; timezone: string },
+  ) => Promise<{
+    clear: boolean;
+    conflictNote: string | null;
+    suggested: { startIso: string; endIso: string } | null;
+    conflictTitle: string | null;
+  }>;
   createPending?: (opts: {
     userId: string;
     kind: string;
@@ -1094,6 +1104,42 @@ export async function handleInbound(
         }
       }
 
+      let conflictNote: string | null = null;
+      if (kind === "calendar_create" && deps.checkCalendarConflict) {
+        const startIso = strPayload(payload.start) || strPayload(payload.startIso);
+        const endIso = strPayload(payload.end) || strPayload(payload.endIso);
+        if (startIso && endIso) {
+          try {
+            const conflict = await deps.checkCalendarConflict(msg.userId, {
+              startIso,
+              endIso,
+              timezone: briefCtx.timezone,
+            });
+            conflictNote = conflict.conflictNote;
+            if (!conflict.clear && conflict.suggested) {
+              payload.start = conflict.suggested.startIso;
+              payload.end = conflict.suggested.endIso;
+              payload.startIso = conflict.suggested.startIso;
+              payload.endIso = conflict.suggested.endIso;
+              payload.conflictAdjusted = true;
+              payload.originalStart = startIso;
+              payload.originalEnd = endIso;
+              if (conflict.conflictTitle) payload.conflictWith = conflict.conflictTitle;
+            } else if (!conflict.clear) {
+              payload.conflictWarning = true;
+              if (conflict.conflictTitle) payload.conflictWith = conflict.conflictTitle;
+            }
+          } catch (err) {
+            console.error(
+              JSON.stringify({
+                event: "calendar_conflict_check_failed",
+                error: err instanceof Error ? err.message : String(err),
+              }),
+            );
+          }
+        }
+      }
+
       // Resolve Google event id for cancel/update from synced calendar rows.
       if (
         (kind === "calendar_cancel" || kind === "calendar_update") &&
@@ -1232,6 +1278,7 @@ export async function handleInbound(
       return [
         {
           text: [
+            ...(conflictNote ? [conflictNote, ""] : []),
             `Proposed (${pending.kind}):`,
             pending.summary,
             "",

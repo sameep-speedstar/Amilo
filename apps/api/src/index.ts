@@ -14,7 +14,15 @@ import {
   verifyWebhookSignature,
   type WindowStore,
 } from "@amilo/channels-whatsapp";
-import { handleInbound, type InboundMessage, type OrchestratorDeps } from "@amilo/core";
+import {
+  checkSlotConflicts,
+  formatConflictProposalNote,
+  handleInbound,
+  localDayBoundsUtc,
+  type CalendarBlock,
+  type InboundMessage,
+  type OrchestratorDeps,
+} from "@amilo/core";
 import { processVoiceNote } from "./voice/pipeline.js";
 import {
   addMutedPattern,
@@ -68,7 +76,6 @@ import { ensureAccessToken, syncGoogleForUser } from "./googleSync.js";
 import { startBriefWorker } from "./briefWorker.js";
 import { executePendingAction, rejectPendingAction } from "./pendingExecute.js";
 import { startReminderWorker } from "./reminders.js";
-import { localDayBoundsUtc } from "@amilo/core";
 
 loadEnv();
 
@@ -353,6 +360,68 @@ function orchestratorDeps(): OrchestratorDeps {
       }
       matches = await findCalendarEventMatches(db, userId, opts);
       return matches;
+    },
+    checkCalendarConflict: async (userId, opts) => {
+      const start = new Date(opts.startIso);
+      const end = new Date(opts.endIso);
+      if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
+        return { clear: true, conflictNote: null, suggested: null, conflictTitle: null };
+      }
+      const blocks: CalendarBlock[] = [];
+      const rangeStart = localDayBoundsUtc(opts.timezone, start).timeMin;
+      const rangeEnd = new Date(start.getTime() + 3 * 86_400_000);
+
+      if (googleCfg) {
+        const accounts = await listGoogleAccounts(db, userId);
+        for (const acct of accounts) {
+          try {
+            const { accessToken } = await ensureAccessToken(db, googleCfg, acct);
+            const live = await listCalendarRange(
+              accessToken,
+              rangeStart,
+              rangeEnd,
+              opts.timezone,
+            );
+            for (const ev of live) {
+              if (ev.status === "cancelled" || !ev.startIso) continue;
+              const evStart = new Date(ev.startIso);
+              const evEnd = ev.endIso
+                ? new Date(ev.endIso)
+                : new Date(evStart.getTime() + 60 * 60 * 1000);
+              if (Number.isNaN(evStart.getTime()) || Number.isNaN(evEnd.getTime())) continue;
+              blocks.push({
+                title: (ev.summary ?? "Event").trim() || "Event",
+                start: evStart,
+                end: evEnd,
+                allDay: ev.allDay,
+              });
+            }
+          } catch (err) {
+            console.error(
+              JSON.stringify({
+                event: "calendar_conflict_live_error",
+                userId,
+                label: acct.label,
+                error: err instanceof Error ? err.message : String(err),
+              }),
+            );
+          }
+        }
+      }
+
+      const result = checkSlotConflicts(blocks, start, end, opts.timezone);
+      const conflictNote = formatConflictProposalNote(result, opts.timezone);
+      return {
+        clear: result.clear,
+        conflictNote,
+        suggested: result.suggested
+          ? {
+              startIso: result.suggested.start.toISOString(),
+              endIso: result.suggested.end.toISOString(),
+            }
+          : null,
+        conflictTitle: result.conflicts[0]?.title ?? null,
+      };
     },
     createPending: async (opts) => {
       const row = await createPendingAction(db, {

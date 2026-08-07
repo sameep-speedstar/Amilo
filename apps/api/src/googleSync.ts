@@ -1,6 +1,6 @@
 import {
   isPromotionalMail,
-  listCalendarToday,
+  listCalendarRange,
   listRecentGmail,
   refreshAccessToken,
   type GoogleOAuthConfig,
@@ -91,7 +91,10 @@ async function syncOneAccount(
     mail += 1;
   }
 
-  const cal = await listCalendarToday(accessToken, timezone);
+  // Today + next 2 days so conflict checks / tomorrow blocks stay in sync.
+  const { timeMin, timeMax: todayMax } = localDayBoundsUtc(timezone);
+  const timeMax = new Date(todayMax.getTime() + 2 * 86_400_000);
+  const cal = await listCalendarRange(accessToken, timeMin, timeMax, timezone);
   let calendar = 0;
   const keepGoogleIds = new Set<string>();
   for (const ev of cal) {
@@ -117,7 +120,6 @@ async function syncOneAccount(
     calendar += 1;
   }
 
-  const { timeMin, timeMax } = localDayBoundsUtc(timezone);
   await pruneMissingCalendarEvents(db, {
     userId,
     accountId: acct.id,

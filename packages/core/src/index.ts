@@ -7,6 +7,15 @@ export type {
   User,
   UserStatus,
 } from "./domain.js";
+export {
+  checkSlotConflicts,
+  findNextFreeSlot,
+  findOverlappingBlocks,
+  formatConflictProposalNote,
+  intervalsOverlap,
+  type CalendarBlock,
+  type ConflictCheckResult,
+} from "./calendarConflict.js";
 export { handleInbound, normalizeGoogleLabel, isBriefRequest, type OrchestratorDeps } from "./orchestrator.js";
 export { looksLikeNewActionIntent, applyPendingEditPatch } from "./orchestrator.js";
 export {
