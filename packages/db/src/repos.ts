@@ -1236,7 +1236,8 @@ export function isPassiveTransactionalMail(hay: string): boolean {
     /\breceipt from\b/.test(h) ||
     /\bpayment (received|successful|confirmed)\b/.test(h) ||
     /\b(otp|one[- ]time password|passcode)\b/.test(h) ||
-    /\b(shipping|shipped|out for delivery|delivered)\b/.test(h)
+    /\b(shipping|shipped|out for delivery|delivered)\b/.test(h) ||
+    /\badd alternate (contact|details)\b/.test(h)
   );
 }
 
@@ -1255,7 +1256,8 @@ export function isActionDemandingMail(hay: string): boolean {
     /\b(action required|action needed|immediate action)\b/.test(h) ||
     /\bplease (verify|update|confirm|add|complete|respond|reply)\b/.test(h) ||
     (/\b(verify|update|add|complete)\b/.test(h) &&
-      /\b(kyc|details|contact|profile|account|document)\b/.test(h)) ||
+      /\b(kyc|details|contact|profile|account|document)\b/.test(h) &&
+      !/\badd alternate (contact|details)\b/.test(h)) ||
     /\b(overdue|past due|due (today|tomorrow|on|by))\b/.test(h) ||
     (/\b(invoice|payment)\b/.test(h) && /\b(due|pay now|outstanding|unpaid)\b/.test(h)) ||
     (/\b(credit )?card bill\b/.test(h) && /\b(due|pay|outstanding)\b/.test(h)) ||
@@ -1564,13 +1566,14 @@ export function buildFlatBriefDigest(opts: {
   return parts.join(" · ").replace(/\n/g, " · ");
 }
 
-/** Curated morning/evening brief: top 3 priorities + calendar line (WABA-safe flat + free-form). */
+/** Curated morning/evening brief: top 3 priorities + calendar (WABA flat + free-form bullets). */
 export async function buildPriorityBriefPayload(
   db: Db,
   userId: string,
   timezone: string,
   mutedPatterns: string[] = [],
   vipList: string[] = [],
+  opts?: { kind?: "am" | "pm"; now?: Date },
 ): Promise<{
   digestFlat: string;
   digestText: string;
@@ -1580,7 +1583,16 @@ export async function buildPriorityBriefPayload(
   calendarCount: number;
   commitmentCount: number;
 }> {
-  const { timeMin, timeMax } = localDayBoundsUtc(timezone);
+  const kind = opts?.kind ?? "am";
+  const now = opts?.now ?? new Date();
+  const todayBounds = localDayBoundsUtc(timezone, now);
+  // Evening looks ahead to tomorrow; morning is today.
+  const focusBounds =
+    kind === "pm"
+      ? localDayBoundsUtc(timezone, todayBounds.timeMax)
+      : todayBounds;
+  const { timeMin, timeMax } = focusBounds;
+  const apptDayOffset = kind === "pm" ? 1 : 0;
   type Cand = { score: number; label: string; detail: string; kind: BriefPriorityItem["kind"] };
   const cands: Cand[] = [];
 
@@ -1607,9 +1619,11 @@ export async function buildPriorityBriefPayload(
         : c.dueAt
           ? formatLocalHm(c.dueAt, timezone)
           : null;
-    const dueToday = Boolean(c.dueAt && c.dueAt >= timeMin && c.dueAt <= timeMax);
+    const dueOnFocus = Boolean(c.dueAt && c.dueAt >= timeMin && c.dueAt <= timeMax);
+    // Evening: only surface commitments still open / due on the focus day.
+    if (kind === "pm" && !dueOnFocus && c.dueAt && c.dueAt < timeMin) continue;
     cands.push({
-      score: dueToday ? 85 : 45,
+      score: dueOnFocus ? 85 : kind === "pm" ? 55 : 45,
       kind: "commitment",
       label: (due ? `${due} ${c.title}` : c.title).slice(0, 80),
       detail: [`Reminder: ${c.title}`, due ? `Due: ${due}` : "No due time set"].join("\n"),
@@ -1619,23 +1633,18 @@ export async function buildPriorityBriefPayload(
   const mailRows = await listMailCandidates(db, userId, mutedPatterns, 30, {
     excludePassive: true,
   });
-  const apptTodayByKey = new Map<
-    string,
-    { label: string; detail: string; clockSort: string }
-  >();
+  const apptByKey = new Map<string, { label: string; detail: string; clockSort: string }>();
   for (const e of mailRows) {
     const from = shortActor(e.actor);
     const subject = cleanSubject(e.title);
     const fullTitle = (e.title ?? "").trim();
     const snippet = (e.snippet ?? "").replace(/\s+/g, " ").trim().slice(0, 280);
-    const appt = parseAppointmentReminder(fullTitle, timezone, new Date(), snippet);
+    const appt = parseAppointmentReminder(fullTitle, timezone, now, snippet);
     if (appt) {
-      // Appointments belong on the calendar line — not duplicated as priorities.
-      if (appt.dayOffset === 0) {
-        const prev = apptTodayByKey.get(appt.dedupeKey);
-        // Prefer the richer label (with patient name) when re-syncing duplicates.
+      if (appt.dayOffset === apptDayOffset) {
+        const prev = apptByKey.get(appt.dedupeKey);
         if (!prev || (appt.label.length > prev.label.length && /\(/.test(appt.label))) {
-          apptTodayByKey.set(appt.dedupeKey, {
+          apptByKey.set(appt.dedupeKey, {
             label: appt.label,
             detail: appt.detail,
             clockSort: appt.clockSort,
@@ -1646,8 +1655,11 @@ export async function buildPriorityBriefPayload(
     }
     const score = mailPriorityScore(fullTitle, e.actor ?? "", vipList, snippet, {
       timezone,
+      now,
     });
+    // Evening bar: action-demanding only (drop soft FYI that barely clears 0).
     if (score <= 0) continue;
+    if (kind === "pm" && score < 70) continue;
     cands.push({
       score,
       kind: "mail",
@@ -1681,7 +1693,7 @@ export async function buildPriorityBriefPayload(
     ? rest.map((c, i) => `${i + 4}) ${c.label}`).join("\n")
     : null;
 
-  const apptTodaySorted = [...apptTodayByKey.values()].sort((a, b) =>
+  const apptSorted = [...apptByKey.values()].sort((a, b) =>
     a.clockSort.localeCompare(b.clockSort),
   );
   const calBits = [
@@ -1691,9 +1703,8 @@ export async function buildPriorityBriefPayload(
         allDay || !e.occursAt ? "all day" : formatLocalHm(e.occursAt, timezone);
       return `${when} ${(e.title ?? "Event").trim()}`;
     }),
-    ...apptTodaySorted.map((a) => a.label),
+    ...apptSorted.map((a) => a.label),
   ];
-  // Dedupe calendar bits (Google event vs reminder collision).
   const calSeen = new Set<string>();
   const calUnique: string[] = [];
   for (const bit of calBits) {
@@ -1702,20 +1713,34 @@ export async function buildPriorityBriefPayload(
     calSeen.add(k);
     calUnique.push(bit);
   }
+
+  const calHeading = kind === "pm" ? "TOMORROW" : "CALENDAR";
+  const openHeading = kind === "pm" ? "STILL OPEN" : "PRIORITIES";
+  const calEmpty = kind === "pm" ? "• none yet" : "• none today";
   const calLine =
     calUnique.length === 0
-      ? "Calendar: none today."
-      : `Calendar:\n${calUnique.map((b) => `• ${b}`).join("\n")}`;
+      ? `${calHeading}\n${calEmpty}`
+      : `${calHeading}\n${calUnique.map((b) => `• ${b}`).join("\n")}`;
 
   const priorityLines = items.map((it) => `${it.index}) ${it.label}`);
   const quietBit =
     quieterCount > 0 ? ` +${quieterCount} quieter.` : items.length ? "" : " Inbox clear.";
 
+  // WABA template params cannot contain newlines — keep readable separators.
   const digestFlat = [
     calUnique.length === 0
-      ? "Calendar: none today."
-      : `Calendar: ${calUnique.slice(0, 4).join("; ")}${calUnique.length > 4 ? ` (+${calUnique.length - 4})` : ""}.`,
-    items.length ? `Top ${items.length}: ${priorityLines.join(" · ")}.` : "No priorities flagged.",
+      ? kind === "pm"
+        ? "Tomorrow: none yet."
+        : "Calendar: none today."
+      : `${kind === "pm" ? "Tomorrow" : "Calendar"}: ${calUnique
+          .slice(0, 4)
+          .map((b) => `• ${b}`)
+          .join(" ")}${calUnique.length > 4 ? ` (+${calUnique.length - 4})` : ""}.`,
+    items.length
+      ? `${kind === "pm" ? "Still open" : "Top"} ${items.length}: ${priorityLines.join(" · ")}.`
+      : kind === "pm"
+        ? "Nothing still open."
+        : "No priorities flagged.",
     quietBit.trim(),
   ]
     .filter(Boolean)
@@ -1726,7 +1751,7 @@ export async function buildPriorityBriefPayload(
   const digestText = [
     calLine,
     "",
-    "PRIORITIES",
+    openHeading,
     ...(items.length ? items.map((it) => `${it.index}) ${it.label}`) : ["• none needing you"]),
     quieterCount > 0 ? "" : null,
     quieterCount > 0
@@ -1737,8 +1762,6 @@ export async function buildPriorityBriefPayload(
     .join("\n")
     .trim();
 
-  // Also store today's appointments as detail-reachable via a synthetic list for "calendar" asks —
-  // keep lastBriefItems as mail priorities only; appointment details stay in calendar section.
   return {
     digestFlat,
     digestText,

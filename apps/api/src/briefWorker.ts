@@ -6,9 +6,12 @@ import {
   localHm,
   type ChannelPort,
 } from "@amilo/core";
+import { isInside24hWindow } from "@amilo/channels-whatsapp";
 import {
   buildPriorityBriefPayload,
   getUserPrefs,
+  getWhatsAppAddress,
+  getWhatsAppLastInbound,
   listUsersForScheduledBriefs,
   logEvalEvent,
   logMessage,
@@ -19,8 +22,8 @@ import type { GoogleOAuthConfig } from "@amilo/google";
 import { syncGoogleForUser } from "./googleSync.js";
 
 /**
- * Poll local morning/evening slots and push WABA templates.
- * Always templates (works outside 24h). Idempotent per local calendar day.
+ * Poll local morning/evening slots and push briefs.
+ * Prefer free-form bullets inside the 24h window; WABA templates outside it.
  */
 export function startBriefWorker(opts: {
   db: Db;
@@ -80,27 +83,40 @@ export function startBriefWorker(opts: {
         }
 
         const prefs = await getUserPrefs(opts.db, u.id);
-        const brief = await buildPriorityBriefPayload(
-          opts.db,
-          u.id,
-          tz,
-          prefs.mutedPatterns,
-          prefs.vipList,
-        );
-        const bodyFlat = flattenWaTemplateParam(brief.digestFlat, 900);
+        const waAddr = await getWhatsAppAddress(opts.db, u.id);
+        const lastIn = waAddr ? await getWhatsAppLastInbound(opts.db, waAddr) : null;
+        const canFreeForm = isInside24hWindow(lastIn, now);
 
         if (dueMorning) {
-          const dateLong = flattenWaTemplateParam(formatLocalDateLong(now, tz), 80);
+          const brief = await buildPriorityBriefPayload(
+            opts.db,
+            u.id,
+            tz,
+            prefs.mutedPatterns,
+            prefs.vipList,
+            { kind: "am", now },
+          );
           try {
-            const waMessageId = await opts.channel.send(u.id, {
-              templateName: opts.morningTemplate,
-              languageCode: lang,
-              variables: [
-                flattenWaTemplateParam(name, 60),
-                dateLong,
-                bodyFlat,
-              ],
-            });
+            let waMessageId: string | void;
+            let bodyRef: string;
+            if (canFreeForm) {
+              const text = `Morning brief — ${name}\n\n${brief.digestText}`.slice(0, 3500);
+              waMessageId = await opts.channel.send(u.id, { text });
+              bodyRef = text;
+            } else {
+              const bodyFlat = flattenWaTemplateParam(brief.digestFlat, 900);
+              const dateLong = flattenWaTemplateParam(formatLocalDateLong(now, tz), 80);
+              waMessageId = await opts.channel.send(u.id, {
+                templateName: opts.morningTemplate,
+                languageCode: lang,
+                variables: [
+                  flattenWaTemplateParam(name, 60),
+                  dateLong,
+                  bodyFlat,
+                ],
+              });
+              bodyRef = `Morning brief · ${bodyFlat}`;
+            }
             await patchUserPrefs(opts.db, u.id, {
               lastMorningBriefDay: day,
               lastBriefItems: brief.items,
@@ -110,12 +126,13 @@ export function startBriefWorker(opts: {
               userId: u.id,
               channel: "whatsapp",
               direction: "out",
-              kind: "template",
-              bodyRef: `Morning brief · ${bodyFlat}`.slice(0, 500),
+              kind: canFreeForm ? "text" : "template",
+              bodyRef: bodyRef.slice(0, 500),
               meta: {
                 scheduled: "morning",
                 day,
-                template: opts.morningTemplate,
+                freeForm: canFreeForm,
+                template: canFreeForm ? undefined : opts.morningTemplate,
                 briefItems: brief.items.map((i) => i.label),
                 ...(waMessageId ? { waMessageId } : {}),
               },
@@ -126,6 +143,7 @@ export function startBriefWorker(opts: {
                 kind: "morning",
                 userId: u.id,
                 day,
+                freeForm: canFreeForm,
                 priorities: brief.items.length,
               }),
             );
@@ -133,7 +151,7 @@ export function startBriefWorker(opts: {
               userId: u.id,
               event: "brief_sent",
               note: "morning",
-              meta: { day, priorities: brief.items.length },
+              meta: { day, priorities: brief.items.length, freeForm: canFreeForm },
             });
           } catch (err) {
             console.error(
@@ -148,12 +166,30 @@ export function startBriefWorker(opts: {
         }
 
         if (dueEvening) {
+          const brief = await buildPriorityBriefPayload(
+            opts.db,
+            u.id,
+            tz,
+            prefs.mutedPatterns,
+            prefs.vipList,
+            { kind: "pm", now },
+          );
           try {
-            const waMessageId = await opts.channel.send(u.id, {
-              templateName: opts.eveningTemplate,
-              languageCode: lang,
-              variables: [flattenWaTemplateParam(name, 60), bodyFlat],
-            });
+            let waMessageId: string | void;
+            let bodyRef: string;
+            if (canFreeForm) {
+              const text = `Evening wrap — ${name}\n\n${brief.digestText}`.slice(0, 3500);
+              waMessageId = await opts.channel.send(u.id, { text });
+              bodyRef = text;
+            } else {
+              const bodyFlat = flattenWaTemplateParam(brief.digestFlat, 900);
+              waMessageId = await opts.channel.send(u.id, {
+                templateName: opts.eveningTemplate,
+                languageCode: lang,
+                variables: [flattenWaTemplateParam(name, 60), bodyFlat],
+              });
+              bodyRef = `Evening wrap · ${bodyFlat}`;
+            }
             await patchUserPrefs(opts.db, u.id, {
               lastEveningBriefDay: day,
               lastBriefItems: brief.items,
@@ -163,12 +199,13 @@ export function startBriefWorker(opts: {
               userId: u.id,
               channel: "whatsapp",
               direction: "out",
-              kind: "template",
-              bodyRef: `Evening wrap · ${bodyFlat}`.slice(0, 500),
+              kind: canFreeForm ? "text" : "template",
+              bodyRef: bodyRef.slice(0, 500),
               meta: {
                 scheduled: "evening",
                 day,
-                template: opts.eveningTemplate,
+                freeForm: canFreeForm,
+                template: canFreeForm ? undefined : opts.eveningTemplate,
                 briefItems: brief.items.map((i) => i.label),
                 ...(waMessageId ? { waMessageId } : {}),
               },
@@ -179,6 +216,7 @@ export function startBriefWorker(opts: {
                 kind: "evening",
                 userId: u.id,
                 day,
+                freeForm: canFreeForm,
                 priorities: brief.items.length,
               }),
             );
@@ -186,7 +224,7 @@ export function startBriefWorker(opts: {
               userId: u.id,
               event: "brief_sent",
               note: "evening",
-              meta: { day, priorities: brief.items.length },
+              meta: { day, priorities: brief.items.length, freeForm: canFreeForm },
             });
           } catch (err) {
             console.error(

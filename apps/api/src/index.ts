@@ -219,7 +219,7 @@ function orchestratorDeps(): OrchestratorDeps {
         vipList: prefs.vipList,
       };
     },
-    buildPriorityBrief: async (userId) => {
+    buildPriorityBrief: async (userId, kind = "am") => {
       const u = await getUserById(db, userId);
       const prefs = await getUserPrefs(db, userId);
       const timezone = u?.timezone ?? "Asia/Kolkata";
@@ -229,6 +229,7 @@ function orchestratorDeps(): OrchestratorDeps {
         timezone,
         prefs.mutedPatterns,
         prefs.vipList,
+        { kind },
       );
       await patchUserPrefs(db, userId, {
         lastBriefItems: brief.items,

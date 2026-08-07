@@ -125,7 +125,10 @@ export interface OrchestratorDeps {
     vipList: string[];
   }>;
   /** Build curated brief + store 1/2/3 detail items. */
-  buildPriorityBrief?: (userId: string) => Promise<{
+  buildPriorityBrief?: (
+    userId: string,
+    kind?: "am" | "pm",
+  ) => Promise<{
     digestText: string;
     items: Array<{ index: number; label: string; detail: string }>;
     calendarCount: number;
@@ -859,13 +862,15 @@ export async function handleInbound(
       lower === "evening" || /\bevening\b/i.test(text) ? "pm" : "am";
 
     if (deps.buildPriorityBrief) {
-      const brief = await deps.buildPriorityBrief(msg.userId);
+      const brief = await deps.buildPriorityBrief(msg.userId, kind);
       const firstName = (name || "there").split(/\s+/)[0] || "there";
       const headline =
         kind === "pm"
           ? brief.calendarCount > 0
-            ? `Evening wrap — ${brief.calendarCount} still on calendar`
-            : `Evening wrap — ${firstName}`
+            ? `Evening wrap — ${brief.calendarCount} tomorrow`
+            : brief.items.length > 0
+              ? `Evening wrap — ${brief.items.length} still open`
+              : `Evening wrap — ${firstName}`
           : brief.calendarCount > 0
             ? `Morning brief — ${brief.calendarCount} on calendar`
             : brief.items.length > 0

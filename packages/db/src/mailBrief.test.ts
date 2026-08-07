@@ -51,13 +51,24 @@ describe("brief mail action filter", () => {
   it("keeps complete-your-profile style asks", () => {
     assert.equal(
       isActionDemandingMail("Add alternate contact details for your account"),
+      false,
+    );
+    assert.equal(
+      isPassiveTransactionalMail("Add alternate contact details for your account"),
       true,
     );
-    assert.ok(
+    assert.equal(
       mailPriorityScore(
         "Add alternate contact details for your account",
         "notify@getonecard.app",
-      ) > 0,
+      ),
+      0,
+    );
+    assert.ok(
+      mailPriorityScore(
+        "Important: Update your KYC to avoid card block",
+        "Team OneCard",
+      ) >= 70,
     );
   });
 
