@@ -1235,13 +1235,21 @@ export function parseAppointmentReminder(
   title: string,
   timeZone: string,
   now: Date = new Date(),
-): { label: string; detail: string; score: number; dayOffset: number } | null {
+  snippet = "",
+): {
+  label: string;
+  detail: string;
+  score: number;
+  dayOffset: number;
+  dedupeKey: string;
+  clockSort: string;
+} | null {
   if (!/appointment reminder/i.test(title)) return null;
   const m = title.match(
     /appointment reminder:\s*(.+?)\s+(\d{1,2}:\d{2}\s*[ap]m)\s*@\s*(.+)$/i,
   );
   const whenBlob = m?.[1]?.trim() ?? "";
-  const clock = m?.[2]?.trim() ?? "";
+  const clockRaw = (m?.[2] ?? "").trim().toLowerCase().replace(/\s+/g, " ");
   const place = (m?.[3] ?? "Appointment").replace(/\s+/g, " ").trim();
   const dayMatch = whenBlob.match(/(\d{1,2})\s+([A-Za-z]{3,9})\s+(\d{4})/);
   let dayOffset = 0;
@@ -1267,17 +1275,43 @@ export function parseAppointmentReminder(
       dayScore = dayOffset === 0 ? 95 : dayOffset === 1 ? 85 : 70;
     }
   }
-  const whenLabel = [clock, dayOffset === 0 ? "today" : dayOffset === 1 ? "tomorrow" : null]
-    .filter(Boolean)
-    .join(" ");
+  const dayWord =
+    dayOffset === 0 ? "today" : dayOffset === 1 ? "tomorrow" : null;
+  const whenLabel = [clockRaw, dayWord].filter(Boolean).join(" ");
   const clinic = place.replace(/\s*®\s*/g, " ").trim();
+  const patientMatch = snippet.match(/Patient Name\s+([A-Za-z][A-Za-z .']{1,60})/i);
+  const patient = patientMatch?.[1]?.trim().replace(/\s+/g, " ") ?? "";
+  const patientFirst = patient.split(/\s+/)[0] ?? "";
+  const label = (
+    patientFirst
+      ? `${whenLabel || "Appointment"} — ${clinic} (${patientFirst})`
+      : `${whenLabel || "Appointment"} — ${clinic}`
+  ).slice(0, 90);
+  // Time + clinic only — duplicate syncs / missing patient names still collapse.
+  const dedupeKey = `${clockRaw}|${clinic.toLowerCase()}`;
+  const clockSort = (() => {
+    const mm = clockRaw.match(/^(\d{1,2}):(\d{2})\s*(am|pm)$/i);
+    if (!mm) return clockRaw;
+    let h = Number(mm[1]);
+    const min = Number(mm[2]);
+    const ap = (mm[3] ?? "").toLowerCase();
+    if (ap === "pm" && h < 12) h += 12;
+    if (ap === "am" && h === 12) h = 0;
+    return `${String(h).padStart(2, "0")}:${String(min).padStart(2, "0")}`;
+  })();
   return {
     score: dayScore,
-    label: `${whenLabel || "Appointment"} — ${clinic}`.slice(0, 90),
-    detail: [`Appointment: ${clinic}`, whenLabel ? `When: ${whenLabel}` : null, title]
+    label,
+    detail: [
+      `Appointment: ${clinic}`,
+      patient ? `Patient: ${patient}` : null,
+      whenLabel ? `When: ${whenLabel}` : null,
+    ]
       .filter(Boolean)
       .join("\n"),
     dayOffset,
+    dedupeKey,
+    clockSort,
   };
 }
 
@@ -1309,6 +1343,7 @@ export function mailPriorityScore(
     title,
     opts?.timezone ?? "Asia/Kolkata",
     opts?.now,
+    snippet,
   );
   if (appt) return appt.score;
 
@@ -1502,6 +1537,8 @@ export async function buildPriorityBriefPayload(
   items: BriefPriorityItem[];
   quieterCount: number;
   moreText: string | null;
+  calendarCount: number;
+  commitmentCount: number;
 }> {
   const { timeMin, timeMax } = localDayBoundsUtc(timezone);
   type Cand = { score: number; label: string; detail: string; kind: BriefPriorityItem["kind"] };
@@ -1542,21 +1579,29 @@ export async function buildPriorityBriefPayload(
   const mailRows = await listMailCandidates(db, userId, mutedPatterns, 30, {
     excludePassive: true,
   });
-  const apptTodayBits: string[] = [];
+  const apptTodayByKey = new Map<
+    string,
+    { label: string; detail: string; clockSort: string }
+  >();
   for (const e of mailRows) {
     const from = shortActor(e.actor);
     const subject = cleanSubject(e.title);
     const fullTitle = (e.title ?? "").trim();
-    const snippet = (e.snippet ?? "").replace(/\s+/g, " ").trim().slice(0, 220);
-    const appt = parseAppointmentReminder(fullTitle, timezone);
+    const snippet = (e.snippet ?? "").replace(/\s+/g, " ").trim().slice(0, 280);
+    const appt = parseAppointmentReminder(fullTitle, timezone, new Date(), snippet);
     if (appt) {
-      if (appt.dayOffset === 0) apptTodayBits.push(appt.label);
-      cands.push({
-        score: appt.score,
-        kind: "calendar",
-        label: appt.label,
-        detail: appt.detail,
-      });
+      // Appointments belong on the calendar line — not duplicated as priorities.
+      if (appt.dayOffset === 0) {
+        const prev = apptTodayByKey.get(appt.dedupeKey);
+        // Prefer the richer label (with patient name) when re-syncing duplicates.
+        if (!prev || (appt.label.length > prev.label.length && /\(/.test(appt.label))) {
+          apptTodayByKey.set(appt.dedupeKey, {
+            label: appt.label,
+            detail: appt.detail,
+            clockSort: appt.clockSort,
+          });
+        }
+      }
       continue;
     }
     const score = mailPriorityScore(fullTitle, e.actor ?? "", vipList, snippet, {
@@ -1596,6 +1641,9 @@ export async function buildPriorityBriefPayload(
     ? rest.map((c, i) => `${i + 4}) ${c.label}`).join("\n")
     : null;
 
+  const apptTodaySorted = [...apptTodayByKey.values()].sort((a, b) =>
+    a.clockSort.localeCompare(b.clockSort),
+  );
   const calBits = [
     ...calRows.map((e) => {
       const allDay = Boolean((e.meta as { allDay?: unknown })?.allDay);
@@ -1603,19 +1651,30 @@ export async function buildPriorityBriefPayload(
         allDay || !e.occursAt ? "all day" : formatLocalHm(e.occursAt, timezone);
       return `${when} ${(e.title ?? "Event").trim()}`;
     }),
-    ...apptTodayBits,
+    ...apptTodaySorted.map((a) => a.label),
   ];
+  // Dedupe calendar bits (Google event vs reminder collision).
+  const calSeen = new Set<string>();
+  const calUnique: string[] = [];
+  for (const bit of calBits) {
+    const k = bit.toLowerCase().replace(/\s+/g, " ");
+    if (calSeen.has(k)) continue;
+    calSeen.add(k);
+    calUnique.push(bit);
+  }
   const calLine =
-    calBits.length === 0
+    calUnique.length === 0
       ? "Calendar: none today."
-      : `Calendar: ${calBits.slice(0, 4).join("; ")}${calBits.length > 4 ? ` (+${calBits.length - 4})` : ""}.`;
+      : `Calendar:\n${calUnique.map((b) => `• ${b}`).join("\n")}`;
 
   const priorityLines = items.map((it) => `${it.index}) ${it.label}`);
   const quietBit =
     quieterCount > 0 ? ` +${quieterCount} quieter.` : items.length ? "" : " Inbox clear.";
 
   const digestFlat = [
-    calLine,
+    calUnique.length === 0
+      ? "Calendar: none today."
+      : `Calendar: ${calUnique.slice(0, 4).join("; ")}${calUnique.length > 4 ? ` (+${calUnique.length - 4})` : ""}.`,
     items.length ? `Top ${items.length}: ${priorityLines.join(" · ")}.` : "No priorities flagged.",
     quietBit.trim(),
   ]
@@ -1625,18 +1684,32 @@ export async function buildPriorityBriefPayload(
     .trim();
 
   const digestText = [
-    calLine.replace(/\.$/, ""),
+    calLine,
     "",
     "PRIORITIES",
     ...(items.length ? items.map((it) => `${it.index}) ${it.label}`) : ["• none needing you"]),
     quieterCount > 0 ? "" : null,
-    quieterCount > 0 ? `+${quieterCount} quieter. Reply 1–3 for detail, M for more.` : "Reply 1–3 for detail.",
+    quieterCount > 0
+      ? `+${quieterCount} quieter. Reply 1–3 for detail, M for more.`
+      : "Reply 1–3 for detail.",
   ]
     .filter((l) => l != null)
     .join("\n")
     .trim();
 
-  return { digestFlat, digestText, items, quieterCount, moreText };
+  // Also store today's appointments as detail-reachable via a synthetic list for "calendar" asks —
+  // keep lastBriefItems as mail priorities only; appointment details stay in calendar section.
+  return {
+    digestFlat,
+    digestText,
+    items,
+    quieterCount,
+    moreText,
+    calendarCount: calUnique.length,
+    commitmentCount: commits.filter(
+      (c) => c.dueAt && c.dueAt >= timeMin && c.dueAt <= timeMax,
+    ).length,
+  };
 }
 
 export type PendingActionKind =

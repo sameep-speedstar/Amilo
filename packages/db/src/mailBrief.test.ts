@@ -4,6 +4,7 @@ import {
   isActionDemandingMail,
   isPassiveTransactionalMail,
   mailPriorityScore,
+  parseAppointmentReminder,
 } from "./repos.js";
 
 describe("brief mail action filter", () => {
@@ -68,6 +69,34 @@ describe("brief mail action filter", () => {
       now: new Date("2026-08-07T03:00:00.000Z"),
     });
     assert.ok(score >= 90, `score=${score}`);
+  });
+
+  it("dedupes Practo reminders by time+clinic (patient optional)", () => {
+    const now = new Date("2026-08-07T03:00:00.000Z");
+    const a = parseAppointmentReminder(
+      "Appointment Reminder: Fri, 07 Aug 2026 04:30 pm @ LITTLE PEARLS ® Dental Clinic",
+      "Asia/Kolkata",
+      now,
+      "Patient Name Sameep Bansal",
+    );
+    const b = parseAppointmentReminder(
+      "Appointment Reminder: Fri, 07 Aug 2026 04:30 pm @ LITTLE PEARLS ® Dental Clinic",
+      "Asia/Kolkata",
+      now,
+      "",
+    );
+    const c = parseAppointmentReminder(
+      "Appointment Reminder: Fri, 07 Aug 2026 05:30 pm @ LITTLE PEARLS ® Dental Clinic",
+      "Asia/Kolkata",
+      now,
+      "Patient Name Shreeja",
+    );
+    assert.ok(a && b && c);
+    assert.equal(a.dedupeKey, b.dedupeKey);
+    assert.notEqual(a.dedupeKey, c.dedupeKey);
+    assert.ok(a.label.includes("Sameep"));
+    assert.ok(c.label.includes("Shreeja"));
+    assert.ok(a.clockSort < c.clockSort);
   });
 
   it("keeps credit card bill due phrasing", () => {

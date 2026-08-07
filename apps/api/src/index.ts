@@ -220,7 +220,12 @@ function orchestratorDeps(): OrchestratorDeps {
         lastBriefItems: brief.items,
         lastBriefMore: brief.moreText,
       });
-      return { digestText: brief.digestText, items: brief.items };
+      return {
+        digestText: brief.digestText,
+        items: brief.items,
+        calendarCount: brief.calendarCount,
+        commitmentCount: brief.commitmentCount,
+      };
     },
     getLastBriefItems: async (userId) => {
       const prefs = await getUserPrefs(db, userId);

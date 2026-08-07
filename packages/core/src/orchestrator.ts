@@ -97,6 +97,8 @@ export interface OrchestratorDeps {
   buildPriorityBrief?: (userId: string) => Promise<{
     digestText: string;
     items: Array<{ index: number; label: string; detail: string }>;
+    calendarCount: number;
+    commitmentCount: number;
   }>;
   getLastBriefItems?: (userId: string) => Promise<{
     items: Array<{ index: number; label: string; detail: string }>;
@@ -711,7 +713,13 @@ export async function handleInbound(
     }
   }
 
-  if (lower === "brief" || lower === "morning" || lower === "evening") {
+  // On-demand brief (exact commands + natural "latest brief please").
+  if (
+    lower === "brief" ||
+    lower === "morning" ||
+    lower === "evening" ||
+    /\b(brief|briefing|morning update|evening wrap)\b/i.test(text)
+  ) {
     if (!deps.isGoogleConnected || !deps.getBriefingContext || !deps.syncGoogle) {
       return [{ text: "Briefings need Google sync — send: connect google personal" }];
     }
@@ -733,8 +741,32 @@ export async function handleInbound(
       ];
     }
     const name = await deps.resolveUserName(msg.userId);
+    const kind =
+      lower === "evening" || /\bevening\b/i.test(text) ? "pm" : "am";
+
+    if (deps.buildPriorityBrief) {
+      const brief = await deps.buildPriorityBrief(msg.userId);
+      const firstName = (name || "there").split(/\s+/)[0] || "there";
+      const headline =
+        kind === "pm"
+          ? brief.calendarCount > 0
+            ? `Evening wrap — ${brief.calendarCount} still on calendar`
+            : `Evening wrap — ${firstName}`
+          : brief.calendarCount > 0
+            ? `Morning brief — ${brief.calendarCount} on calendar`
+            : brief.items.length > 0
+              ? `Morning brief — ${brief.items.length} priorit${brief.items.length === 1 ? "y" : "ies"}`
+              : `Morning brief — clear calendar`;
+      const quietBits = [
+        skippedPromo ? `${skippedPromo} promo` : "",
+        skippedMuted ? `${skippedMuted} muted` : "",
+      ].filter(Boolean);
+      const footer = quietBits.length ? `\nFiltered quietly: ${quietBits.join(", ")}.` : "";
+      const textOut = `${headline}\n\n${brief.digestText}${footer}`.slice(0, 3500);
+      return [{ text: textOut || "Nothing urgent — you're clear." }];
+    }
+
     const ctx = await deps.getBriefingContext(msg.userId);
-    const kind = lower === "evening" ? "pm" : "am";
     let headline = kind === "pm" ? "Evening wrap" : "Morning priorities";
     try {
       const draft = await deps.brain.brief(
@@ -755,17 +787,6 @@ export async function handleInbound(
       if (draft.headline?.trim()) headline = draft.headline.trim();
     } catch {
       /* structured body still works without Grok headline */
-    }
-
-    if (deps.buildPriorityBrief) {
-      const brief = await deps.buildPriorityBrief(msg.userId);
-      const quietBits = [
-        skippedPromo ? `${skippedPromo} promo` : "",
-        skippedMuted ? `${skippedMuted} muted` : "",
-      ].filter(Boolean);
-      const footer = quietBits.length ? `\nFiltered quietly: ${quietBits.join(", ")}.` : "";
-      const textOut = `${headline}\n\n${brief.digestText}${footer}`.slice(0, 3500);
-      return [{ text: textOut || "Nothing urgent — you're clear." }];
     }
 
     const quietBits = [
