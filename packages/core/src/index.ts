@@ -8,6 +8,7 @@ export type {
   UserStatus,
 } from "./domain.js";
 export { handleInbound, normalizeGoogleLabel, isBriefRequest, type OrchestratorDeps } from "./orchestrator.js";
+export { looksLikeNewActionIntent, applyPendingEditPatch } from "./orchestrator.js";
 export {
   flattenWaTemplateParam,
   formatLocalDateLong,

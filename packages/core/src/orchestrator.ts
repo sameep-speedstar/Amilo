@@ -228,6 +228,82 @@ function extractMutePatternFromMessage(message: string): string | null {
   return m[1].replace(/^(the\s+|all\s+)/i, "").trim();
 }
 
+/** True when the user is starting a new action, not answering the open proposal. */
+export function looksLikeNewActionIntent(
+  message: string,
+  timeZone: string,
+  now: Date = new Date(),
+): boolean {
+  const t = message.trim();
+  if (!t || t.length < 4) return false;
+  if (/^(yes|y|yeah|yep|ok|okay|confirm|cancel|no|nope|edit)\b/i.test(t)) return false;
+  if (isBriefRequest(t)) return true;
+  if (/^(mute|unmute|sync|google|help|pause|resume|briefs)\b/i.test(t)) return true;
+  if (extractMutePatternFromMessage(t)) return true;
+  if (parseCalendarCreateHint(t, timeZone, now)) return true;
+  if (parseReminderMessage(t, timeZone, now).length > 0) return true;
+  if (/\b(send|draft)\b/i.test(t) && /\b(email|mail|invite)\b/i.test(t)) return true;
+  if (/\bcalendar invite\b/i.test(t)) return true;
+  if (/\binvite\b/i.test(t) && /@|\bspeedstar\b|\brajeev\b|\brajiv\b/i.test(t)) return true;
+  return false;
+}
+
+/** Apply "edit …" patches to a pending payload (email to/subject, calendar title). */
+export function applyPendingEditPatch(
+  kind: string,
+  payload: Record<string, unknown>,
+  patchRaw: string,
+): { payload: Record<string, unknown>; summaryHint: string } {
+  let raw = patchRaw.trim().replace(/^<|>$/g, "").trim();
+  const next = { ...payload };
+
+  // Bare email or "to: email"
+  const emailMatch =
+    raw.match(/\bto\s*[:=]?\s*([\w.+-]+@[\w.-]+\.\w+)\b/i) ||
+    raw.match(/\b([\w.+-]+@[\w.-]+\.\w+)\b/);
+  if (emailMatch?.[1] && (kind === "email_draft" || /email|invite/i.test(kind))) {
+    let to = emailMatch[1].toLowerCase();
+    to = to.replace(/@speedstart\.ai$/i, "@speedstar.ai");
+    if (/@speedstar\.ai$/i.test(to) && /^(rajiv|rajeev)@/i.test(to)) {
+      to = "rajeev@speedstar.ai";
+    }
+    next.to = to;
+    raw = raw.replace(emailMatch[0], "").trim();
+  }
+
+  const subjectMatch = raw.match(/\bsubject\s*[:=]\s*(.+)$/i);
+  if (subjectMatch?.[1] && kind === "email_draft") {
+    next.subject = subjectMatch[1].trim();
+    raw = raw.replace(subjectMatch[0], "").trim();
+  }
+
+  const titleMatch = raw.match(/\btitle\s*[:=]\s*(.+)$/i);
+  if (titleMatch?.[1] && kind.startsWith("calendar_")) {
+    next.title = titleMatch[1].trim();
+    raw = raw.replace(titleMatch[0], "").trim();
+  }
+
+  // Leftover free text on email drafts → body tweak note
+  if (raw && kind === "email_draft" && !emailMatch && !subjectMatch) {
+    if (/@/.test(raw)) {
+      /* already handled */
+    } else if (!next.to && /^[\w.+-]+@[\w.-]+\.\w+$/.test(raw)) {
+      next.to = raw;
+    } else {
+      next.note = raw;
+    }
+  }
+
+  const summaryHint =
+    kind === "email_draft"
+      ? `Email draft to ${String(next.to ?? "?")}: ${String(next.subject ?? "draft")}`
+      : kind.startsWith("calendar_")
+        ? `Create: ${String(next.title ?? "Event")}`
+        : String(next.summary ?? "Updated proposal");
+
+  return { payload: next, summaryHint };
+}
+
 function buildStructuredBrief(opts: {
   headline?: string;
   calendarToday: string;
@@ -347,6 +423,10 @@ export async function handleInbound(
   }
 
   // --- Pending confirm-before-write (prefer over timezone yes) ---
+  const tzForPending = deps.getTimezoneState
+    ? await deps.getTimezoneState(msg.userId)
+    : { timezone: "Asia/Kolkata", tzConfirmed: true };
+
   const openPending = deps.getOpenPending
     ? await deps.getOpenPending(msg.userId)
     : null;
@@ -379,11 +459,8 @@ export async function handleInbound(
     const editMatch = text.match(/^edit\s+(.+)$/i);
     if (editMatch?.[1] && deps.editPending) {
       const patchRaw = editMatch[1].trim();
-      const r = await deps.editPending(
-        msg.userId,
-        { note: patchRaw },
-        `${openPending.summary} (edit: ${patchRaw})`,
-      );
+      const applied = applyPendingEditPatch(openPending.kind, {}, patchRaw);
+      const r = await deps.editPending(msg.userId, applied.payload, applied.summaryHint);
       return [
         {
           text: r.ok
@@ -396,8 +473,11 @@ export async function handleInbound(
         },
       ];
     }
-    // Nudge if they talk while something is pending
-    if (!/^(help|pause|briefs|timezone|tz|sync|brief|google)/i.test(lower)) {
+    // New clear intent supersedes the stuck proposal (LifeOS-style).
+    if (looksLikeNewActionIntent(text, tzForPending.timezone)) {
+      await deps.rejectPending(msg.userId);
+      // fall through to normal routing
+    } else {
       return [
         {
           text: [
@@ -412,9 +492,7 @@ export async function handleInbound(
   }
 
   // --- Timezone confirm / update (before other chat) ---
-  const tzState = deps.getTimezoneState
-    ? await deps.getTimezoneState(msg.userId)
-    : { timezone: "Asia/Kolkata", tzConfirmed: true };
+  const tzState = tzForPending;
 
   if (deps.setTimezone) {
     const tzUpdate = parseTimezoneUpdateMessage(text);
@@ -988,6 +1066,21 @@ export async function handleInbound(
       const payload: Record<string, unknown> = { ...action };
       delete payload.type;
       if (!payload.accountLabel) payload.accountLabel = "personal";
+
+      // Normalize known contact / ASR typos on email drafts.
+      if (kind === "email_draft") {
+        const toRaw = strPayload(payload.to);
+        if (toRaw) {
+          let to = toRaw.toLowerCase().trim();
+          to = to.replace(/@speedstart\.ai$/i, "@speedstar.ai");
+          if (/@speedstar\.ai$/i.test(to) && /^(rajiv|rajeev)@/i.test(to)) {
+            to = "rajeev@speedstar.ai";
+          }
+          payload.to = to;
+        } else if (/\brajeev\b|\brajiv\b/i.test(text) && /\bspeedstar\b/i.test(text)) {
+          payload.to = "rajeev@speedstar.ai";
+        }
+      }
 
       // Prefer local parse of the user message over model ISO (avoids wrong year/raw stamps).
       if (kind === "calendar_create") {

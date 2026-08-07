@@ -117,6 +117,8 @@ export function parseCalendarCreateHint(
       /^(?:(?:cool|ok|okay|sure|thanks|thank you|ty|yeah|yep|yup|got it|great|nice|perfect|awesome|alright|right|noted|sounds good)[\s,!.\-–—:]*)+/i,
       "",
     )
+    .replace(/\ba\.m\./gi, "am")
+    .replace(/\bp\.m\./gi, "pm")
     .trim();
   if (
     !/\b(add|schedule|book|create|put|block)\b/i.test(text) &&
@@ -183,6 +185,11 @@ export function parseCalendarCreateHint(
     .replace(/\b(?:[01]?\d|2[0-3]):[0-5]\d\b/g, "")
     .replace(/\b\d{1,2}(?:\.\d+)?\s*(?:hours?|hrs?|h|minutes?|mins?|m)\b/gi, "")
     .replace(/\bon\s+(?:personal|work|excro|speedstar)\b/gi, "")
+    // "calendar for/on/at …" is scaffolding, not a title
+    .replace(/^(?:the\s+)?calendar(?:\s+(?:for|on|at|to))?\b/i, "")
+    .replace(/\b(?:in the morning|in the evening|in the afternoon)\b/gi, "")
+    .replace(/\b(?:we have to|i have to|have to|need to|going to|go to)\b/gi, "")
+    .replace(/\b(?:play)\b/gi, "")
     .replace(/\s+/g, " ")
     .replace(/^[\s,.\-–—]+|[\s,.\-–—]+$/g, "")
     .trim();
@@ -190,7 +197,14 @@ export function parseCalendarCreateHint(
   if (/^with\s+\S/i.test(title)) {
     title = `Meeting ${title}`;
   }
-  if (!title) title = "Event";
+  // Bare leftovers after "block calendar for tomorrow 10am"
+  if (!title || /^(calendar|for|on|at|the|a|an|event)$/i.test(title)) {
+    title = /\bblock\b/i.test(message) ? "Busy" : "Event";
+  }
+  // Title-case short activity phrases ("table tennis")
+  if (title === title.toLowerCase() && title.length <= 40) {
+    title = title.replace(/\b\w/g, (c) => c.toUpperCase());
+  }
 
   const start = zonedLocalDateTime(timeZone, day, clock.hour, clock.minute);
   const end = new Date(start.getTime() + durationMs);

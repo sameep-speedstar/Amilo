@@ -123,4 +123,27 @@ describe("timezone helpers", () => {
       "Friday 7 August · 2:00 pm",
     );
   });
+
+  it("block calendar without activity → Busy; with activity → title", () => {
+    const now = new Date("2026-08-07T12:00:00.000Z");
+    const bare = parseCalendarCreateHint(
+      "Block calendar for tomorrow 10 AM",
+      "Asia/Kolkata",
+      now,
+    );
+    assert.ok(bare);
+    assert.equal(bare!.title, "Busy");
+    assert.equal(
+      formatLocalWhenFriendly(new Date(bare!.startIso), "Asia/Kolkata"),
+      "Saturday 8 August · 10:00 am",
+    );
+
+    const play = parseCalendarCreateHint(
+      "Block calendar at 10 a.m. in the morning, we have to go to play table tennis",
+      "Asia/Kolkata",
+      now,
+    );
+    assert.ok(play);
+    assert.match(play!.title, /table tennis/i);
+  });
 });
