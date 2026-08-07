@@ -1138,6 +1138,7 @@ async function listMailCandidates(
   userId: string,
   mutedPatterns: string[],
   limit: number,
+  opts?: { excludePassive?: boolean },
 ) {
   const rows = await db.query.events.findMany({
     where: and(
@@ -1148,7 +1149,7 @@ async function listMailCandidates(
       ne(events.kind, "muted"),
     ),
     orderBy: [desc(events.createdAt)],
-    limit: 40,
+    limit: 50,
   });
   return rows
     .filter((e) => {
@@ -1165,6 +1166,7 @@ async function listMailCandidates(
       const hay = `${e.actor ?? ""} ${e.title ?? ""} ${e.snippet ?? ""}`;
       if (matchesMutedPattern(hay, mutedPatterns)) return false;
       if (looksLikePromoMail(hay)) return false;
+      if (opts?.excludePassive && isPassiveTransactionalMail(hay)) return false;
       return e.kind === "mail" || !e.kind;
     })
     .slice(0, limit);
@@ -1175,22 +1177,84 @@ function looksLikePromoMail(hay: string): boolean {
   return (
     /\b(mubarak|newsletter|unsubscribe|% off|flat \d+%|travel budget|flash sale|limited time)\b/.test(
       h,
-    ) || /\b(deal|offer|promo)\b/.test(h)
+    ) || /\b(deal|offer|promo|latest updates on stocks)\b/.test(h)
   );
 }
 
-function mailPriorityScore(title: string, actor: string, vipList: string[]): number {
+/** FYI bank/broker/app noise — no user action needed. */
+export function isPassiveTransactionalMail(hay: string): boolean {
+  const h = hay.toLowerCase();
+  if (isActionDemandingMail(h)) return false;
+  return (
+    /\bupi\s+debit\b/.test(h) ||
+    /\bdebit alert\b/.test(h) ||
+    /\bcredit alert\b/.test(h) ||
+    /\btransaction (alert|notification|successful)\b/.test(h) ||
+    (/\b(spent|paid|debited|credited)\b/.test(h) && /\balert\b/.test(h)) ||
+    /\border and trade confirmation/.test(h) ||
+    /\btrade confirmation/.test(h) ||
+    /\bprovisional margin statement\b/.test(h) ||
+    /\bmargin statement\b/.test(h) ||
+    (/\bportfolio\b/.test(h) && /\b(update|summary|statement)\b/.test(h)) ||
+    /\bnext (mf )?sip will be triggered\b/.test(h) ||
+    /\bsip (will be|is) (triggered|processed)\b/.test(h) ||
+    /\breceipt from\b/.test(h) ||
+    /\bpayment (received|successful|confirmed)\b/.test(h) ||
+    /\b(otp|one[- ]time password|passcode)\b/.test(h) ||
+    /\b(shipping|shipped|out for delivery|delivered)\b/.test(h)
+  );
+}
+
+/** Needs the user to do something (pay, fix, reply, complete). */
+export function isActionDemandingMail(hay: string): boolean {
+  const h = hay.toLowerCase();
+  return (
+    (/\b(bill|payment|emi|sip instalment|sip installment|installment)\b/.test(h) &&
+      /\b(due|overdue|pending|failed|fail|insufficient|unpaid|outstanding)\b/.test(h)) ||
+    /\b(failed|failure|insufficient balance|could(?:n't| not) process)\b/.test(h) ||
+    /\b(action required|action needed|immediate action)\b/.test(h) ||
+    /\bplease (verify|update|confirm|add|complete|respond|reply)\b/.test(h) ||
+    (/\b(verify|update|add|complete)\b/.test(h) &&
+      /\b(kyc|details|contact|profile|account|document)\b/.test(h)) ||
+    /\b(overdue|past due|due (today|tomorrow|on|by))\b/.test(h) ||
+    (/\b(invoice|payment)\b/.test(h) && /\b(due|pay now|outstanding|unpaid)\b/.test(h)) ||
+    /\b(application|interview|offer letter|schedule a call)\b/.test(h)
+  );
+}
+
+function isVipMail(hay: string, vipList: string[]): boolean {
+  const h = hay.toLowerCase();
+  return vipList.some((v) => {
+    const needle = v.trim().toLowerCase();
+    return needle.length >= 2 && h.includes(needle);
+  });
+}
+
+/**
+ * Score for brief priority. Passive txn alerts → 0 (excluded).
+ * Action-demanding mail scores high; VIP can still surface.
+ */
+export function mailPriorityScore(
+  title: string,
+  actor: string,
+  vipList: string[] = [],
+  snippet = "",
+): number {
+  const hay = `${actor} ${title} ${snippet}`;
   const t = title.toLowerCase();
-  const a = actor.toLowerCase();
-  let score = 20;
-  if (/\b(fail|failed|insufficient|overdue|action required|urgent|verify|confirm|receipt|invoice|payment|sip|margin|debit|credit)\b/.test(t)) {
-    score += 40;
+  if (looksLikePromoMail(hay)) return 0;
+  if (isPassiveTransactionalMail(hay)) return 0;
+
+  let score = 0;
+  if (isActionDemandingMail(hay)) {
+    score += 70;
+    if (/\b(failed|insufficient|overdue|due today)\b/.test(t)) score += 20;
+    if (/\bbill\b/.test(t) && /\bdue\b/.test(t)) score += 15;
   }
-  if (/\b(application|interview|offer letter)\b/.test(t)) score += 25;
-  if (vipList.some((v) => v && (a.includes(v.toLowerCase()) || t.includes(v.toLowerCase())))) {
-    score += 35;
-  }
-  if (looksLikePromoMail(`${actor} ${title}`)) score -= 50;
+  if (/\b(application|interview|offer letter)\b/.test(t)) score += 55;
+  if (isVipMail(hay, vipList)) score += 40;
+
+  // Generic personal mail with no action signal stays out of top brief.
   return score;
 }
 
@@ -1407,13 +1471,17 @@ export async function buildPriorityBriefPayload(
     });
   }
 
-  const mailRows = await listMailCandidates(db, userId, mutedPatterns, 20);
+  const mailRows = await listMailCandidates(db, userId, mutedPatterns, 25, {
+    excludePassive: true,
+  });
   for (const e of mailRows) {
     const from = shortActor(e.actor);
     const subject = cleanSubject(e.title);
     const snippet = (e.snippet ?? "").replace(/\s+/g, " ").trim().slice(0, 220);
+    const score = mailPriorityScore(subject, e.actor ?? "", vipList, snippet);
+    if (score <= 0) continue;
     cands.push({
-      score: mailPriorityScore(subject, e.actor ?? "", vipList),
+      score,
       kind: "mail",
       label: `${subject} — ${from}`.slice(0, 90),
       detail: [`From: ${from}`, `Subject: ${subject}`, snippet ? `Preview: ${snippet}` : null]
