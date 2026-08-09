@@ -1,6 +1,11 @@
 import type { BrainPort, GraphUpdate } from "@amilo/brain-contract";
 import type { ChannelPort, InboundMessage, OutboundMessage } from "./channel.js";
 import {
+  extractInviteeNames,
+  isCalendarInviteIntent,
+  parseForwardToCalendar,
+} from "./forwardParse.js";
+import {
   formatLocalHm,
   formatLocalIsoWall,
   isTimezoneAffirmative,
@@ -217,6 +222,16 @@ export interface OrchestratorDeps {
     suggested: { startIso: string; endIso: string } | null;
     conflictTitle: string | null;
   }>;
+  /** Resolve stored person email by name (context graph + seeds). */
+  resolveContactEmail?: (
+    userId: string,
+    nameHint: string,
+  ) => Promise<{ label: string; email: string } | null>;
+  /** Persist person email when learned from drafts / edits. */
+  rememberContactEmail?: (
+    userId: string,
+    opts: { label: string; email: string },
+  ) => Promise<void>;
   createPending?: (opts: {
     userId: string;
     kind: string;
@@ -254,11 +269,135 @@ export function looksLikeNewActionIntent(
   if (/^(mute|unmute|sync|google|help|pause|resume|briefs)\b/i.test(t)) return true;
   if (extractMutePatternFromMessage(t)) return true;
   if (parseCalendarCreateHint(t, timeZone, now)) return true;
+  if (parseForwardToCalendar(t, timeZone, now)) return true;
+  if (isCalendarInviteIntent(t)) return true;
   if (parseReminderMessage(t, timeZone, now).length > 0) return true;
   if (/\b(send|draft)\b/i.test(t) && /\b(email|mail|invite)\b/i.test(t)) return true;
   if (/\bcalendar invite\b/i.test(t)) return true;
   if (/\binvite\b/i.test(t) && /@|\bspeedstar\b|\brajeev\b|\brajiv\b/i.test(t)) return true;
   return false;
+}
+
+function normalizeAttendeeEmail(raw: string): string {
+  let to = raw.toLowerCase().trim();
+  to = to.replace(/@speedstart\.ai$/i, "@speedstar.ai");
+  if (/@speedstar\.ai$/i.test(to) && /^(rajiv|rajeev)@/i.test(to)) {
+    to = "rajeev@speedstar.ai";
+  }
+  return to;
+}
+
+async function resolveAttendeesFromMessage(
+  userId: string,
+  message: string,
+  deps: OrchestratorDeps,
+  existing?: unknown,
+): Promise<string[]> {
+  const out = new Set<string>();
+  if (Array.isArray(existing)) {
+    for (const a of existing) {
+      const e = normalizeAttendeeEmail(String(a));
+      if (e.includes("@")) out.add(e);
+    }
+  } else if (typeof existing === "string" && existing.includes("@")) {
+    out.add(normalizeAttendeeEmail(existing));
+  }
+  const emailInText = message.match(/\b([\w.+-]+@[\w.-]+\.\w+)\b/);
+  if (emailInText?.[1]) out.add(normalizeAttendeeEmail(emailInText[1]));
+
+  if (deps.resolveContactEmail) {
+    for (const name of extractInviteeNames(message)) {
+      const hit = await deps.resolveContactEmail(userId, name);
+      if (hit?.email) out.add(normalizeAttendeeEmail(hit.email));
+    }
+  }
+  // Known shorthand when name extract missed but message clearly targets Rajeev.
+  if (!out.size && /\braj(ee|i)v\b/i.test(message) && deps.resolveContactEmail) {
+    const hit = await deps.resolveContactEmail(userId, "Rajeev");
+    if (hit?.email) out.add(normalizeAttendeeEmail(hit.email));
+  }
+  return [...out];
+}
+
+async function proposeCalendarCreatePending(
+  msg: InboundMessage,
+  deps: OrchestratorDeps,
+  timeZone: string,
+  payloadIn: Record<string, unknown>,
+): Promise<OutboundMessage[]> {
+  if (!deps.createPending) {
+    return [{ text: "Calendar proposals aren't wired yet." }];
+  }
+  const payload: Record<string, unknown> = {
+    accountLabel: "personal",
+    ...payloadIn,
+  };
+  if (!payload.accountLabel) payload.accountLabel = "personal";
+
+  let conflictNote: string | null = null;
+  if (deps.checkCalendarConflict) {
+    const startIso = String(payload.start ?? payload.startIso ?? "").trim();
+    const endIso = String(payload.end ?? payload.endIso ?? "").trim();
+    if (startIso && endIso) {
+      try {
+        const conflict = await deps.checkCalendarConflict(msg.userId, {
+          startIso,
+          endIso,
+          timezone: timeZone,
+        });
+        conflictNote = conflict.conflictNote;
+        if (!conflict.clear && conflict.suggested) {
+          payload.start = conflict.suggested.startIso;
+          payload.end = conflict.suggested.endIso;
+          payload.startIso = conflict.suggested.startIso;
+          payload.endIso = conflict.suggested.endIso;
+          payload.conflictAdjusted = true;
+          payload.originalStart = startIso;
+          payload.originalEnd = endIso;
+          if (conflict.conflictTitle) payload.conflictWith = conflict.conflictTitle;
+        } else if (!conflict.clear) {
+          payload.conflictWarning = true;
+          if (conflict.conflictTitle) payload.conflictWith = conflict.conflictTitle;
+        }
+      } catch (err) {
+        console.error(
+          JSON.stringify({
+            event: "calendar_conflict_check_failed",
+            error: err instanceof Error ? err.message : String(err),
+          }),
+        );
+      }
+    }
+  }
+
+  const attendees = Array.isArray(payload.attendees)
+    ? payload.attendees.map((a) => String(a))
+    : [];
+  const summary = formatCalendarProposalSummary({
+    kind: "calendar_create",
+    title: String(payload.title ?? "event"),
+    startIso: String(payload.start ?? payload.startIso ?? ""),
+    endIso: String(payload.end ?? payload.endIso ?? ""),
+    timeZone,
+    attendees,
+  });
+  const pending = await deps.createPending({
+    userId: msg.userId,
+    kind: "calendar_create",
+    summary,
+    payload,
+  });
+  return [
+    {
+      text: [
+        ...(conflictNote ? [conflictNote, ""] : []),
+        `Proposed (${pending.kind}):`,
+        pending.summary,
+        "",
+        "Reply yes to write to Google Calendar, cancel to drop.",
+      ].join("\n"),
+    },
+  ];
 }
 
 /** Apply "edit …" patches to a pending payload (email to/subject, calendar title). */
@@ -967,6 +1106,63 @@ export async function handleInbound(
     ];
   }
 
+  // Appointment / travel forwards → one confirm for calendar (skip soft "add to calendar?" chat).
+  if (deps.createPending) {
+    const forward = parseForwardToCalendar(text, briefCtx.timezone);
+    if (forward) {
+      return proposeCalendarCreatePending(msg, deps, briefCtx.timezone, {
+        title: forward.title,
+        start: forward.startIso,
+        end: forward.endIso,
+        startIso: forward.startIso,
+        endIso: forward.endIso,
+        ...(forward.description ? { description: forward.description } : {}),
+        source: forward.source,
+      });
+    }
+  }
+
+  // Calendar invite by name — resolve stored email, propose calendar_create (not email draft).
+  if (deps.createPending && isCalendarInviteIntent(text)) {
+    const hint = parseCalendarCreateHint(text, briefCtx.timezone);
+    if (hint) {
+      const attendees = await resolveAttendeesFromMessage(msg.userId, text, deps);
+      if (!attendees.length) {
+        const names = extractInviteeNames(text);
+        return [
+          {
+            text: names.length
+              ? `I don't have an email for ${names.join(", ")} yet. Say e.g. invite ${names[0]} <email@domain> for that slot.`
+              : "Who should I invite? Include a name I know, or an email address.",
+          },
+        ];
+      }
+      for (const email of attendees) {
+        if (deps.rememberContactEmail) {
+          const label =
+            extractInviteeNames(text)[0] ??
+            (email.startsWith("rajeev@") ? "Rajeev" : email.split("@")[0] ?? "Contact");
+          await deps.rememberContactEmail(msg.userId, { label, email });
+        }
+      }
+      const withName = extractInviteeNames(text)[0];
+      const title =
+        hint.title && !/^(busy|event|meeting)$/i.test(hint.title)
+          ? hint.title
+          : withName
+            ? `Meeting with ${withName}`
+            : "Meeting";
+      return proposeCalendarCreatePending(msg, deps, briefCtx.timezone, {
+        title,
+        start: hint.startIso,
+        end: hint.endIso,
+        startIso: hint.startIso,
+        endIso: hint.endIso,
+        attendees,
+      });
+    }
+  }
+
   const result = await deps.brain.interpret(
     {
       userId: msg.userId,
@@ -1082,18 +1278,49 @@ export async function handleInbound(
       delete payload.type;
       if (!payload.accountLabel) payload.accountLabel = "personal";
 
+      // Calendar invite phrased as email → real calendar create with attendees.
+      if (kind === "email_draft" && isCalendarInviteIntent(text)) {
+        const calHint = parseCalendarCreateHint(text, briefCtx.timezone);
+        if (calHint || payload.start || payload.startIso) {
+          kind = "calendar_create";
+          if (calHint) {
+            payload.title = calHint.title;
+            payload.start = calHint.startIso;
+            payload.end = calHint.endIso;
+            payload.startIso = calHint.startIso;
+            payload.endIso = calHint.endIso;
+          }
+          const invitees = await resolveAttendeesFromMessage(
+            msg.userId,
+            text,
+            deps,
+            payload.to ?? payload.attendees,
+          );
+          if (invitees.length) payload.attendees = invitees;
+          delete payload.to;
+          delete payload.subject;
+          delete payload.body;
+          delete payload.body_draft;
+        }
+      }
+
       // Normalize known contact / ASR typos on email drafts.
       if (kind === "email_draft") {
         const toRaw = strPayload(payload.to);
         if (toRaw) {
-          let to = toRaw.toLowerCase().trim();
-          to = to.replace(/@speedstart\.ai$/i, "@speedstar.ai");
-          if (/@speedstar\.ai$/i.test(to) && /^(rajiv|rajeev)@/i.test(to)) {
-            to = "rajeev@speedstar.ai";
-          }
-          payload.to = to;
-        } else if (/\brajeev\b|\brajiv\b/i.test(text) && /\bspeedstar\b/i.test(text)) {
-          payload.to = "rajeev@speedstar.ai";
+          payload.to = normalizeAttendeeEmail(toRaw);
+        } else if (/\brajeev\b|\brajiv\b/i.test(text)) {
+          const hit = deps.resolveContactEmail
+            ? await deps.resolveContactEmail(msg.userId, "Rajeev")
+            : { email: "rajeev@speedstar.ai", label: "Rajeev" };
+          if (hit?.email) payload.to = hit.email;
+        }
+        if (strPayload(payload.to) && deps.rememberContactEmail) {
+          const names = extractInviteeNames(text);
+          await deps.rememberContactEmail(msg.userId, {
+            label: names[0] ?? "Contact",
+            email: strPayload(payload.to),
+          });
         }
       }
 
@@ -1106,6 +1333,23 @@ export async function handleInbound(
           payload.end = hint.endIso;
           payload.startIso = hint.startIso;
           payload.endIso = hint.endIso;
+        }
+        const attendees = await resolveAttendeesFromMessage(
+          msg.userId,
+          text,
+          deps,
+          payload.attendees,
+        );
+        if (attendees.length) {
+          payload.attendees = attendees;
+          for (const email of attendees) {
+            if (deps.rememberContactEmail) {
+              const label =
+                extractInviteeNames(text)[0] ??
+                (email.startsWith("rajeev@") ? "Rajeev" : email.split("@")[0] ?? "Contact");
+              await deps.rememberContactEmail(msg.userId, { label, email });
+            }
+          }
         }
       }
 
@@ -1228,12 +1472,16 @@ export async function handleInbound(
       if (kind === "email_draft") {
         summary = `Email draft to ${String(payload.to ?? action.to ?? "?")}: ${String(payload.subject ?? action.subject ?? "(no subject)")}`;
       } else if (kind.startsWith("calendar_")) {
+        const attendees = Array.isArray(payload.attendees)
+          ? payload.attendees.map((a) => String(a))
+          : [];
         summary = formatCalendarProposalSummary({
           kind,
           title: String(payload.title ?? action.title ?? "event"),
           startIso: String(payload.start ?? payload.startIso ?? action.start ?? action.startIso ?? ""),
           endIso: String(payload.end ?? payload.endIso ?? action.end ?? action.endIso ?? ""),
           timeZone: briefCtx.timezone,
+          attendees,
         });
       } else {
         summary =

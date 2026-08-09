@@ -33,11 +33,14 @@ import {
   createPendingAction,
   createReminder,
   deleteGoogleAccount,
+  ensureKnownContacts,
   findMessageByWaId,
   getOpenPendingAction,
   getRecentChatSummary,
   getUserById,
   getUserPrefs,
+  rememberPersonEmail,
+  resolvePersonEmail,
   getWhatsAppAddress,
   getWhatsAppLastInbound,
   listGoogleAccounts,
@@ -157,7 +160,14 @@ function orchestratorDeps(): OrchestratorDeps {
     setPaused: async (id, p) => {
       await setUserStatus(db, id, p ? "paused" : "active");
     },
-    getContextGraphSummary: (id) => summarizeContextGraph(db, id),
+    getContextGraphSummary: async (id) => {
+      await ensureKnownContacts(db, id);
+      return summarizeContextGraph(db, id);
+    },
+    resolveContactEmail: (userId, nameHint) => resolvePersonEmail(db, userId, nameHint),
+    rememberContactEmail: async (userId, opts) => {
+      await rememberPersonEmail(db, userId, opts);
+    },
     getRecentChatSummary: (id, opts) =>
       getRecentChatSummary(db, id, 14, {
         ...(opts?.excludeMessageId ? { excludeWaMessageId: opts.excludeMessageId } : {}),

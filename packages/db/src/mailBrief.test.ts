@@ -75,12 +75,23 @@ describe("brief mail action filter", () => {
   it("surfaces today's dental appointment reminders", () => {
     const title =
       "Appointment Reminder: Fri, 07 Aug 2026 04:30 pm @ LITTLE PEARLS ® Dental Clinic";
-    assert.equal(isActionDemandingMail(title), true);
+    // Reminders are calendar-bound, not action-demanding priority mail.
+    assert.equal(isActionDemandingMail(title), false);
     const score = mailPriorityScore(title, "no-reply@practo.net", [], "", {
       timezone: "Asia/Kolkata",
       now: new Date("2026-08-07T03:00:00.000Z"),
     });
     assert.ok(score >= 90, `score=${score}`);
+  });
+
+  it("drops stale Practo appointment reminders from priority scores", () => {
+    const title =
+      "Appointment Reminder: Sat, 08 Aug 2026 04:30 pm @ LITTLE PEARLS ® Dental Clinic";
+    const score = mailPriorityScore(title, "no-reply@practo.net", [], "", {
+      timezone: "Asia/Kolkata",
+      now: new Date("2026-08-09T03:00:00.000Z"),
+    });
+    assert.equal(score, 0);
   });
 
   it("dedupes Practo reminders by time+clinic (patient optional)", () => {

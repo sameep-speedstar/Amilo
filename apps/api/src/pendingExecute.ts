@@ -90,6 +90,11 @@ export async function executePendingAction(
       const startIso = str(payload.start ?? payload.startIso);
       const endIso = str(payload.end ?? payload.endIso);
       if (!startIso || !endIso) throw new Error("Missing start/end for calendar event");
+      const attendees = Array.isArray(payload.attendees)
+        ? payload.attendees.map((a) => String(a).trim()).filter((a) => a.includes("@"))
+        : typeof payload.attendees === "string" && payload.attendees.includes("@")
+          ? [str(payload.attendees)]
+          : [];
       const created = await createCalendarEvent(accessToken, {
         title,
         startIso: toGoogleWall(startIso, timezone),
@@ -97,6 +102,7 @@ export async function executePendingAction(
         timezone,
         location: payload.location ? str(payload.location) : null,
         description: payload.description ? str(payload.description) : null,
+        attendees: attendees.length ? attendees : null,
       });
       const account = (await getGoogleAccount(db, row.userId, label)) ??
         (await listGoogleAccounts(db, row.userId))[0];
@@ -135,7 +141,12 @@ export async function executePendingAction(
         note: "calendar_create",
         meta: { pendingId: row.id, eventId: created.id },
       });
-      return { ok: true, message: `Added to Google Calendar (${label}): ${title}` };
+      return {
+        ok: true,
+        message: attendees.length
+          ? `Added to Google Calendar (${label}): ${title} — invited ${attendees.join(", ")}`
+          : `Added to Google Calendar (${label}): ${title}`,
+      };
     }
 
     if (row.kind === "calendar_update") {

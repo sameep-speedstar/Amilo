@@ -19,6 +19,15 @@ export {
 export { handleInbound, normalizeGoogleLabel, isBriefRequest, type OrchestratorDeps } from "./orchestrator.js";
 export { looksLikeNewActionIntent, applyPendingEditPatch } from "./orchestrator.js";
 export {
+  cleanCalendarDisplayTitle,
+  extractInviteeNames,
+  isCalendarInviteIntent,
+  parseAppointmentForward,
+  parseForwardToCalendar,
+  parseTravelForward,
+  type ForwardCalendarHint,
+} from "./forwardParse.js";
+export {
   flattenWaTemplateParam,
   formatLocalDateLong,
   formatLocalHm,

@@ -1,6 +1,6 @@
 import { and, asc, desc, eq, gte, isNull, lte, ne, sql } from "drizzle-orm";
 import type { GraphUpdate } from "@amilo/brain-contract";
-import { formatLocalHm, guessTimezoneFromPhone, localDayBoundsUtc } from "@amilo/core";
+import { formatLocalHm, guessTimezoneFromPhone, localDayBoundsUtc, cleanCalendarDisplayTitle } from "@amilo/core";
 import type { Db } from "./index.js";
 import {
   channels,
@@ -466,6 +466,86 @@ export async function summarizeContextGraph(db: Db, userId: string): Promise<str
   ]
     .filter(Boolean)
     .join("\n");
+}
+
+const KNOWN_CONTACTS: Array<{
+  label: string;
+  email: string;
+  attrs?: Record<string, unknown>;
+}> = [
+  {
+    label: "Rajeev",
+    email: "rajeev@speedstar.ai",
+    attrs: { role: "CTO", aliases: ["Rajiv", "rajeev", "rajiv"] },
+  },
+];
+
+/** Seed durable person emails we already know (idempotent merge). */
+export async function ensureKnownContacts(db: Db, userId: string): Promise<void> {
+  for (const c of KNOWN_CONTACTS) {
+    await rememberPersonEmail(db, userId, {
+      label: c.label,
+      email: c.email,
+      ...(c.attrs ? { attrs: c.attrs } : {}),
+    });
+  }
+}
+
+/** Persist / merge a person node's email for later invite resolution. */
+export async function rememberPersonEmail(
+  db: Db,
+  userId: string,
+  opts: { label: string; email: string; attrs?: Record<string, unknown> },
+): Promise<ContextNodeRow> {
+  const email = opts.email.trim().toLowerCase();
+  const label = normalizeLabel(opts.label);
+  return upsertNode(
+    db,
+    userId,
+    "person",
+    label,
+    { ...(opts.attrs ?? {}), email },
+    95,
+  );
+}
+
+/** Resolve a person's email from the context graph (+ known seeds). */
+export async function resolvePersonEmail(
+  db: Db,
+  userId: string,
+  nameHint: string,
+): Promise<{ label: string; email: string } | null> {
+  await ensureKnownContacts(db, userId);
+  const needle = nameHint.trim().toLowerCase().replace(/[^a-z]/g, "");
+  if (!needle || needle.length < 2) return null;
+
+  if (/^raj(ee|i)v$/.test(needle)) {
+    return { label: "Rajeev", email: "rajeev@speedstar.ai" };
+  }
+
+  const nodes = await db.query.contextNodes.findMany({
+    where: and(eq(contextNodes.userId, userId), eq(contextNodes.kind, "person")),
+    orderBy: [desc(contextNodes.lastSeenAt)],
+    limit: 80,
+  });
+
+  for (const n of nodes) {
+    const labelNorm = n.label.toLowerCase().replace(/[^a-z]/g, "");
+    const attrs = (n.attrs ?? {}) as Record<string, unknown>;
+    const emailRaw = typeof attrs.email === "string" ? attrs.email.trim().toLowerCase() : "";
+    const aliases = Array.isArray(attrs.aliases)
+      ? attrs.aliases.map((a) => String(a).toLowerCase().replace(/[^a-z]/g, ""))
+      : [];
+    const hit =
+      labelNorm === needle ||
+      labelNorm.startsWith(needle) ||
+      needle.startsWith(labelNorm) ||
+      aliases.includes(needle);
+    if (hit && emailRaw.includes("@")) {
+      return { label: n.label, email: emailRaw };
+    }
+  }
+  return null;
 }
 
 export async function getGoogleAccount(
@@ -1245,8 +1325,9 @@ export function isPassiveTransactionalMail(hay: string): boolean {
 export function isActionDemandingMail(hay: string): boolean {
   const h = hay.toLowerCase();
   if (isFyiRecruitingMail(h)) return false;
+  // Appointment reminders are calendar items — not priority mail (scored separately).
+  if (/\bappointment reminder\b/.test(h)) return false;
   return (
-    /\bappointment reminder\b/.test(h) ||
     (/\b(bill|payment|emi|sip instalment|sip installment|installment)\b/.test(h) &&
       /\b(due|overdue|pending|failed|fail|insufficient|unpaid|outstanding)\b/.test(h)) ||
     /\b(amount due|minimum (amount )?due|payment due( date)?|total (amount )?due|last date to pay|pay by)\b/.test(
@@ -1378,13 +1459,16 @@ export function mailPriorityScore(
   if (looksLikePromoMail(hay)) return 0;
   if (isPassiveTransactionalMail(hay)) return 0;
 
-  const appt = parseAppointmentReminder(
-    title,
-    opts?.timezone ?? "Asia/Kolkata",
-    opts?.now,
-    snippet,
-  );
-  if (appt) return appt.score;
+  // Practo-style reminders: calendar line only for focus day — never stale priorities.
+  if (/appointment reminder/i.test(title)) {
+    const appt = parseAppointmentReminder(
+      title,
+      opts?.timezone ?? "Asia/Kolkata",
+      opts?.now,
+      snippet,
+    );
+    return appt ? appt.score : 0;
+  }
 
   if (isFyiRecruitingMail(hay)) return 0;
 
@@ -1639,9 +1723,10 @@ export async function buildPriorityBriefPayload(
     const subject = cleanSubject(e.title);
     const fullTitle = (e.title ?? "").trim();
     const snippet = (e.snippet ?? "").replace(/\s+/g, " ").trim().slice(0, 280);
-    const appt = parseAppointmentReminder(fullTitle, timezone, now, snippet);
-    if (appt) {
-      if (appt.dayOffset === apptDayOffset) {
+    // Appointment reminders → calendar only (never PRIORITIES / STILL OPEN).
+    if (/appointment reminder/i.test(fullTitle)) {
+      const appt = parseAppointmentReminder(fullTitle, timezone, now, snippet);
+      if (appt && appt.dayOffset === apptDayOffset) {
         const prev = apptByKey.get(appt.dedupeKey);
         if (!prev || (appt.label.length > prev.label.length && /\(/.test(appt.label))) {
           apptByKey.set(appt.dedupeKey, {
@@ -1701,7 +1786,7 @@ export async function buildPriorityBriefPayload(
       const allDay = Boolean((e.meta as { allDay?: unknown })?.allDay);
       const when =
         allDay || !e.occursAt ? "all day" : formatLocalHm(e.occursAt, timezone);
-      return `${when} ${(e.title ?? "Event").trim()}`;
+      return `${when} ${cleanCalendarDisplayTitle((e.title ?? "Event").trim())}`;
     }),
     ...apptSorted.map((a) => a.label),
   ];

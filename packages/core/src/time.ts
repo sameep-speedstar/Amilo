@@ -121,8 +121,8 @@ export function parseCalendarCreateHint(
     .replace(/\bp\.m\./gi, "pm")
     .trim();
   if (
-    !/\b(add|schedule|book|create|put|block)\b/i.test(text) &&
-    !/\b(meeting|lunch|call|event|appointment)\b/i.test(text)
+    !/\b(add|schedule|book|create|put|block|invite)\b/i.test(text) &&
+    !/\b(meeting|lunch|call|event|appointment|calendar invite)\b/i.test(text)
   ) {
     return null;
   }
@@ -172,12 +172,16 @@ export function parseCalendarCreateHint(
   let title = text
     // Instruction verbs — not part of the event title
     .replace(
-      /^(?:please\s+)?(?:add|schedule|book|create|put|block)\s+(?:a\s+|an\s+|me\s+)?/i,
+      /^(?:please\s+)?(?:add|schedule|book|create|put|block|invite|send)\s+(?:a\s+|an\s+|me\s+)?/i,
       "",
     )
     .replace(
-      /\b(?:add|schedule|book|create|put|block)\s+(?:a\s+|an\s+|me\s+)?/gi,
+      /\b(?:add|schedule|book|create|put|block|invite|send)\s+(?:a\s+|an\s+|me\s+)?/gi,
       "",
+    )
+    .replace(/\b(?:calendar\s+)?invite\b/gi, "")
+    .replace(/\bto\s+[A-Za-z][A-Za-z.'-]{1,40}\b/gi, (m) =>
+      /\bto\s+(today|tomorrow|me|calendar)\b/i.test(m) ? m : "",
     )
     .replace(/\b(?:today|tomorrow|tomorow|tommorow|in\s+\d+\s+days?)\b/gi, "")
     .replace(/\b(?:at|@)\s*\d{1,2}(?::\d{2})?\s*(?:am|pm)?\b/gi, "")
@@ -221,6 +225,7 @@ export function formatCalendarProposalSummary(opts: {
   startIso?: string | null;
   endIso?: string | null;
   timeZone: string;
+  attendees?: string[] | null;
 }): string {
   const start = parseIsoDate(opts.startIso);
   const when = start ? formatLocalWhenFriendly(start, opts.timeZone) : "time TBD";
@@ -230,7 +235,9 @@ export function formatCalendarProposalSummary(opts: {
       : opts.kind === "calendar_cancel"
         ? "Cancel"
         : "Create";
-  return `${verb}: ${opts.title} — ${when}`;
+  const invite =
+    opts.attendees?.length ? ` (invite ${opts.attendees.join(", ")})` : "";
+  return `${verb}: ${opts.title} — ${when}${invite}`;
 }
 
 /** Friendly label for confirmations. */

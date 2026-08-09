@@ -17,6 +17,8 @@ export interface CalendarWriteInput {
   timezone?: string;
   location?: string | null;
   description?: string | null;
+  /** Guest emails — Google sends invites when sendUpdates=all. */
+  attendees?: string[] | null;
 }
 
 const BASE = "https://www.googleapis.com/calendar/v3/calendars/primary/events";
@@ -59,14 +61,21 @@ export async function createCalendarEvent(
   input: CalendarWriteInput,
 ): Promise<CalendarEvent> {
   const tz = input.timezone ?? "Asia/Kolkata";
-  const body = {
+  const attendees = (input.attendees ?? [])
+    .map((e) => e.trim().toLowerCase())
+    .filter((e) => e.includes("@"))
+    .map((email) => ({ email }));
+  const body: Record<string, unknown> = {
     summary: input.title,
     location: input.location ?? undefined,
     description: input.description ?? undefined,
     start: { dateTime: input.startIso, timeZone: tz },
     end: { dateTime: input.endIso, timeZone: tz },
   };
-  const res = await fetch(BASE, {
+  if (attendees.length) body.attendees = attendees;
+
+  const url = attendees.length ? `${BASE}?sendUpdates=all` : BASE;
+  const res = await fetch(url, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${accessToken}`,
