@@ -50,6 +50,9 @@ npm run dev
 - **M4.2** — Scheduled morning/evening template pushes
 - **M5** — Confirm-before-write (calendar) + email drafts + light A/B log
 - **M5.1** — Voice notes (WhatsApp audio → Sarvam STT → same orchestrator as text)
+- **M5.2** — Travel intelligence (places, leave-by, Maps alerts)
+- **M5.3** — Gmail send after confirm
+- **M5.4** — Commitment close (done / drop / snooze)
 - **M6** — App-ready shell (onboarding web, second channel)
 
 ## Non-negotiables
