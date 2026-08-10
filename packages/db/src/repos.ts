@@ -468,6 +468,85 @@ export async function summarizeContextGraph(db: Db, userId: string): Promise<str
     .join("\n");
 }
 
+/** User-facing memory dump (only for explicit "about me" commands). */
+export async function summarizeAboutMe(db: Db, userId: string): Promise<string> {
+  const nodes = await db.query.contextNodes.findMany({
+    where: eq(contextNodes.userId, userId),
+    orderBy: [desc(contextNodes.lastSeenAt)],
+    limit: 40,
+  });
+  if (!nodes.length) {
+    return "I don't have durable facts stored yet. Tell me things like roles or emails and I'll keep them quietly.";
+  }
+
+  const people: string[] = [];
+  const prefs: string[] = [];
+  const other: string[] = [];
+  for (const n of nodes) {
+    const attrs = (n.attrs ?? {}) as Record<string, unknown>;
+    if (attrs.self === true || n.label === "user") continue;
+    const bits = Object.entries(attrs)
+      .filter(([k]) => !["aliases", "self", "displayName"].includes(k))
+      .slice(0, 4)
+      .map(([k, v]) => `${k}=${String(v)}`);
+    const line = bits.length ? `• ${n.label} (${bits.join(", ")})` : `• ${n.label}`;
+    if (n.kind === "person") people.push(line);
+    else if (n.kind === "preference") prefs.push(line);
+    else other.push(`• [${n.kind}] ${n.label}${bits.length ? ` (${bits.join(", ")})` : ""}`);
+  }
+
+  const sections = [
+    people.length ? ["People", ...people.slice(0, 15)].join("\n") : null,
+    prefs.length ? ["Preferences", ...prefs.slice(0, 10)].join("\n") : null,
+    other.length ? ["Other", ...other.slice(0, 10)].join("\n") : null,
+  ].filter(Boolean);
+
+  if (!sections.length) {
+    return "Nothing durable beyond your account yet. Facts you share (people, emails, prefs) show up here.";
+  }
+  return ["What I've stored (ask forget <name> to remove):", "", ...sections].join("\n");
+}
+
+/** Remove a context node by label (and cascading edges). */
+export async function deleteContextNodeByLabel(
+  db: Db,
+  userId: string,
+  label: string,
+): Promise<{ deleted: boolean; label: string }> {
+  const needle = normalizeLabel(label).toLowerCase();
+  const all = await db.query.contextNodes.findMany({
+    where: eq(contextNodes.userId, userId),
+    limit: 80,
+  });
+  const hit = all.find((n) => {
+    if ((n.attrs as { self?: boolean })?.self) return false;
+    if (n.label.toLowerCase() === needle) return true;
+    const aliases = Array.isArray((n.attrs as { aliases?: unknown })?.aliases)
+      ? ((n.attrs as { aliases: unknown[] }).aliases).map((a) => String(a).toLowerCase())
+      : [];
+    return aliases.includes(needle);
+  });
+  if (!hit) return { deleted: false, label: normalizeLabel(label) };
+  await db.delete(contextNodes).where(eq(contextNodes.id, hit.id));
+  return { deleted: true, label: hit.label };
+}
+
+/** Wipe learned context graph for a user (keeps account + Google + commitments). */
+export async function clearContextGraph(
+  db: Db,
+  userId: string,
+): Promise<{ nodes: number; edges: number }> {
+  const edges = await db
+    .delete(contextEdges)
+    .where(eq(contextEdges.userId, userId))
+    .returning({ id: contextEdges.id });
+  const nodes = await db
+    .delete(contextNodes)
+    .where(eq(contextNodes.userId, userId))
+    .returning({ id: contextNodes.id });
+  return { nodes: nodes.length, edges: edges.length };
+}
+
 const KNOWN_CONTACTS: Array<{
   label: string;
   email: string;

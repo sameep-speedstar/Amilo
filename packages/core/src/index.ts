@@ -28,6 +28,16 @@ export {
   type ForwardCalendarHint,
 } from "./forwardParse.js";
 export {
+  DELETE_MENU,
+  HOW_IT_WORKS,
+  STANDING_HELP,
+  isAboutMeCommand,
+  isHelpCommand,
+  isHowItWorksCommand,
+  isStatusCommand,
+  normalizeCommandText,
+} from "./standingCommands.js";
+export {
   flattenWaTemplateParam,
   formatLocalDateLong,
   formatLocalHm,

@@ -29,9 +29,11 @@ import {
   applyGraphUpdates,
   buildPriorityBriefPayload,
   claimWebhookMessage,
+  clearContextGraph,
   createDb,
   createPendingAction,
   createReminder,
+  deleteContextNodeByLabel,
   deleteGoogleAccount,
   ensureKnownContacts,
   findMessageByWaId,
@@ -53,6 +55,7 @@ import {
   setTimezoneConfirmed,
   setUserStatus,
   setUserTimezone,
+  summarizeAboutMe,
   summarizeCalendarToday,
   summarizeContextGraph,
   summarizeOpenCommitments,
@@ -163,6 +166,13 @@ function orchestratorDeps(): OrchestratorDeps {
     getContextGraphSummary: async (id) => {
       await ensureKnownContacts(db, id);
       return summarizeContextGraph(db, id);
+    },
+    getAboutMeSummary: (id) => summarizeAboutMe(db, id),
+    forgetContextLabel: (userId, label) => deleteContextNodeByLabel(db, userId, label),
+    clearContextMemory: (userId) => clearContextGraph(db, userId),
+    getOpenCommitmentsSummary: async (userId) => {
+      const u = await getUserById(db, userId);
+      return summarizeOpenCommitments(db, userId, u?.timezone ?? "Asia/Kolkata");
     },
     resolveContactEmail: (userId, nameHint) => resolvePersonEmail(db, userId, nameHint),
     rememberContactEmail: async (userId, opts) => {

@@ -6,6 +6,20 @@ import {
   parseForwardToCalendar,
 } from "./forwardParse.js";
 import {
+  DELETE_MENU,
+  HOW_IT_WORKS,
+  STANDING_HELP,
+  isAboutMeCommand,
+  isClearMemoryCommand,
+  isClearMemoryConfirmCommand,
+  isDeleteMenuCommand,
+  isDeletePendingCommand,
+  isHelpCommand,
+  isHowItWorksCommand,
+  isStatusCommand,
+  parseForgetCommand,
+} from "./standingCommands.js";
+import {
   formatLocalHm,
   formatLocalIsoWall,
   isTimezoneAffirmative,
@@ -19,27 +33,7 @@ import {
 } from "./time.js";
 
 const STANDING: Record<string, string> = {
-  help: [
-    "Commands:",
-    "pause / resume — stop or restart Amilo",
-    "connect google <label> — link an account (personal, work, …)",
-    "google — list linked accounts",
-    "disconnect google <label|all> — unlink (Telegram LifeOS untouched)",
-    "mute <phrase> — hide matching mail from sync/brief",
-    "unmute <phrase> / mutes — manage muted phrases",
-    "sync — pull mail + today's calendar from all linked accounts",
-    "brief — on-demand briefing (also: latest brief please, morning, evening)",
-    "briefs — scheduled AM/PM (on/off, morning 7:30, evening 8pm)",
-    "quiet hours 22:00-07:00 — set quiet window",
-    "timezone — show or set your local time (travel: I'm in Dubai)",
-    "remind me … at 12:30 — schedule a ping in your timezone",
-    "yes / cancel — confirm or drop a pending calendar/draft action",
-    "eval log <note> — A/B quality note",
-    "Voice notes — speak; Amilo transcribes and acts like text",
-    "help — show this message",
-    "",
-    "Talk normally for everything else.",
-  ].join("\n"),
+  help: STANDING_HELP,
   pause: "Paused. Your data stays. Send resume when you want me back.",
   resume: "Back. Watching quietly again.",
 };
@@ -92,6 +86,17 @@ export interface OrchestratorDeps {
   isPaused: (userId: string) => Promise<boolean>;
   setPaused: (userId: string, paused: boolean) => Promise<void>;
   getContextGraphSummary?: (userId: string) => Promise<string>;
+  /** Explicit "about me" / memory dump for the user. */
+  getAboutMeSummary?: (userId: string) => Promise<string>;
+  forgetContextLabel?: (
+    userId: string,
+    label: string,
+  ) => Promise<{ deleted: boolean; label: string }>;
+  clearContextMemory?: (
+    userId: string,
+  ) => Promise<{ nodes: number; edges: number }>;
+  /** Open commitments text for status. */
+  getOpenCommitmentsSummary?: (userId: string) => Promise<string>;
   /** Recent WhatsApp turns for multi-turn continuity. */
   getRecentChatSummary?: (
     userId: string,
@@ -266,7 +271,16 @@ export function looksLikeNewActionIntent(
   if (!t || t.length < 4) return false;
   if (/^(yes|y|yeah|yep|ok|okay|confirm|cancel|no|nope|edit)\b/i.test(t)) return false;
   if (isBriefRequest(t)) return true;
-  if (/^(mute|unmute|sync|google|help|pause|resume|briefs)\b/i.test(t)) return true;
+  if (
+    /^(mute|unmute|sync|google|help|commands|pause|resume|briefs|status|pending|open|delete|forget|memory|about)\b/i.test(
+      t,
+    )
+  ) {
+    return true;
+  }
+  if (isHelpCommand(t) || isStatusCommand(t) || isAboutMeCommand(t) || isHowItWorksCommand(t)) {
+    return true;
+  }
   if (extractMutePatternFromMessage(t)) return true;
   if (parseCalendarCreateHint(t, timeZone, now)) return true;
   if (parseForwardToCalendar(t, timeZone, now)) return true;
@@ -526,8 +540,11 @@ export async function handleInbound(
   const text = msg.content.trim();
   const lower = text.toLowerCase();
 
-  if (lower === "help") {
+  if (isHelpCommand(text)) {
     return [{ text: STANDING.help! }];
+  }
+  if (isHowItWorksCommand(text)) {
+    return [{ text: HOW_IT_WORKS }];
   }
   if (lower === "pause") {
     await deps.setPaused(msg.userId, true);
@@ -626,7 +643,18 @@ export async function handleInbound(
       ];
     }
     // New clear intent supersedes the stuck proposal (LifeOS-style).
-    if (looksLikeNewActionIntent(text, tzForPending.timezone)) {
+    // Status / memory / delete commands inspect state without dropping the proposal.
+    const inspectOnly =
+      isStatusCommand(text) ||
+      isAboutMeCommand(text) ||
+      isDeleteMenuCommand(text) ||
+      isDeletePendingCommand(text) ||
+      isClearMemoryCommand(text) ||
+      isClearMemoryConfirmCommand(text) ||
+      Boolean(parseForgetCommand(text));
+    if (inspectOnly) {
+      // fall through
+    } else if (looksLikeNewActionIntent(text, tzForPending.timezone)) {
       await deps.rejectPending(msg.userId);
       // fall through to normal routing
     } else {
@@ -645,6 +673,99 @@ export async function handleInbound(
 
   // --- Timezone confirm / update (before other chat) ---
   const tzState = tzForPending;
+
+  // --- Standing discovery commands ---
+  if (isStatusCommand(text)) {
+    const lines: string[] = ["STATUS"];
+    const pending = deps.getOpenPending
+      ? await deps.getOpenPending(msg.userId)
+      : openPending;
+    if (pending) {
+      lines.push(`Pending: ${pending.summary}`, "Reply yes to confirm, cancel to drop.");
+    } else {
+      lines.push("Pending: none");
+    }
+    if (deps.getOpenCommitmentsSummary) {
+      const open = await deps.getOpenCommitmentsSummary(msg.userId);
+      lines.push("", "OPEN", open === "none yet" ? "• none" : open);
+    }
+    if (deps.listGoogleAccounts) {
+      const accounts = await deps.listGoogleAccounts(msg.userId);
+      lines.push(
+        "",
+        "GOOGLE",
+        accounts.length
+          ? accounts.map((a) => `• ${a.label}: ${a.email ?? "(pending)"}`).join("\n")
+          : '• none — connect google personal',
+      );
+    }
+    if (deps.getTimezoneState) {
+      lines.push("", `Timezone: ${timezoneFriendlyLabel(tzState.timezone)}`);
+    }
+    lines.push("", "Send help for all commands.");
+    return [{ text: lines.join("\n") }];
+  }
+
+  if (isAboutMeCommand(text)) {
+    if (!deps.getAboutMeSummary) {
+      return [{ text: "Memory listing isn't wired yet." }];
+    }
+    const about = await deps.getAboutMeSummary(msg.userId);
+    return [{ text: about }];
+  }
+
+  if (isDeletePendingCommand(text)) {
+    if (!deps.rejectPending) {
+      return [{ text: "Nothing to delete — pending isn't wired." }];
+    }
+    const pending = deps.getOpenPending
+      ? await deps.getOpenPending(msg.userId)
+      : openPending;
+    if (!pending) {
+      return [{ text: "No open proposal to delete." }];
+    }
+    const r = await deps.rejectPending(msg.userId);
+    return [{ text: r.message || "Dropped — nothing written." }];
+  }
+
+  const forgetLabel = parseForgetCommand(text);
+  if (forgetLabel) {
+    if (!deps.forgetContextLabel) {
+      return [{ text: "Forget isn't wired yet." }];
+    }
+    const r = await deps.forgetContextLabel(msg.userId, forgetLabel);
+    return [
+      {
+        text: r.deleted
+          ? `Forgot “${r.label}”.`
+          : `Nothing stored as “${forgetLabel}”. Send about me to see what's saved.`,
+      },
+    ];
+  }
+
+  if (isClearMemoryConfirmCommand(text)) {
+    if (!deps.clearContextMemory) {
+      return [{ text: "Clear memory isn't wired yet." }];
+    }
+    const r = await deps.clearContextMemory(msg.userId);
+    return [
+      {
+        text: `Cleared learned context (${r.nodes} facts, ${r.edges} links). Google + reminders kept.`,
+      },
+    ];
+  }
+
+  if (isClearMemoryCommand(text)) {
+    return [
+      {
+        text: "This wipes learned people/facts (not Google or reminders). Reply clear memory yes to confirm.",
+      },
+    ];
+  }
+
+  if (isDeleteMenuCommand(text)) {
+    return [{ text: DELETE_MENU }];
+  }
 
   if (deps.setTimezone) {
     const tzUpdate = parseTimezoneUpdateMessage(text);
@@ -750,10 +871,11 @@ export async function handleInbound(
     const lines = [
       `Hi${name ? ` ${name}` : ""} — I'm Amilo, your chief of staff.`,
       "",
-      "I watch your inbox and calendar, surface only what needs you,",
-      "and keep you on your commitments.",
+      "I watch inbox + calendar, surface only what needs you,",
+      "and confirm before any Google write.",
       "",
-      'Link mail with "connect google personal" (add work / more labels as needed), or help.',
+      "Start: connect google personal",
+      "Then try: brief · status · about me · help",
     ];
     if (deps.getTimezoneState && !tzState.tzConfirmed) {
       lines.push("", tzConfirmPrompt(tzState.timezone));
