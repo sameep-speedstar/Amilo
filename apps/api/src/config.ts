@@ -24,6 +24,7 @@ export interface Settings {
   sarvamApiKey: string;
   sarvamModel: string;
   sarvamLanguageCode: string;
+  googleMapsApiKey: string;
 }
 
 function req(name: string, fallback?: string): string {
@@ -70,6 +71,7 @@ export function loadSettings(): Settings {
     sarvamApiKey: req("SARVAM_API_KEY"),
     sarvamModel: req("SARVAM_MODEL", "saarika:v2.5"),
     sarvamLanguageCode: req("SARVAM_LANGUAGE_CODE", "unknown"),
+    googleMapsApiKey: req("GOOGLE_MAPS_API_KEY"),
   };
 }
 

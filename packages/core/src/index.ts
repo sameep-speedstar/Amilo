@@ -38,6 +38,23 @@ export {
   normalizeCommandText,
 } from "./standingCommands.js";
 export {
+  ALERT_LEAD_MINS,
+  buildDepartureAlertText,
+  computeLeaveBy,
+  DEFAULT_TRAVEL_BUFFER_MINS,
+  describeTravelConflict,
+  detectTravelConflictsFromCoords,
+  formatLeaveByBriefLine,
+  haversineKm,
+  isPlacesListCommand,
+  occurrenceDateLocal,
+  parseOriginCorrection,
+  parsePlaceSetCommand,
+  timeOfDayPlaceLabel,
+  type TravelBlock,
+  type TravelConflict,
+} from "./travel.js";
+export {
   flattenWaTemplateParam,
   formatLocalDateLong,
   formatLocalHm,

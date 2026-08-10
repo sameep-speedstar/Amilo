@@ -1,5 +1,7 @@
 import {
   boolean,
+  date,
+  doublePrecision,
   integer,
   jsonb,
   pgTable,
@@ -225,4 +227,75 @@ export const googleAccounts = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [uniqueIndex("google_accounts_user_label_uidx").on(t.userId, t.label)],
+);
+
+/** User places for travel origin (home/office/…). */
+export const places = pgTable(
+  "places",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    label: varchar("label", { length: 20 }).notNull(),
+    address: text("address"),
+    lat: doublePrecision("lat"),
+    lng: doublePrecision("lng"),
+    source: varchar("source", { length: 20 }),
+    lastConfirmedAt: timestamp("last_confirmed_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex("places_user_label_uidx").on(t.userId, t.label)],
+);
+
+/** Permanent global geocode cache — never geocode the same address twice. */
+export const geocodeCache = pgTable("geocode_cache", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  addressKey: varchar("address_key", { length: 500 }).notNull().unique(),
+  addressText: text("address_text").notNull(),
+  lat: doublePrecision("lat"),
+  lng: doublePrecision("lng"),
+  resolved: boolean("resolved").notNull().default(true),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/** Per-occurrence leave-by plan (one Routes call until T-30/T-10 recheck). */
+export const travelPlans = pgTable(
+  "travel_plans",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    itemKind: varchar("item_kind", { length: 20 }).notNull().default("event"),
+    itemId: uuid("item_id").notNull(),
+    occurrenceDate: date("occurrence_date").notNull(),
+    itemStartAt: timestamp("item_start_at", { withTimezone: true }).notNull(),
+    itemTitle: text("item_title"),
+    destinationText: text("destination_text").notNull(),
+    destinationLat: doublePrecision("destination_lat"),
+    destinationLng: doublePrecision("destination_lng"),
+    originLabel: varchar("origin_label", { length: 200 }).notNull(),
+    originPlaceId: uuid("origin_place_id").references(() => places.id, {
+      onDelete: "set null",
+    }),
+    originLat: doublePrecision("origin_lat"),
+    originLng: doublePrecision("origin_lng"),
+    travelMins: integer("travel_mins"),
+    leaveBy: timestamp("leave_by", { withTimezone: true }),
+    computedAt: timestamp("computed_at", { withTimezone: true }),
+    lastCheckStage: varchar("last_check_stage", { length: 10 }),
+    lastCheckAt: timestamp("last_check_at", { withTimezone: true }),
+    alertSentAt: timestamp("alert_sent_at", { withTimezone: true }),
+    escalated: boolean("escalated").notNull().default(false),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("travel_plans_occurrence_uidx").on(
+      t.userId,
+      t.itemKind,
+      t.itemId,
+      t.occurrenceDate,
+    ),
+  ],
 );

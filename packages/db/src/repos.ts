@@ -1,7 +1,12 @@
 import { and, asc, desc, eq, gte, isNull, lte, ne, sql } from "drizzle-orm";
 import type { GraphUpdate } from "@amilo/brain-contract";
-import { formatLocalHm, guessTimezoneFromPhone, localDayBoundsUtc, cleanCalendarDisplayTitle } from "@amilo/core";
+import { formatLocalHm, guessTimezoneFromPhone, localDayBoundsUtc, cleanCalendarDisplayTitle, formatLeaveByBriefLine, detectTravelConflictsFromCoords, describeTravelConflict } from "@amilo/core";
 import type { Db } from "./index.js";
+import {
+  calendarLocationFromEvent,
+  getGeocodeCache,
+  getNearestUpcomingTravelPlan,
+} from "./travelRepos.js";
 import {
   channels,
   commitments,
@@ -1869,6 +1874,60 @@ export async function buildPriorityBriefPayload(
     }),
     ...apptSorted.map((a) => a.label),
   ];
+
+  // Leave-by from nearest upcoming travel plan (no Routes call).
+  const upcomingPlan = await getNearestUpcomingTravelPlan(db, userId, now);
+  if (
+    upcomingPlan?.leaveBy &&
+    upcomingPlan.travelMins != null &&
+    upcomingPlan.leaveBy >= now &&
+    upcomingPlan.leaveBy <= new Date(now.getTime() + 18 * 3600_000)
+  ) {
+    calBits.unshift(
+      formatLeaveByBriefLine({
+        title: upcomingPlan.itemTitle ?? "Event",
+        leaveBy: upcomingPlan.leaveBy,
+        travelMins: upcomingPlan.travelMins,
+        originLabel: upcomingPlan.originLabel,
+        timeZone: timezone,
+      }),
+    );
+  }
+
+  // Travel conflicts via cached geocodes only (never Routes on brief render).
+  const locatedBlocks: Array<{
+    id: string;
+    title: string;
+    start: Date;
+    end: Date;
+    location: string | null;
+    lat: number;
+    lng: number;
+  }> = [];
+  for (const e of calRows) {
+    if (!e.occursAt) continue;
+    const loc = calendarLocationFromEvent(e);
+    if (!loc) continue;
+    const cached = await getGeocodeCache(db, loc);
+    if (!cached || cached === "miss") continue;
+    const endIso = (e.meta as { end?: unknown })?.end;
+    const end =
+      typeof endIso === "string" && endIso
+        ? new Date(endIso)
+        : new Date(e.occursAt.getTime() + 60 * 60 * 1000);
+    locatedBlocks.push({
+      id: e.id,
+      title: (e.title ?? "Event").trim() || "Event",
+      start: e.occursAt,
+      end,
+      location: loc,
+      lat: cached.lat,
+      lng: cached.lng,
+    });
+  }
+  for (const conflict of detectTravelConflictsFromCoords(locatedBlocks).slice(0, 2)) {
+    calBits.push(describeTravelConflict(conflict, timezone));
+  }
   const calSeen = new Set<string>();
   const calUnique: string[] = [];
   for (const bit of calBits) {
@@ -2093,6 +2152,70 @@ export async function logEvalEvent(
     note: opts.note ?? null,
     meta: opts.meta ?? {},
   });
+}
+
+/** Open commitments for matching. */
+export async function listOpenCommitmentRows(
+  db: Db,
+  userId: string,
+): Promise<Array<{ id: string; title: string; dueAt: Date | null; status: string }>> {
+  return db.query.commitments.findMany({
+    where: and(eq(commitments.userId, userId), eq(commitments.status, "open")),
+    orderBy: [asc(commitments.dueAt), desc(commitments.createdAt)],
+    limit: 40,
+  });
+}
+
+async function finalizeCommitment(
+  db: Db,
+  id: string,
+  title: string,
+  status: "done" | "dropped" | "snoozed",
+  snoozeUntil?: Date,
+): Promise<{ ok: true; title: string; status: string }> {
+  await db
+    .update(commitments)
+    .set({
+      status,
+      resolvedAt: status === "snoozed" ? null : new Date(),
+      ...(status === "snoozed" && snoozeUntil ? { dueAt: snoozeUntil } : {}),
+      ...(status === "snoozed" ? { notifiedAt: null } : {}),
+    })
+    .where(eq(commitments.id, id));
+  return { ok: true, title, status };
+}
+
+export async function resolveCommitmentByHint(
+  db: Db,
+  userId: string,
+  titleHint: string,
+  status: "done" | "dropped" | "snoozed",
+  opts?: { snoozeUntil?: Date },
+): Promise<
+  | { ok: true; title: string; status: string }
+  | { ok: false; reason: "none" | "ambiguous"; matches: string[] }
+> {
+  const needle = titleHint.trim().toLowerCase().replace(/\s+/g, " ");
+  if (!needle) return { ok: false, reason: "none", matches: [] };
+  const open = await listOpenCommitmentRows(db, userId);
+  const matches = open.filter((c) => {
+    const t = c.title.toLowerCase();
+    return t.includes(needle) || needle.includes(t.slice(0, 40));
+  });
+  if (!matches.length) return { ok: false, reason: "none", matches: [] };
+  if (matches.length > 1) {
+    const exact = matches.filter((c) => c.title.toLowerCase() === needle);
+    if (exact.length === 1) {
+      return finalizeCommitment(db, exact[0]!.id, exact[0]!.title, status, opts?.snoozeUntil);
+    }
+    return {
+      ok: false,
+      reason: "ambiguous",
+      matches: matches.slice(0, 5).map((m) => m.title),
+    };
+  }
+  const one = matches[0]!;
+  return finalizeCommitment(db, one.id, one.title, status, opts?.snoozeUntil);
 }
 
 

@@ -2,7 +2,9 @@ import { formatLocalIsoWall, parseIsoDate } from "@amilo/core";
 import {
   cancelCalendarEvent,
   createCalendarEvent,
+  hasGmailSendScope,
   patchCalendarEvent,
+  sendGmailMessage,
   type GoogleOAuthConfig,
 } from "@amilo/google";
 import {
@@ -55,24 +57,53 @@ export async function executePendingAction(
   const payload = (row.payload ?? {}) as Record<string, unknown>;
 
   try {
-    if (row.kind === "email_draft") {
+    if (row.kind === "email_draft" || row.kind === "email_send") {
+      if (!cfg) throw new Error("Google OAuth not configured");
+      const accountLabel = str(payload.accountLabel, "personal");
+      const named = await getGoogleAccount(db, row.userId, accountLabel);
+      const account = named ?? (await listGoogleAccounts(db, row.userId))[0];
+      if (!account) throw new Error("No Google account linked. Send: connect google personal");
+      if (!hasGmailSendScope(account.scopes ?? "")) {
+        return {
+          ok: false,
+          message:
+            "Gmail send isn't authorized yet. Send: reconnect google personal — then try again.",
+        };
+      }
+      const to = str(payload.to);
+      const subject = str(payload.subject, "(no subject)");
+      const body = str(payload.body ?? payload.body_draft);
+      if (!to || !to.includes("@")) throw new Error("Missing recipient email");
+      const { accessToken } = await ensureAccessToken(db, cfg, account);
+      const sent = await sendGmailMessage(accessToken, {
+        to,
+        subject,
+        body,
+        ...(account.email ? { from: account.email } : {}),
+      });
       await resolvePendingAction(db, row.id, {
         status: "confirmed",
-        result: { noted: true },
+        result: { messageId: sent.id, threadId: sent.threadId },
       });
       await appendAudit(db, {
         userId: row.userId,
-        action: "email_draft_ack",
-        detail: { pendingId: row.id, to: payload.to, subject: payload.subject },
+        action: "email_send",
+        detail: {
+          pendingId: row.id,
+          to,
+          subject,
+          messageId: sent.id,
+          accountLabel: account.label,
+        },
         confirmed: true,
       });
       await logEvalEvent(db, {
         userId: row.userId,
         event: "action_confirmed",
-        note: "email_draft",
-        meta: { pendingId: row.id },
+        note: "email_send",
+        meta: { pendingId: row.id, messageId: sent.id },
       });
-      return { ok: true, message: "Draft kept — paste it into Gmail when ready (Amilo doesn't send mail yet)." };
+      return { ok: true, message: `Sent to ${to}: ${subject}` };
     }
 
     if (!cfg) throw new Error("Google OAuth not configured");

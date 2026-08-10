@@ -1,6 +1,6 @@
 # Launch notes
 
-## Done in M0–M5
+## Done in M0–M5.4
 
 - TypeScript monorepo scaffold
 - `BrainPort` + Grok chat (+ Cursor cloud reserved) + stub
@@ -11,7 +11,11 @@
 - **M4:** Google OAuth (shared client with LifeOS) + Gmail/Calendar sync + on-demand `brief`
 - **M4.1:** India-correct clocks, timezone onboard/travel update, due reminders
 - **M4.2:** Scheduled morning/evening WABA templates in user TZ + quiet hours prefs
-- **M5:** Confirm-before-write — calendar create/update/cancel after WhatsApp yes; email drafts copyable only (no send)
+- **M5:** Confirm-before-write — calendar create/update/cancel after WhatsApp yes
+- **M5.1:** Voice notes (Sarvam STT)
+- **M5.2:** Travel intelligence — places, leave-by, travel conflicts, departure alerts (Maps)
+- **M5.3:** Gmail send after yes (`gmail.send` + reconnect)
+- **M5.4:** Commitment close — done / drop / snooze
 - Azure Postgres `amilo-pg` + live `api.amilo.io`
 - High-IQ docs under `brain/`
 
@@ -19,8 +23,14 @@
 
 - Pending proposals in `pending_actions` (expire ~2h); reply **yes** / **cancel** / **edit …**
 - Calendar writes use existing `calendar.events` scope
-- Email: draft text only — expand OAuth (`gmail.send`) in a later slice + re-connect
+- Email: **send** after yes when `gmail.send` granted; otherwise reconnect prompt
 - Audit: `audit_log`; light A/B: `eval_events` + `eval log <note>`
+
+## Travel notes
+
+- Set places: `home is <address>` / `office is <address>`
+- Requires `GOOGLE_MAPS_API_KEY`; Routes capped ~200/day; geocode cache permanent
+- Briefs show leave-by + haversine travel conflicts (no Routes on render)
 
 ## Scheduled briefs notes
 
@@ -30,7 +40,6 @@
 
 ## Not done (next)
 
-- Expand Gmail send/modify scopes + reconnect UX
 - M6: App-ready shell (onboarding web, second channel)
 - Stronger A/B scoring harness vs Claude Telegram
 

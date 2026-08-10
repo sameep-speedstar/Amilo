@@ -41,7 +41,9 @@ import {
   getRecentChatSummary,
   getUserById,
   getUserPrefs,
+  listPlaces,
   rememberPersonEmail,
+  resolveCommitmentByHint,
   resolvePersonEmail,
   getWhatsAppAddress,
   getWhatsAppLastInbound,
@@ -60,6 +62,7 @@ import {
   summarizeContextGraph,
   summarizeOpenCommitments,
   summarizeRecentMail,
+  upsertPlace,
   touchWhatsAppInbound,
   updatePendingPayload,
   upsertGoogleAccount,
@@ -75,6 +78,7 @@ import {
   exchangeCode,
   fetchEmail,
   listCalendarRange,
+  MapsClient,
   type GoogleOAuthConfig,
 } from "@amilo/google";
 import { googleConfigured, loadSettings, resolveBrainLabel } from "./config.js";
@@ -82,6 +86,8 @@ import { ensureAccessToken, syncGoogleForUser } from "./googleSync.js";
 import { startBriefWorker } from "./briefWorker.js";
 import { executePendingAction, rejectPendingAction } from "./pendingExecute.js";
 import { startReminderWorker } from "./reminders.js";
+import { startTravelWorker } from "./travelWorker.js";
+import { correctTravelOrigin, geocodeAddress } from "./travelService.js";
 
 loadEnv();
 
@@ -173,6 +179,64 @@ function orchestratorDeps(): OrchestratorDeps {
     getOpenCommitmentsSummary: async (userId) => {
       const u = await getUserById(db, userId);
       return summarizeOpenCommitments(db, userId, u?.timezone ?? "Asia/Kolkata");
+    },
+    resolveCommitment: (userId, opts) =>
+      resolveCommitmentByHint(db, userId, opts.titleHint, opts.status, {
+        ...(opts.snoozeUntil ? { snoozeUntil: opts.snoozeUntil } : {}),
+      }),
+    setPlace: async ({ userId, label, address }) => {
+      const key = settings.googleMapsApiKey;
+      if (!key) {
+        return {
+          ok: false,
+          message: "Maps isn't configured yet (GOOGLE_MAPS_API_KEY). Places can't be geocoded.",
+        };
+      }
+      const maps = new MapsClient(key);
+      const latlng = await geocodeAddress(db, maps, address, userId);
+      await upsertPlace(db, {
+        userId,
+        label,
+        address,
+        lat: latlng?.lat ?? null,
+        lng: latlng?.lng ?? null,
+        source: "user",
+      });
+      if (!latlng) {
+        return {
+          ok: true,
+          message: `Saved ${label}, but couldn't geocode that address yet — leave-by may wait until Maps resolves it.`,
+        };
+      }
+      return {
+        ok: true,
+        message: `Saved ${label}: ${address}. I'll use it for leave-by times.`,
+      };
+    },
+    listPlacesText: async (userId) => {
+      const rows = await listPlaces(db, userId);
+      if (!rows.length) {
+        return "No places yet — try: home is <address> or office is <address>";
+      }
+      return [
+        "Your places:",
+        ...rows.map(
+          (p) =>
+            `• ${p.label}: ${p.address ?? "?"}${p.lat != null ? "" : " (unresolved)"}`,
+        ),
+      ].join("\n");
+    },
+    correctTravelOrigin: async (userId, correctionText) => {
+      const key = settings.googleMapsApiKey;
+      if (!key) return "Maps isn't configured — can't recompute leave-by.";
+      const u = await getUserById(db, userId);
+      const maps = new MapsClient(key);
+      return correctTravelOrigin(db, maps, {
+        userId,
+        correctionText,
+        prefs: (u?.prefs ?? {}) as Record<string, unknown>,
+        timeZone: u?.timezone ?? "Asia/Kolkata",
+      });
     },
     resolveContactEmail: (userId, nameHint) => resolvePersonEmail(db, userId, nameHint),
     rememberContactEmail: async (userId, opts) => {
@@ -707,7 +771,7 @@ app.get("/health", async (c) => {
     google: googleOk ? "configured" : "off",
     db: dbOk ? "up" : "down",
     voice: settings.sarvamApiKey ? "sarvam" : "off",
-    milestone: "M5.1",
+    milestone: "M5.4",
   });
 });
 
@@ -843,7 +907,7 @@ app.post("/dev/chat", async (c) => {
 const port = settings.port;
 serve({ fetch: app.fetch, port, createServer }, (info) => {
   console.log(
-    `Amilo API listening on :${info.port} (brain=${brainLabel}, google=${googleOk ? "on" : "off"}, milestone=M5)`,
+    `Amilo API listening on :${info.port} (brain=${brainLabel}, google=${googleOk ? "on" : "off"}, maps=${settings.googleMapsApiKey ? "on" : "off"}, milestone=M5.4)`,
   );
 });
 
@@ -853,6 +917,15 @@ startReminderWorker({
   alertTemplate: settings.wabaTemplateAlert,
   languageCode: "en",
   intervalMs: 30_000,
+});
+
+startTravelWorker({
+  db,
+  channel: waChannel,
+  mapsApiKey: settings.googleMapsApiKey || null,
+  alertTemplate: settings.wabaTemplateAlert,
+  languageCode: "en",
+  intervalMs: 60_000,
 });
 
 startBriefWorker({

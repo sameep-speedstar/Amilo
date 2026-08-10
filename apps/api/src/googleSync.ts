@@ -114,6 +114,7 @@ async function syncOneAccount(
         accountLabel: acct.label,
         accountEmail: emailTag,
         calendarId: ev.id,
+        ...(ev.location ? { location: ev.location } : {}),
       },
       occursAt: ev.startIso ? new Date(ev.startIso) : null,
     });

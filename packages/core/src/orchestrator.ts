@@ -17,8 +17,14 @@ import {
   isHelpCommand,
   isHowItWorksCommand,
   isStatusCommand,
+  parseCommitmentCloseCommand,
   parseForgetCommand,
 } from "./standingCommands.js";
+import {
+  isPlacesListCommand,
+  parseOriginCorrection,
+  parsePlaceSetCommand,
+} from "./travel.js";
 import {
   formatLocalHm,
   formatLocalIsoWall,
@@ -95,6 +101,28 @@ export interface OrchestratorDeps {
   clearContextMemory?: (
     userId: string,
   ) => Promise<{ nodes: number; edges: number }>;
+  /** Travel places + leave-by origin correction. */
+  setPlace?: (opts: {
+    userId: string;
+    label: string;
+    address: string;
+  }) => Promise<{ ok: boolean; message: string }>;
+  listPlacesText?: (userId: string) => Promise<string>;
+  correctTravelOrigin?: (
+    userId: string,
+    correctionText: string,
+  ) => Promise<string>;
+  resolveCommitment?: (
+    userId: string,
+    opts: {
+      titleHint: string;
+      status: "done" | "dropped" | "snoozed";
+      snoozeUntil?: Date;
+    },
+  ) => Promise<
+    | { ok: true; title: string; status: string }
+    | { ok: false; reason: "none" | "ambiguous"; matches: string[] }
+  >;
   /** Open commitments text for status. */
   getOpenCommitmentsSummary?: (userId: string) => Promise<string>;
   /** Recent WhatsApp turns for multi-turn continuity. */
@@ -272,13 +300,21 @@ export function looksLikeNewActionIntent(
   if (/^(yes|y|yeah|yep|ok|okay|confirm|cancel|no|nope|edit)\b/i.test(t)) return false;
   if (isBriefRequest(t)) return true;
   if (
-    /^(mute|unmute|sync|google|help|commands|pause|resume|briefs|status|pending|open|delete|forget|memory|about)\b/i.test(
+    /^(mute|unmute|sync|google|help|commands|pause|resume|briefs|status|pending|open|delete|forget|memory|about|done|drop|snooze|places|home|office)\b/i.test(
       t,
     )
   ) {
     return true;
   }
-  if (isHelpCommand(t) || isStatusCommand(t) || isAboutMeCommand(t) || isHowItWorksCommand(t)) {
+  if (
+    isHelpCommand(t) ||
+    isStatusCommand(t) ||
+    isAboutMeCommand(t) ||
+    isHowItWorksCommand(t) ||
+    parseCommitmentCloseCommand(t) ||
+    parsePlaceSetCommand(t) ||
+    isPlacesListCommand(t)
+  ) {
     return true;
   }
   if (extractMutePatternFromMessage(t)) return true;
@@ -651,7 +687,11 @@ export async function handleInbound(
       isDeletePendingCommand(text) ||
       isClearMemoryCommand(text) ||
       isClearMemoryConfirmCommand(text) ||
-      Boolean(parseForgetCommand(text));
+      Boolean(parseForgetCommand(text)) ||
+      Boolean(parsePlaceSetCommand(text)) ||
+      isPlacesListCommand(text) ||
+      Boolean(parseOriginCorrection(text)) ||
+      Boolean(parseCommitmentCloseCommand(text));
     if (inspectOnly) {
       // fall through
     } else if (looksLikeNewActionIntent(text, tzForPending.timezone)) {
@@ -765,6 +805,69 @@ export async function handleInbound(
 
   if (isDeleteMenuCommand(text)) {
     return [{ text: DELETE_MENU }];
+  }
+
+  const placeSet = parsePlaceSetCommand(text);
+  if (placeSet) {
+    if (!deps.setPlace) {
+      return [{ text: "Places aren't wired yet (need Google Maps key)." }];
+    }
+    const r = await deps.setPlace({
+      userId: msg.userId,
+      label: placeSet.label,
+      address: placeSet.address,
+    });
+    return [{ text: r.message }];
+  }
+
+  if (isPlacesListCommand(text)) {
+    if (!deps.listPlacesText) {
+      return [{ text: "Places aren't wired yet." }];
+    }
+    return [{ text: await deps.listPlacesText(msg.userId) }];
+  }
+
+  const originCorrection = parseOriginCorrection(text);
+  if (originCorrection && deps.correctTravelOrigin) {
+    const reply = await deps.correctTravelOrigin(msg.userId, originCorrection);
+    return [{ text: reply }];
+  }
+
+  const closeCmd = parseCommitmentCloseCommand(text);
+  if (closeCmd && deps.resolveCommitment) {
+    let snoozeUntil: Date | undefined;
+    if (closeCmd.status === "snoozed" && closeCmd.snoozeRaw) {
+      const hint = parseCalendarCreateHint(
+        `book meeting ${closeCmd.snoozeRaw} at 9am`,
+        tzState.timezone,
+      );
+      snoozeUntil = hint
+        ? new Date(hint.startIso)
+        : new Date(Date.now() + 24 * 3600_000);
+    }
+    const r = await deps.resolveCommitment(msg.userId, {
+      titleHint: closeCmd.titleHint,
+      status: closeCmd.status,
+      ...(snoozeUntil ? { snoozeUntil } : {}),
+    });
+    if (r.ok) {
+      const verb =
+        r.status === "done" ? "Done" : r.status === "dropped" ? "Dropped" : "Snoozed";
+      return [{ text: `${verb}: ${r.title}` }];
+    }
+    if (r.reason === "ambiguous") {
+      return [
+        {
+          text: [
+            "Which one?",
+            ...r.matches.map((m) => `• ${m}`),
+            "",
+            "Reply done <exact title> or drop <exact title>.",
+          ].join("\n"),
+        },
+      ];
+    }
+    return [{ text: `No open commitment matching “${closeCmd.titleHint}”. Send status to list.` }];
   }
 
   if (deps.setTimezone) {
@@ -938,7 +1041,9 @@ export async function handleInbound(
     ];
   }
 
-  const connectMatch = lower.match(/^(?:connect google|connect gmail)(?:\s+(\S+))?$/);
+  const connectMatch = lower.match(
+    /^(?:connect google|connect gmail|reconnect google|reconnect gmail)(?:\s+(\S+))?$/,
+  );
   if (connectMatch) {
     if (!deps.getGoogleAuthUrl) {
       return [{ text: "Google connect isn't configured on this server yet." }];
@@ -1629,8 +1734,8 @@ export async function handleInbound(
         return [
           {
             text: [
-              "I can't send email yet — here's a draft to copy.",
-              "Reply yes when you've got it, cancel to discard.",
+              "Email ready to send.",
+              "Reply yes to send via Gmail, cancel to drop, or edit <change>.",
             ].join("\n"),
           },
           { text: draftLines.join("\n") },

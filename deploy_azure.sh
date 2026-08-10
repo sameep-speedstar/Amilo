@@ -108,6 +108,7 @@ az webapp config appsettings set --name "$APP_NAME" --resource-group "$RESOURCE_
     SARVAM_API_KEY="${SARVAM_API_KEY:-}" \
     SARVAM_MODEL="${SARVAM_MODEL:-saarika:v2.5}" \
     SARVAM_LANGUAGE_CODE="${SARVAM_LANGUAGE_CODE:-unknown}" \
+    GOOGLE_MAPS_API_KEY="${GOOGLE_MAPS_API_KEY:-}" \
     DOCKER_ENABLE_CI=true \
     WEBSITE_PULL_IMAGE_OVER_VNET=false \
   >/dev/null

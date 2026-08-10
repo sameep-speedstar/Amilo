@@ -93,6 +93,40 @@ export function isClearMemoryConfirmCommand(text: string): boolean {
   );
 }
 
+/** done / drop / snooze open commitments */
+export function parseCommitmentCloseCommand(
+  text: string,
+): { status: "done" | "dropped" | "snoozed"; titleHint: string; snoozeRaw?: string } | null {
+  const t = text.trim();
+  const done = t.match(/^(?:done|mark done|finish(?:ed)?|complete(?:d)?)\s+(.+)$/i);
+  if (done?.[1]) {
+    return {
+      status: "done",
+      titleHint: done[1].replace(/^(on|the|my)\s+/i, "").trim(),
+    };
+  }
+  const drop = t.match(/^(?:drop|dismiss|cancel reminder)\s+(.+)$/i);
+  if (drop?.[1]) {
+    return {
+      status: "dropped",
+      titleHint: drop[1].replace(/^(the|my)\s+/i, "").trim(),
+    };
+  }
+  const snooze = t.match(/^snooze\s+(.+?)\s+(?:to|until)\s+(.+)$/i);
+  if (snooze?.[1] && snooze[2]) {
+    return {
+      status: "snoozed",
+      titleHint: snooze[1].replace(/^(the|my)\s+/i, "").trim(),
+      snoozeRaw: snooze[2].trim(),
+    };
+  }
+  const mark = t.match(/^mark\s+(.+?)\s+done$/i);
+  if (mark?.[1]) {
+    return { status: "done", titleHint: mark[1].trim() };
+  }
+  return null;
+}
+
 export const STANDING_HELP = [
   "Amilo — quick commands",
   "",
@@ -117,6 +151,11 @@ export const STANDING_HELP = [
   "• timezone — show or set (I'm in Dubai)",
   "• remind me … at 12:30",
   "",
+  "Travel",
+  "• home is <address> / office is <address>",
+  "• places — list saved places",
+  "• I'm at home|office — fix leave-by origin",
+  "",
   "Writes (always confirm)",
   "• Talk normally to book / invite / cancel calendar",
   "• yes — confirm · cancel — drop · edit <change>",
@@ -127,6 +166,10 @@ export const STANDING_HELP = [
   "• forget <name> — remove a remembered person/fact",
   "• clear memory yes — wipe learned context",
   "",
+  "Commitments",
+  "• done <title> / drop <title> — close an open item",
+  "• snooze <title> to tomorrow — push due date",
+  "",
   "Voice notes work like text. Everything else: just talk.",
 ].join("\n");
 
@@ -136,8 +179,9 @@ export const HOW_IT_WORKS = [
   "1) I sync Gmail + Calendar when you connect Google.",
   "2) Briefs surface only mail that needs action — not every alert.",
   "3) I remember durable facts quietly (people, roles, prefs).",
-  "4) Calendar/email writes need your yes first — I never invent a write.",
-  "5) pause stops me; your data stays until you delete/forget.",
+  "4) With places set, I compute leave-by times and warn on impossible back-to-backs.",
+  "5) Calendar/email writes need your yes first — I never invent a write.",
+  "6) pause stops me; your data stays until you delete/forget.",
   "",
   "Send help for the command list.",
 ].join("\n");

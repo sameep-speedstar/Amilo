@@ -136,3 +136,41 @@ async function incremental(
     historyId: String(history.historyId ?? historyId),
   };
 }
+
+/** Send a plain-text email via Gmail API (requires gmail.send scope). */
+export async function sendGmailMessage(
+  accessToken: string,
+  opts: { to: string; subject: string; body: string; from?: string },
+): Promise<{ id: string; threadId: string }> {
+  const to = opts.to.trim();
+  const subject = opts.subject.trim() || "(no subject)";
+  const body = opts.body ?? "";
+  const lines = [
+    `To: ${to}`,
+    ...(opts.from ? [`From: ${opts.from}`] : []),
+    `Subject: ${subject}`,
+    "MIME-Version: 1.0",
+    "Content-Type: text/plain; charset=UTF-8",
+    "",
+    body,
+  ];
+  const raw = Buffer.from(lines.join("\r\n"), "utf8")
+    .toString("base64")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/, "");
+
+  const res = await fetch(`${BASE}/messages/send`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ raw }),
+  });
+  if (!res.ok) {
+    throw new Error(`Gmail send ${res.status}: ${(await res.text()).slice(0, 300)}`);
+  }
+  const data = (await res.json()) as { id?: string; threadId?: string };
+  return { id: String(data.id ?? ""), threadId: String(data.threadId ?? "") };
+}

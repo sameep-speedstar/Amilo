@@ -12,3 +12,4 @@ export function createDb(databaseUrl: string) {
 export type Db = ReturnType<typeof createDb>;
 export * from "./schema.js";
 export * from "./repos.js";
+export * from "./travelRepos.js";
