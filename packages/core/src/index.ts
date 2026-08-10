@@ -36,6 +36,10 @@ export {
   isHowItWorksCommand,
   isStatusCommand,
   normalizeCommandText,
+  parseAboutPersonCommand,
+  parseCancelWatchCommand,
+  parseForgetCommand,
+  parseWaitingOnCommand,
 } from "./standingCommands.js";
 export {
   ALERT_LEAD_MINS,
@@ -56,6 +60,15 @@ export {
   type TravelBlock,
   type TravelConflict,
 } from "./travel.js";
+export {
+  WATCHER_DAILY_CAP,
+  COMMITMENT_STALL_LEAD_MS,
+  buildAwaitingReplyAlert,
+  buildCommitmentStallAlert,
+  emailMatchesWatch,
+  isCommitmentStallDue,
+  underWatcherDailyCap,
+} from "./watches.js";
 export {
   flattenWaTemplateParam,
   formatLocalDateLong,

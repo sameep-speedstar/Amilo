@@ -30,17 +30,22 @@ import {
   buildPriorityBriefPayload,
   claimWebhookMessage,
   clearContextGraph,
+  createCommitment,
   createDb,
   createPendingAction,
   createReminder,
+  createWatch,
+  cancelWatchesByHint,
   deleteContextNodeByLabel,
   deleteGoogleAccount,
   ensureKnownContacts,
   findMessageByWaId,
+  forgetContextAttr as forgetContextAttrRepo,
   getOpenPendingAction,
   getRecentChatSummary,
   getUserById,
   getUserPrefs,
+  linkWaitingOnPerson,
   listPlaces,
   rememberPersonEmail,
   resolveCommitmentByHint,
@@ -58,6 +63,7 @@ import {
   setUserStatus,
   setUserTimezone,
   summarizeAboutMe,
+  summarizeAboutPerson,
   summarizeCalendarToday,
   summarizeContextGraph,
   summarizeOpenCommitments,
@@ -87,6 +93,7 @@ import { startBriefWorker } from "./briefWorker.js";
 import { executePendingAction, rejectPendingAction } from "./pendingExecute.js";
 import { startReminderWorker } from "./reminders.js";
 import { startTravelWorker } from "./travelWorker.js";
+import { startWatchWorker } from "./watchWorker.js";
 import { correctTravelOrigin, geocodeAddress } from "./travelService.js";
 
 loadEnv();
@@ -174,8 +181,50 @@ function orchestratorDeps(): OrchestratorDeps {
       return summarizeContextGraph(db, id);
     },
     getAboutMeSummary: (id) => summarizeAboutMe(db, id),
+    getAboutPersonSummary: (id, name) => summarizeAboutPerson(db, id, name),
     forgetContextLabel: (userId, label) => deleteContextNodeByLabel(db, userId, label),
+    forgetContextAttr: (userId, label, attr) =>
+      forgetContextAttrRepo(db, userId, label, attr),
     clearContextMemory: (userId) => clearContextGraph(db, userId),
+    createWaitingOnWatch: async (userId, opts) => {
+      const u = await getUserById(db, userId);
+      const resolved = await resolvePersonEmail(db, userId, opts.person);
+      const personLabel = resolved?.label ?? opts.person.trim();
+      const email = resolved?.email ?? null;
+      const title = `Waiting on ${personLabel} for ${opts.thing}`.slice(0, 500);
+      const commitment = await createCommitment(db, {
+        userId,
+        title,
+        reason: "waiting_on",
+      });
+      await linkWaitingOnPerson(db, {
+        userId,
+        userName: u?.name ?? "user",
+        personLabel,
+        email,
+        commitmentId: commitment.id,
+      });
+      await createWatch(db, {
+        userId,
+        kind: "awaiting_reply",
+        title,
+        personLabel,
+        email,
+        commitmentId: commitment.id,
+      });
+      // Also arm a stall watch if we ever get a due — for now awaiting_reply only.
+      if (!email) {
+        return {
+          ok: true,
+          message: `Watching for ${personLabel} on “${opts.thing}”. I don't have their email yet — tell me e.g. ${personLabel}'s email is … so I can catch their reply.`,
+        };
+      }
+      return {
+        ok: true,
+        message: `Watching for ${personLabel} (${email}) on “${opts.thing}”. I'll ping when they reply (or say done ${opts.thing.slice(0, 40)}).`,
+      };
+    },
+    cancelWatchByHint: (userId, hint) => cancelWatchesByHint(db, userId, hint),
     getOpenCommitmentsSummary: async (userId) => {
       const u = await getUserById(db, userId);
       return summarizeOpenCommitments(db, userId, u?.timezone ?? "Asia/Kolkata");
@@ -771,7 +820,7 @@ app.get("/health", async (c) => {
     google: googleOk ? "configured" : "off",
     db: dbOk ? "up" : "down",
     voice: settings.sarvamApiKey ? "sarvam" : "off",
-    milestone: "M5.4",
+    milestone: "M5.5",
   });
 });
 
@@ -907,7 +956,7 @@ app.post("/dev/chat", async (c) => {
 const port = settings.port;
 serve({ fetch: app.fetch, port, createServer }, (info) => {
   console.log(
-    `Amilo API listening on :${info.port} (brain=${brainLabel}, google=${googleOk ? "on" : "off"}, maps=${settings.googleMapsApiKey ? "on" : "off"}, milestone=M5.4)`,
+    `Amilo API listening on :${info.port} (brain=${brainLabel}, google=${googleOk ? "on" : "off"}, maps=${settings.googleMapsApiKey ? "on" : "off"}, milestone=M5.5)`,
   );
 });
 
@@ -926,6 +975,14 @@ startTravelWorker({
   alertTemplate: settings.wabaTemplateAlert,
   languageCode: "en",
   intervalMs: 60_000,
+});
+
+startWatchWorker({
+  db,
+  channel: waChannel,
+  alertTemplate: settings.wabaTemplateAlert,
+  languageCode: "en",
+  intervalMs: 120_000,
 });
 
 startBriefWorker({

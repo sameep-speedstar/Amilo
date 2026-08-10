@@ -2,6 +2,7 @@ import {
   boolean,
   date,
   doublePrecision,
+  index,
   integer,
   jsonb,
   pgTable,
@@ -297,5 +298,34 @@ export const travelPlans = pgTable(
       t.itemId,
       t.occurrenceDate,
     ),
+  ],
+);
+
+/** CoS background watches — awaiting reply / commitment stall (M5.5). */
+export const watches = pgTable(
+  "watches",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    kind: varchar("kind", { length: 40 }).notNull(),
+    status: varchar("status", { length: 20 }).notNull().default("open"),
+    title: text("title").notNull(),
+    personLabel: varchar("person_label", { length: 200 }),
+    email: varchar("email", { length: 320 }),
+    commitmentId: uuid("commitment_id").references(() => commitments.id, {
+      onDelete: "set null",
+    }),
+    armedAt: timestamp("armed_at", { withTimezone: true }).notNull().defaultNow(),
+    dueAt: timestamp("due_at", { withTimezone: true }),
+    lastCheckedAt: timestamp("last_checked_at", { withTimezone: true }),
+    alertSentAt: timestamp("alert_sent_at", { withTimezone: true }),
+    meta: jsonb("meta").$type<Record<string, unknown>>().notNull().default({}),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("watches_user_status_kind_idx").on(t.userId, t.status, t.kind),
+    index("watches_status_kind_idx").on(t.status, t.kind),
   ],
 );

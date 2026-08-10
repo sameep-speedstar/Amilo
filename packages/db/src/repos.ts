@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gte, isNull, lte, ne, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, isNull, lte, ne, or, sql } from "drizzle-orm";
 import type { GraphUpdate } from "@amilo/brain-contract";
 import { formatLocalHm, guessTimezoneFromPhone, localDayBoundsUtc, cleanCalendarDisplayTitle, formatLeaveByBriefLine, detectTravelConflictsFromCoords, describeTravelConflict } from "@amilo/core";
 import type { Db } from "./index.js";
@@ -510,6 +510,191 @@ export async function summarizeAboutMe(db: Db, userId: string): Promise<string> 
     return "Nothing durable beyond your account yet. Facts you share (people, emails, prefs) show up here.";
   }
   return ["What I've stored (ask forget <name> to remove):", "", ...sections].join("\n");
+}
+
+/** User-facing dump for one person/node (explicit about <name>). */
+export async function summarizeAboutPerson(
+  db: Db,
+  userId: string,
+  nameHint: string,
+): Promise<string> {
+  const needle = normalizeLabel(nameHint).toLowerCase();
+  if (!needle) {
+    return "Who should I look up? Try about Rajeev.";
+  }
+  const nodes = await db.query.contextNodes.findMany({
+    where: eq(contextNodes.userId, userId),
+    orderBy: [desc(contextNodes.lastSeenAt)],
+    limit: 80,
+  });
+  const hit = nodes.find((n) => {
+    if ((n.attrs as { self?: boolean })?.self || n.label === "user") return false;
+    if (n.label.toLowerCase() === needle) return true;
+    const aliases = Array.isArray((n.attrs as { aliases?: unknown })?.aliases)
+      ? ((n.attrs as { aliases: unknown[] }).aliases).map((a) => String(a).toLowerCase())
+      : [];
+    return (
+      aliases.includes(needle) ||
+      n.label.toLowerCase().startsWith(needle) ||
+      needle.startsWith(n.label.toLowerCase())
+    );
+  });
+  if (!hit) {
+    return `Nothing stored about “${normalizeLabel(nameHint)}”. Tell me a durable fact (role, email) and I'll keep it quietly.`;
+  }
+
+  const attrs = (hit.attrs ?? {}) as Record<string, unknown>;
+  const bits = Object.entries(attrs)
+    .filter(([k]) => !["aliases", "self", "displayName"].includes(k))
+    .map(([k, v]) => `• ${k}: ${String(v)}`);
+
+  const edges = await db.query.contextEdges.findMany({
+    where: and(
+      eq(contextEdges.userId, userId),
+      or(eq(contextEdges.fromNodeId, hit.id), eq(contextEdges.toNodeId, hit.id)),
+    ),
+    limit: 20,
+  });
+  const byId = new Map(nodes.map((n) => [n.id, n]));
+  const edgeLines = edges.map((e) => {
+    const from = byId.get(e.fromNodeId)?.label ?? "?";
+    const to = byId.get(e.toNodeId)?.label ?? "?";
+    return `• ${from} —${e.rel}→ ${to}`;
+  });
+
+  const commits = await db.query.commitments.findMany({
+    where: and(eq(commitments.userId, userId), eq(commitments.status, "open")),
+    orderBy: [asc(commitments.dueAt), desc(commitments.createdAt)],
+    limit: 20,
+  });
+  const labelLower = hit.label.toLowerCase();
+  const related = commits.filter((c) => c.title.toLowerCase().includes(labelLower));
+
+  const parts = [
+    `${hit.kind === "person" ? hit.label : `[${hit.kind}] ${hit.label}`}`,
+    bits.length ? bits.join("\n") : "• (no attrs yet)",
+    edgeLines.length ? ["", "Links", ...edgeLines].join("\n") : null,
+    related.length
+      ? ["", "Open commitments", ...related.map((c) => `• ${c.title}`)].join("\n")
+      : null,
+    "",
+    "Ask forget <name> or forget <name> <attr> to edit.",
+  ].filter(Boolean);
+  return parts.join("\n");
+}
+
+/** Strip one attr key from a context node (fact-level forget). */
+export async function forgetContextAttr(
+  db: Db,
+  userId: string,
+  label: string,
+  attrKey: string,
+): Promise<{ ok: boolean; label: string; attr: string; reason?: string }> {
+  const needle = normalizeLabel(label).toLowerCase();
+  const key = attrKey.trim().toLowerCase();
+  if (!key || ["aliases", "self", "displayName"].includes(key)) {
+    return { ok: false, label: normalizeLabel(label), attr: key, reason: "attr" };
+  }
+  const all = await db.query.contextNodes.findMany({
+    where: eq(contextNodes.userId, userId),
+    limit: 80,
+  });
+  const hit = all.find((n) => {
+    if ((n.attrs as { self?: boolean })?.self) return false;
+    if (n.label.toLowerCase() === needle) return true;
+    const aliases = Array.isArray((n.attrs as { aliases?: unknown })?.aliases)
+      ? ((n.attrs as { aliases: unknown[] }).aliases).map((a) => String(a).toLowerCase())
+      : [];
+    return aliases.includes(needle);
+  });
+  if (!hit) return { ok: false, label: normalizeLabel(label), attr: key, reason: "none" };
+  const attrs = { ...(hit.attrs ?? {}) } as Record<string, unknown>;
+  const matchKey = Object.keys(attrs).find((k) => k.toLowerCase() === key);
+  if (!matchKey) {
+    return { ok: false, label: hit.label, attr: key, reason: "attr" };
+  }
+  delete attrs[matchKey];
+  await db
+    .update(contextNodes)
+    .set({ attrs, lastSeenAt: new Date() })
+    .where(eq(contextNodes.id, hit.id));
+  return { ok: true, label: hit.label, attr: matchKey };
+}
+
+/** Create a non-reminder open commitment. */
+export async function createCommitment(
+  db: Db,
+  opts: {
+    userId: string;
+    title: string;
+    dueAt?: Date | null;
+    reason?: string | null;
+  },
+): Promise<{ id: string }> {
+  const [row] = await db
+    .insert(commitments)
+    .values({
+      userId: opts.userId,
+      title: opts.title.slice(0, 500),
+      status: "open",
+      dueAt: opts.dueAt ?? null,
+      reason: opts.reason ?? "waiting_on",
+    })
+    .returning({ id: commitments.id });
+  if (!row) throw new Error("failed to create commitment");
+  return row;
+}
+
+/** Ensure person node + user --waiting_on--> person edge (Mind Map fuel). */
+export async function linkWaitingOnPerson(
+  db: Db,
+  opts: {
+    userId: string;
+    userName: string;
+    personLabel: string;
+    email?: string | null;
+    commitmentId?: string | null;
+  },
+): Promise<void> {
+  const self = await ensureUserSelfNode(db, opts.userId, opts.userName);
+  const person = await upsertNode(
+    db,
+    opts.userId,
+    "person",
+    opts.personLabel,
+    opts.email ? { email: opts.email.trim().toLowerCase() } : {},
+    90,
+  );
+  const existing = await db.query.contextEdges.findFirst({
+    where: and(
+      eq(contextEdges.userId, opts.userId),
+      eq(contextEdges.fromNodeId, self.id),
+      eq(contextEdges.toNodeId, person.id),
+      eq(contextEdges.rel, "waiting_on"),
+    ),
+  });
+  const edgeAttrs: Record<string, unknown> = {
+    ...(opts.commitmentId ? { commitmentId: opts.commitmentId } : {}),
+  };
+  if (existing) {
+    await db
+      .update(contextEdges)
+      .set({
+        attrs: { ...existing.attrs, ...edgeAttrs },
+        confidence: Math.max(existing.confidence, 90),
+        lastSeenAt: new Date(),
+      })
+      .where(eq(contextEdges.id, existing.id));
+  } else {
+    await db.insert(contextEdges).values({
+      userId: opts.userId,
+      fromNodeId: self.id,
+      toNodeId: person.id,
+      rel: "waiting_on",
+      attrs: edgeAttrs,
+      confidence: 90,
+    });
+  }
 }
 
 /** Remove a context node by label (and cascading edges). */
@@ -1605,6 +1790,14 @@ export async function createReminder(
     })
     .returning({ id: commitments.id });
   if (!row) throw new Error("failed to create reminder");
+  const { createWatch } = await import("./watchRepos.js");
+  await createWatch(db, {
+    userId: opts.userId,
+    kind: "commitment_stall",
+    title: opts.title.slice(0, 500),
+    commitmentId: row.id,
+    dueAt: opts.dueAt,
+  });
   return row;
 }
 
@@ -1650,8 +1843,19 @@ export async function listDueReminders(
     .orderBy(asc(commitments.dueAt))
     .limit(50);
 
+  // Prefer watch alerts when an open commitment_stall watch exists for the row.
+  const { listOpenWatches } = await import("./watchRepos.js");
+  const watchedIds = new Set<string>();
+  for (const r of rows) {
+    const open = await listOpenWatches(db, r.userId);
+    for (const w of open) {
+      if (w.commitmentId) watchedIds.add(w.commitmentId);
+    }
+  }
+
   return rows
     .filter((r): r is typeof r & { dueAt: Date } => r.dueAt != null)
+    .filter((r) => !watchedIds.has(r.id))
     .map((r) => ({
       id: r.id,
       userId: r.userId,
@@ -2182,6 +2386,10 @@ async function finalizeCommitment(
       ...(status === "snoozed" ? { notifiedAt: null } : {}),
     })
     .where(eq(commitments.id, id));
+  if (status === "done" || status === "dropped") {
+    const { cancelWatchesForCommitment } = await import("./watchRepos.js");
+    await cancelWatchesForCommitment(db, id);
+  }
   return { ok: true, title, status };
 }
 

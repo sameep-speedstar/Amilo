@@ -17,8 +17,11 @@ import {
   isHelpCommand,
   isHowItWorksCommand,
   isStatusCommand,
+  parseAboutPersonCommand,
+  parseCancelWatchCommand,
   parseCommitmentCloseCommand,
   parseForgetCommand,
+  parseWaitingOnCommand,
 } from "./standingCommands.js";
 import {
   isPlacesListCommand,
@@ -96,13 +99,28 @@ export interface OrchestratorDeps {
   getContextGraphSummary?: (userId: string) => Promise<string>;
   /** Explicit "about me" / memory dump for the user. */
   getAboutMeSummary?: (userId: string) => Promise<string>;
+  getAboutPersonSummary?: (userId: string, nameHint: string) => Promise<string>;
   forgetContextLabel?: (
     userId: string,
     label: string,
   ) => Promise<{ deleted: boolean; label: string }>;
+  forgetContextAttr?: (
+    userId: string,
+    label: string,
+    attr: string,
+  ) => Promise<{ ok: boolean; label: string; attr: string; reason?: string }>;
   clearContextMemory?: (
     userId: string,
   ) => Promise<{ nodes: number; edges: number }>;
+  /** waiting on <person> for <thing> → commitment + watch. */
+  createWaitingOnWatch?: (
+    userId: string,
+    opts: { person: string; thing: string },
+  ) => Promise<{ ok: boolean; message: string }>;
+  cancelWatchByHint?: (
+    userId: string,
+    hint: string,
+  ) => Promise<{ cancelled: number; titles: string[] }>;
   /** Travel places + leave-by origin correction. */
   setPlace?: (opts: {
     userId: string;
@@ -302,7 +320,7 @@ export function looksLikeNewActionIntent(
   if (/^(yes|y|yeah|yep|ok|okay|confirm|cancel|no|nope|edit)\b/i.test(t)) return false;
   if (isBriefRequest(t)) return true;
   if (
-    /^(mute|unmute|sync|google|help|commands|pause|resume|briefs|status|pending|open|delete|forget|memory|about|done|drop|snooze|places|home|office)\b/i.test(
+    /^(mute|unmute|sync|google|help|commands|pause|resume|briefs|status|pending|open|delete|forget|memory|about|done|drop|snooze|places|home|office|waiting)\b/i.test(
       t,
     )
   ) {
@@ -312,6 +330,9 @@ export function looksLikeNewActionIntent(
     isHelpCommand(t) ||
     isStatusCommand(t) ||
     isAboutMeCommand(t) ||
+    Boolean(parseAboutPersonCommand(t)) ||
+    Boolean(parseWaitingOnCommand(t)) ||
+    Boolean(parseCancelWatchCommand(t)) ||
     isHowItWorksCommand(t) ||
     parseCommitmentCloseCommand(t) ||
     parsePlaceSetCommands(t).length > 0 ||
@@ -685,6 +706,9 @@ export async function handleInbound(
     const inspectOnly =
       isStatusCommand(text) ||
       isAboutMeCommand(text) ||
+      Boolean(parseAboutPersonCommand(text)) ||
+      Boolean(parseWaitingOnCommand(text)) ||
+      Boolean(parseCancelWatchCommand(text)) ||
       isDeleteMenuCommand(text) ||
       isDeletePendingCommand(text) ||
       isClearMemoryCommand(text) ||
@@ -756,6 +780,14 @@ export async function handleInbound(
     return [{ text: about }];
   }
 
+  const aboutPerson = parseAboutPersonCommand(text);
+  if (aboutPerson) {
+    if (!deps.getAboutPersonSummary) {
+      return [{ text: "Person lookup isn't wired yet." }];
+    }
+    return [{ text: await deps.getAboutPersonSummary(msg.userId, aboutPerson) }];
+  }
+
   if (isDeletePendingCommand(text)) {
     if (!deps.rejectPending) {
       return [{ text: "Nothing to delete — pending isn't wired." }];
@@ -770,17 +802,66 @@ export async function handleInbound(
     return [{ text: r.message || "Dropped — nothing written." }];
   }
 
-  const forgetLabel = parseForgetCommand(text);
-  if (forgetLabel) {
+  const forgetCmd = parseForgetCommand(text);
+  if (forgetCmd) {
+    if (forgetCmd.attr) {
+      if (!deps.forgetContextAttr) {
+        return [{ text: "Fact-level forget isn't wired yet." }];
+      }
+      const r = await deps.forgetContextAttr(msg.userId, forgetCmd.label, forgetCmd.attr);
+      if (r.ok) {
+        return [{ text: `Forgot ${r.attr} on “${r.label}”.` }];
+      }
+      if (r.reason === "attr") {
+        return [
+          {
+            text: `No “${forgetCmd.attr}” on “${r.label}”. Send about ${forgetCmd.label} to see attrs.`,
+          },
+        ];
+      }
+      return [
+        {
+          text: `Nothing stored as “${forgetCmd.label}”. Send about me to see what's saved.`,
+        },
+      ];
+    }
     if (!deps.forgetContextLabel) {
       return [{ text: "Forget isn't wired yet." }];
     }
-    const r = await deps.forgetContextLabel(msg.userId, forgetLabel);
+    const r = await deps.forgetContextLabel(msg.userId, forgetCmd.label);
     return [
       {
         text: r.deleted
           ? `Forgot “${r.label}”.`
-          : `Nothing stored as “${forgetLabel}”. Send about me to see what's saved.`,
+          : `Nothing stored as “${forgetCmd.label}”. Send about me to see what's saved.`,
+      },
+    ];
+  }
+
+  const waitingOn = parseWaitingOnCommand(text);
+  if (waitingOn) {
+    if (!deps.createWaitingOnWatch) {
+      return [{ text: "Watches aren't wired yet." }];
+    }
+    const r = await deps.createWaitingOnWatch(msg.userId, waitingOn);
+    return [{ text: r.message }];
+  }
+
+  const cancelWatchHint = parseCancelWatchCommand(text);
+  if (cancelWatchHint) {
+    if (!deps.cancelWatchByHint) {
+      return [{ text: "Watches aren't wired yet." }];
+    }
+    const r = await deps.cancelWatchByHint(msg.userId, cancelWatchHint);
+    if (!r.cancelled) {
+      return [{ text: `No open watch matching “${cancelWatchHint}”.` }];
+    }
+    return [
+      {
+        text:
+          r.cancelled === 1
+            ? `Cancelled watch: ${r.titles[0]}`
+            : `Cancelled ${r.cancelled} watches:\n${r.titles.map((t) => `• ${t}`).join("\n")}`,
       },
     ];
   }

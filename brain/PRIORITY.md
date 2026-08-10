@@ -6,7 +6,7 @@ Most things do **not** deserve the user's attention. False `needs_attention` cos
 
 | Bucket | Score | Meaning |
 |--------|------:|---------|
-| `needs_attention` | 70–100 | Real person waiting, money/deadline ≤48h, VIP with substance, calendar conflict needing a decision. **Hard cap: ≤5 per day.** |
+| `needs_attention` | 70–100 | Real person waiting, money/deadline ≤48h, VIP with substance, calendar conflict needing a decision, **watcher fire** (awaiting reply / commitment stall). **Hard cap: ≤5 per day** (watcher pushes ≤2/day). |
 | `can_wait` | 30–69 | Legitimate; survives until evening summary. |
 | `handled` | 0–29 | Newsletters, receipts, FYI, automated notifications, promotions. |
 
@@ -16,6 +16,7 @@ Most things do **not** deserve the user's attention. False `needs_attention` cos
 - User-muted sender → `handled`
 - Gmail CATEGORY_PROMOTIONS / CATEGORY_SOCIAL → default `handled` unless VIP/money/deadline
 - Appointment / commitment emails → protect from newsletter heuristics; treat scheduled time as commitment
+- CoS watcher alerts → `needs_attention` but still under daily watcher + attention caps (see `WATCHERS.md`)
 
 ## Output
 

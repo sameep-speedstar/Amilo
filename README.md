@@ -53,7 +53,9 @@ npm run dev
 - **M5.2** — Travel intelligence (places, leave-by, Maps alerts)
 - **M5.3** — Gmail send after confirm
 - **M5.4** — Commitment close (done / drop / snooze)
+- **M5.5** — Context graph inspect (`about <name>`, fact-level forget) + CoS watchers (`waiting on…`)
 - **M6** — App-ready shell (onboarding web, second channel)
+- **Later** — Mind Map UI over the personal context graph (life activities recorded on Amilo)
 
 ## Non-negotiables
 
