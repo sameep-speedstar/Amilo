@@ -6,6 +6,7 @@ import {
   haversineKm,
   parseOriginCorrection,
   parsePlaceSetCommand,
+  parsePlaceSetCommands,
 } from "./travel.js";
 import { parseCommitmentCloseCommand } from "./standingCommands.js";
 
@@ -52,6 +53,15 @@ describe("travel helpers", () => {
     });
     assert.equal(parseOriginCorrection("I'm at home"), "home");
     assert.equal(parseOriginCorrection("I'm at the office"), "office");
+  });
+
+  it("parses multiple place lines in one message", () => {
+    const multi = parsePlaceSetCommands(
+      "home is L&T South City, Arekere\noffice is WeWork Salapuria, Banerghatta Road",
+    );
+    assert.equal(multi.length, 2);
+    assert.equal(multi[0]?.label, "home");
+    assert.equal(multi[1]?.label, "office");
   });
 });
 

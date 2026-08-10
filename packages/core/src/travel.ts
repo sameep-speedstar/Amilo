@@ -116,14 +116,34 @@ export function occurrenceDateLocal(start: Date, timeZone: string): string {
 export function parsePlaceSetCommand(
   text: string,
 ): { label: "home" | "office" | "school"; address: string } | null {
-  const m = text
-    .trim()
-    .match(/^(home|office|school)\s+is\s+(.+)$/i);
-  if (!m?.[1] || !m[2]) return null;
-  const label = m[1].toLowerCase() as "home" | "office" | "school";
-  const address = m[2].replace(/[?.!]+$/g, "").trim();
-  if (address.length < 3) return null;
-  return { label, address };
+  return parsePlaceSetCommands(text)[0] ?? null;
+}
+
+/** One or more `home/office/school is …` lines in a single WhatsApp message. */
+export function parsePlaceSetCommands(
+  text: string,
+): Array<{ label: "home" | "office" | "school"; address: string }> {
+  const out: Array<{ label: "home" | "office" | "school"; address: string }> = [];
+  const re = /(home|office|school)\s+is\s+([^\n]+)/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    const label = m[1]!.toLowerCase() as "home" | "office" | "school";
+    const address = m[2]!.replace(/[?.!]+$/g, "").trim();
+    if (address.length >= 3) out.push({ label, address });
+  }
+  return out;
+}
+
+/** Pull a destination from "at LITTLE PEARLS…" / "at 12 MG Road". */
+export function extractEventLocation(message: string): string | null {
+  const atClinic = message.match(
+    /\bat\s+((?:LITTLE PEARLS|KHUSHI)[^,.\n]{0,60}|[A-Z][A-Za-z0-9 &.'-]{3,80})/i,
+  );
+  if (atClinic?.[1]) {
+    const loc = atClinic[1].replace(/\s+/g, " ").trim();
+    if (!/^(home|office|school|am|pm|\d)/i.test(loc)) return loc.slice(0, 120);
+  }
+  return null;
 }
 
 export function isPlacesListCommand(text: string): boolean {

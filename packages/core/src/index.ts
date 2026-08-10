@@ -50,6 +50,8 @@ export {
   occurrenceDateLocal,
   parseOriginCorrection,
   parsePlaceSetCommand,
+  parsePlaceSetCommands,
+  extractEventLocation,
   timeOfDayPlaceLabel,
   type TravelBlock,
   type TravelConflict,

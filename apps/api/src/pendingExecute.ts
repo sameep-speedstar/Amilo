@@ -152,6 +152,7 @@ export async function executePendingAction(
             accountLabel: label,
             accountEmail: account.email,
             calendarId: created.id,
+            ...(created.location ? { location: created.location } : {}),
           },
           occursAt: created.startIso ? new Date(created.startIso) : null,
         });

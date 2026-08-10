@@ -24,6 +24,8 @@ import {
   isPlacesListCommand,
   parseOriginCorrection,
   parsePlaceSetCommand,
+  parsePlaceSetCommands,
+  extractEventLocation,
 } from "./travel.js";
 import {
   formatLocalHm,
@@ -312,7 +314,7 @@ export function looksLikeNewActionIntent(
     isAboutMeCommand(t) ||
     isHowItWorksCommand(t) ||
     parseCommitmentCloseCommand(t) ||
-    parsePlaceSetCommand(t) ||
+    parsePlaceSetCommands(t).length > 0 ||
     isPlacesListCommand(t)
   ) {
     return true;
@@ -688,7 +690,7 @@ export async function handleInbound(
       isClearMemoryCommand(text) ||
       isClearMemoryConfirmCommand(text) ||
       Boolean(parseForgetCommand(text)) ||
-      Boolean(parsePlaceSetCommand(text)) ||
+      Boolean(parsePlaceSetCommands(text).length) ||
       isPlacesListCommand(text) ||
       Boolean(parseOriginCorrection(text)) ||
       Boolean(parseCommitmentCloseCommand(text));
@@ -807,17 +809,21 @@ export async function handleInbound(
     return [{ text: DELETE_MENU }];
   }
 
-  const placeSet = parsePlaceSetCommand(text);
-  if (placeSet) {
-    if (!deps.setPlace) {
-      return [{ text: "Places aren't wired yet (need Google Maps key)." }];
+  const placeSets = parsePlaceSetCommands(text);
+  if (placeSets.length && deps.setPlace) {
+    const lines: string[] = [];
+    for (const placeSet of placeSets) {
+      const r = await deps.setPlace({
+        userId: msg.userId,
+        label: placeSet.label,
+        address: placeSet.address,
+      });
+      lines.push(r.message);
     }
-    const r = await deps.setPlace({
-      userId: msg.userId,
-      label: placeSet.label,
-      address: placeSet.address,
-    });
-    return [{ text: r.message }];
+    return [{ text: lines.join("\n") }];
+  }
+  if (placeSets.length && !deps.setPlace) {
+    return [{ text: "Places aren't wired yet (need Google Maps key)." }];
   }
 
   if (isPlacesListCommand(text)) {
@@ -1561,6 +1567,8 @@ export async function handleInbound(
           payload.startIso = hint.startIso;
           payload.endIso = hint.endIso;
         }
+        const loc = extractEventLocation(text);
+        if (loc && !strPayload(payload.location)) payload.location = loc;
         const attendees = await resolveAttendeesFromMessage(
           msg.userId,
           text,
