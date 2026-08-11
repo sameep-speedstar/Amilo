@@ -55,6 +55,35 @@ export function formatLocalDateLong(date: Date, timeZone: string): string {
   }).format(date);
 }
 
+/** Short calendar line date, e.g. "Tue 11 Aug". */
+export function formatLocalDayShort(date: Date, timeZone: string): string {
+  return new Intl.DateTimeFormat("en-GB", {
+    timeZone,
+    weekday: "short",
+    day: "numeric",
+    month: "short",
+  }).format(date);
+}
+
+/** Relative day label vs now in user TZ: today | tomorrow | yesterday | weekday date. */
+export function relativeDayLabel(
+  date: Date,
+  timeZone: string,
+  now: Date = new Date(),
+): "today" | "tomorrow" | "yesterday" | string {
+  const eventDay = localDayBoundsUtc(timeZone, date).day;
+  const today = localDayBoundsUtc(timeZone, now).day;
+  const tomorrow = localDayBoundsUtc(timeZone, localDayBoundsUtc(timeZone, now).timeMax).day;
+  const yest = localDayBoundsUtc(
+    timeZone,
+    new Date(localDayBoundsUtc(timeZone, now).timeMin.getTime() - 60_000),
+  ).day;
+  if (eventDay === today) return "today";
+  if (eventDay === tomorrow) return "tomorrow";
+  if (eventDay === yest) return "yesterday";
+  return formatLocalDayShort(date, timeZone);
+}
+
 /** Wall-clock ISO without offset for Google Calendar + timeZone field. */
 export function formatLocalIsoWall(date: Date, timeZone: string): string {
   const parts = new Intl.DateTimeFormat("en-CA", {

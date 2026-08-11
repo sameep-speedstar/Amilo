@@ -1,6 +1,6 @@
 import { and, asc, desc, eq, gte, isNull, lte, ne, or, sql } from "drizzle-orm";
 import type { GraphUpdate } from "@amilo/brain-contract";
-import { formatLocalHm, guessTimezoneFromPhone, localDayBoundsUtc, cleanCalendarDisplayTitle, formatLeaveByBriefLine, detectTravelConflictsFromCoords, describeTravelConflict } from "@amilo/core";
+import { formatLocalDayShort, formatLocalHm, guessTimezoneFromPhone, localDayBoundsUtc, cleanCalendarDisplayTitle, formatLeaveByBriefLine, detectTravelConflictsFromCoords, describeTravelConflict } from "@amilo/core";
 import type { Db } from "./index.js";
 import {
   calendarLocationFromEvent,
@@ -959,7 +959,26 @@ export async function upsertEvent(
     meta?: Record<string, unknown>;
     occursAt?: Date | null;
   },
-): Promise<void> {
+): Promise<{ inserted: boolean }> {
+  const existing = await db.query.events.findFirst({
+    where: and(
+      eq(events.userId, row.userId),
+      eq(events.source, row.source),
+      eq(events.sourceId, row.sourceId),
+    ),
+    columns: { id: true, meta: true },
+  });
+  const prevMeta = (existing?.meta ?? {}) as Record<string, unknown>;
+  const nextMeta = { ...prevMeta, ...(row.meta ?? {}) };
+  // Preserve conflictAlertedAt unless explicitly set in this write.
+  if (
+    prevMeta.conflictAlertedAt != null &&
+    row.meta &&
+    !("conflictAlertedAt" in row.meta)
+  ) {
+    nextMeta.conflictAlertedAt = prevMeta.conflictAlertedAt;
+  }
+
   await db
     .insert(events)
     .values({
@@ -970,7 +989,7 @@ export async function upsertEvent(
       title: row.title ?? null,
       snippet: row.snippet ?? null,
       kind: row.kind ?? null,
-      meta: row.meta ?? {},
+      meta: nextMeta,
       occursAt: row.occursAt ?? null,
     })
     .onConflictDoUpdate({
@@ -980,10 +999,36 @@ export async function upsertEvent(
         title: row.title ?? null,
         snippet: row.snippet ?? null,
         kind: row.kind ?? null,
-        meta: row.meta ?? {},
+        meta: nextMeta,
         occursAt: row.occursAt ?? null,
       },
     });
+  return { inserted: !existing };
+}
+
+export async function markCalendarConflictAlerted(
+  db: Db,
+  userId: string,
+  googleEventId: string,
+  at: Date = new Date(),
+): Promise<void> {
+  const id = googleEventId.trim();
+  if (!id) return;
+  const rows = await db.query.events.findMany({
+    where: and(
+      eq(events.userId, userId),
+      eq(events.source, "calendar"),
+      sql`(
+        ${events.meta}->>'calendarId' = ${id}
+        OR ${events.sourceId} LIKE ${"%:" + id}
+      )`,
+    ),
+    limit: 5,
+  });
+  for (const e of rows) {
+    const meta = { ...((e.meta ?? {}) as Record<string, unknown>), conflictAlertedAt: at.toISOString() };
+    await db.update(events).set({ meta }).where(eq(events.id, e.id));
+  }
 }
 
 /** Drop local calendar rows for a Google event id (after cancel). */
@@ -1059,20 +1104,36 @@ export async function summarizeCalendarToday(
   db: Db,
   userId: string,
   timezone = "Asia/Kolkata",
-  opts?: { includeIds?: boolean },
+  opts?: { includeIds?: boolean; dayOffset?: number; now?: Date },
 ): Promise<string> {
-  const { timeMin, timeMax } = localDayBoundsUtc(timezone);
+  const now = opts?.now ?? new Date();
+  const dayOffset = opts?.dayOffset ?? 0;
+  let bounds = localDayBoundsUtc(timezone, now);
+  if (dayOffset === 1) {
+    bounds = localDayBoundsUtc(timezone, bounds.timeMax);
+  } else if (dayOffset !== 0) {
+    const mid = new Date(bounds.timeMin.getTime() + dayOffset * 86_400_000 + 12 * 3600_000);
+    bounds = localDayBoundsUtc(timezone, mid);
+  }
+  const { timeMin, timeMax } = bounds;
   const rows = await db.query.events.findMany({
     where: and(
       eq(events.userId, userId),
       eq(events.source, "calendar"),
       gte(events.occursAt, timeMin),
-      lte(events.occursAt, timeMax),
+      // timeMax is exclusive (start of next local day)
+      sql`${events.occursAt} < ${timeMax}`,
     ),
     orderBy: [events.occursAt],
     limit: 20,
   });
   if (!rows.length) return "none yet";
+  const dayShort = formatLocalDayShort(
+    new Date(timeMin.getTime() + 12 * 3600_000),
+    timezone,
+  );
+  const rel =
+    dayOffset === 0 ? "today" : dayOffset === 1 ? "tomorrow" : dayShort;
   return rows
     .map((e) => {
       const allDay = Boolean((e.meta as { allDay?: unknown })?.allDay);
@@ -1080,9 +1141,62 @@ export async function summarizeCalendarToday(
         allDay || !e.occursAt ? "all day" : formatLocalHm(e.occursAt, timezone);
       const gid = opts?.includeIds ? googleCalendarIdFromEvent(e) : null;
       const idBit = gid ? ` [id:${gid}]` : "";
-      return `• ${when} ${e.title ?? "(untitled)"}${idBit}`;
+      // Absolute date on every line so the brain cannot re-label today as tomorrow.
+      return `• ${dayShort} (${rel}) ${when} ${e.title ?? "(untitled)"}${idBit}`;
     })
     .join("\n");
+}
+
+export async function summarizeCalendarTomorrow(
+  db: Db,
+  userId: string,
+  timezone = "Asia/Kolkata",
+  opts?: { includeIds?: boolean; now?: Date },
+): Promise<string> {
+  return summarizeCalendarToday(db, userId, timezone, {
+    ...opts,
+    dayOffset: 1,
+  });
+}
+
+/** Timed calendar blocks from synced events (conflict fallback). */
+export async function listSyncedCalendarBlocks(
+  db: Db,
+  userId: string,
+  timeMin: Date,
+  timeMax: Date,
+): Promise<Array<{ title: string; start: Date; end: Date; allDay: boolean }>> {
+  const rows = await db.query.events.findMany({
+    where: and(
+      eq(events.userId, userId),
+      eq(events.source, "calendar"),
+      gte(events.occursAt, timeMin),
+      lte(events.occursAt, timeMax),
+    ),
+    limit: 80,
+  });
+  const out: Array<{ title: string; start: Date; end: Date; allDay: boolean }> = [];
+  for (const e of rows) {
+    if (!e.occursAt) continue;
+    const meta = (e.meta ?? {}) as {
+      allDay?: unknown;
+      end?: unknown;
+      status?: unknown;
+    };
+    if (meta.status === "cancelled") continue;
+    const end =
+      typeof meta.end === "string" && meta.end
+        ? new Date(meta.end)
+        : new Date(e.occursAt.getTime() + 60 * 60 * 1000);
+    if (Number.isNaN(end.getTime())) continue;
+    out.push({
+      title: (e.title ?? "Event").trim() || "Event",
+      start: e.occursAt,
+      end,
+      allDay: Boolean(meta.allDay),
+    });
+  }
+  return out;
 }
 
 export type CalendarMatch = {
@@ -1918,6 +2032,14 @@ export async function listUsersForScheduledBriefs(db: Db): Promise<ScheduledBrie
   return out;
 }
 
+/** Thin alias for inbound conflict / CoS scans. */
+export async function listUsersWithGoogleForScan(
+  db: Db,
+): Promise<Array<{ id: string; timezone: string; status: string }>> {
+  const rows = await listUsersForScheduledBriefs(db);
+  return rows.map((r) => ({ id: r.id, timezone: r.timezone, status: r.status }));
+}
+
 export function buildFlatBriefDigest(opts: {
   calendarToday: string;
   recentMail: string;
@@ -2206,6 +2328,7 @@ export type PendingActionKind =
   | "calendar_create"
   | "calendar_update"
   | "calendar_cancel"
+  | "calendar_conflict"
   | "email_draft";
 
 export type PendingActionStatus =

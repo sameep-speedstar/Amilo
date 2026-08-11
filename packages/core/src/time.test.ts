@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
   flattenWaTemplateParam,
+  formatLocalDayShort,
   formatLocalHm,
   formatLocalWhenFriendly,
   guessTimezoneFromPhone,
@@ -12,6 +13,7 @@ import {
   parseClockToken,
   parseReminderMessage,
   parseTimezoneUpdateMessage,
+  relativeDayLabel,
   resolveTimezoneInput,
   zonedLocalDateTime,
 } from "./time.js";
@@ -24,6 +26,15 @@ describe("timezone helpers", () => {
   it("formats local HM in IST not UTC", () => {
     const d = new Date("2026-08-06T09:30:00.000Z");
     assert.equal(formatLocalHm(d, "Asia/Kolkata"), "15:00");
+  });
+
+  it("labels relative day vs now in IST (afternoon 'tomorrow' must not steal today)", () => {
+    const now = new Date("2026-08-11T11:23:00.000Z"); // Tue 11 Aug ~16:53 IST
+    const gvp = new Date("2026-08-11T09:30:00.000Z"); // Tue 11 Aug 15:00 IST
+    const nextDay = new Date("2026-08-12T09:30:00.000Z"); // Wed 12 Aug 15:00 IST
+    assert.equal(relativeDayLabel(gvp, "Asia/Kolkata", now), "today");
+    assert.equal(relativeDayLabel(nextDay, "Asia/Kolkata", now), "tomorrow");
+    assert.match(formatLocalDayShort(gvp, "Asia/Kolkata"), /11/);
   });
 
   it("local day bounds for Kolkata", () => {

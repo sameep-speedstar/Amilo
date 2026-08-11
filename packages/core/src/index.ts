@@ -16,6 +16,13 @@ export {
   type CalendarBlock,
   type ConflictCheckResult,
 } from "./calendarConflict.js";
+export {
+  buildInboundConflictAlert,
+  findInboundInviteConflicts,
+  isInboundInviteCandidate,
+  type InboundCalendarBlock,
+  type InboundConflictHit,
+} from "./inboundConflict.js";
 export { handleInbound, normalizeGoogleLabel, isBriefRequest, type OrchestratorDeps } from "./orchestrator.js";
 export { looksLikeNewActionIntent, applyPendingEditPatch } from "./orchestrator.js";
 export {
@@ -39,6 +46,7 @@ export {
   parseAboutPersonCommand,
   parseCancelWatchCommand,
   parseForgetCommand,
+  parseScheduleDayQuery,
   parseWaitingOnCommand,
 } from "./standingCommands.js";
 export {
@@ -72,6 +80,7 @@ export {
 export {
   flattenWaTemplateParam,
   formatLocalDateLong,
+  formatLocalDayShort,
   formatLocalHm,
   formatLocalIsoWall,
   formatLocalWhenFriendly,
@@ -83,6 +92,7 @@ export {
   isTimezoneAffirmative,
   isValidIanaTimezone,
   localDayBoundsUtc,
+  relativeDayLabel,
   localHm,
   minutesToHm,
   parseCalendarCreateHint,

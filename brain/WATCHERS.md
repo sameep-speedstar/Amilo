@@ -8,6 +8,20 @@ Amilo watches **workday obligations**, not the whole internet. Background alerts
 |------|-----------|------------|
 | `awaiting_reply` | `waiting on <person> for <thing>` | Inbound Gmail from that person's email after arm time |
 | `commitment_stall` | Reminder / commitment with `due_at` | Due within ~4h or overdue |
+| `calendar_conflict` (inbound) | Always on when Google is connected | New invite (other organizer / needsAction) overlaps an existing timed block |
+
+## Inbound calendar conflict
+
+When someone books onto your calendar over an existing block (e.g. Pickup 4:00–4:30):
+
+1. Watch worker live-scans Google every ~2 minutes.
+2. Amilo WhatsApps you with the conflict and next free slot.
+3. Reply:
+   - **yes** / **accept** — RSVP accepted (overlap remains; you chose to keep both)
+   - **alternate** — draft reschedule email to the organizer at the next free time (confirm with yes to send)
+   - **decline** — RSVP declined; organizer notified
+
+Deduped per event (`conflictAlertedAt`). Counts toward the daily watcher push cap. Quiet hours apply.
 
 ## Rules
 

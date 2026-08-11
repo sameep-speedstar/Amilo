@@ -84,6 +84,8 @@ export interface BrainUserContext {
   ignoredPatterns: string[];
   openCommitmentsSummary: string;
   calendarToday: string;
+  /** Tomorrow's calendar lines (absolute dates). Empty/"none yet" must not reuse today. */
+  calendarTomorrow?: string;
   /** Compact silent context from the personal graph. */
   contextGraphSummary?: string;
   /** Last few WhatsApp turns (user + Amilo), newest last. */

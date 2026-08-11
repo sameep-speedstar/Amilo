@@ -20,11 +20,13 @@ import {
 } from "@amilo/db";
 import { commitments } from "@amilo/db";
 import { eq } from "drizzle-orm";
+import type { GoogleOAuthConfig } from "@amilo/google";
+import { scanInboundConflictsForAllUsers } from "./calendarConflictScan.js";
 
 const WATCHER_INTERVAL_MS = 120_000;
 
 /**
- * CoS watchers: awaiting_reply (person mail) + commitment_stall.
+ * CoS watchers: awaiting_reply, commitment_stall, + inbound calendar conflicts.
  * Caps at 2 pushes/user/day; respects quiet hours.
  */
 export function startWatchWorker(opts: {
@@ -33,6 +35,7 @@ export function startWatchWorker(opts: {
   alertTemplate: string;
   languageCode?: string;
   intervalMs?: number;
+  googleCfg?: GoogleOAuthConfig | null;
 }): { stop: () => void } {
   const intervalMs = opts.intervalMs ?? WATCHER_INTERVAL_MS;
   let running = false;
@@ -94,6 +97,15 @@ export function startWatchWorker(opts: {
     if (running) return;
     running = true;
     try {
+      // Inbound invite overlaps (live Google) — before armed watches.
+      await scanInboundConflictsForAllUsers({
+        db: opts.db,
+        googleCfg: opts.googleCfg ?? null,
+        channel: opts.channel,
+        alertTemplate: opts.alertTemplate,
+        ...(opts.languageCode ? { languageCode: opts.languageCode } : {}),
+      });
+
       const open = await listOpenWatchesWithUsers(opts.db);
       const now = new Date();
       for (const w of open) {
@@ -183,5 +195,7 @@ export function startWatchWorker(opts: {
     void tick();
   }, intervalMs);
   void tick();
-  return { stop: () => clearInterval(handle) };
+  return {
+    stop: () => clearInterval(handle),
+  };
 }

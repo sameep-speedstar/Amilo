@@ -8,6 +8,12 @@ export interface CalendarEvent {
   location: string | null;
   status: string;
   allDay: boolean;
+  organizerEmail: string | null;
+  /** Self attendee responseStatus when present. */
+  selfResponseStatus: string | null;
+  createdIso: string | null;
+  updatedIso: string | null;
+  htmlLink: string | null;
 }
 
 export interface CalendarWriteInput {
@@ -141,10 +147,69 @@ export async function cancelCalendarEvent(
   }
 }
 
+/**
+ * RSVP as the given attendee email (accepted | declined | tentative).
+ * Uses sendUpdates=all so the organizer is notified.
+ */
+export async function setCalendarRsvp(
+  accessToken: string,
+  eventId: string,
+  attendeeEmail: string,
+  responseStatus: "accepted" | "declined" | "tentative",
+): Promise<CalendarEvent> {
+  const email = attendeeEmail.trim().toLowerCase();
+  if (!email.includes("@")) throw new Error("RSVP needs attendee email");
+
+  const getRes = await fetch(`${BASE}/${encodeURIComponent(eventId)}`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  if (!getRes.ok) {
+    throw new Error(`Calendar get ${getRes.status}: ${(await getRes.text()).slice(0, 300)}`);
+  }
+  const existing = (await getRes.json()) as {
+    attendees?: Array<{ email?: string; responseStatus?: string; self?: boolean }>;
+  };
+  const attendees = [...(existing.attendees ?? [])];
+  let found = false;
+  for (const a of attendees) {
+    if ((a.email ?? "").toLowerCase() === email || a.self) {
+      a.email = a.email ?? email;
+      a.responseStatus = responseStatus;
+      found = true;
+    }
+  }
+  if (!found) {
+    attendees.push({ email, responseStatus });
+  }
+
+  const res = await fetch(
+    `${BASE}/${encodeURIComponent(eventId)}?sendUpdates=all`,
+    {
+      method: "PATCH",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ attendees }),
+    },
+  );
+  if (!res.ok) {
+    throw new Error(`Calendar RSVP ${res.status}: ${(await res.text()).slice(0, 300)}`);
+  }
+  return parseEvent((await res.json()) as Record<string, unknown>);
+}
+
 function parseEvent(item: Record<string, unknown>): CalendarEvent {
   const start = (item.start ?? {}) as Record<string, string>;
   const end = (item.end ?? {}) as Record<string, string>;
   const allDay = Boolean(start.date && !start.dateTime);
+  const organizer = (item.organizer ?? {}) as { email?: string; self?: boolean };
+  const attendees = Array.isArray(item.attendees)
+    ? (item.attendees as Array<{ email?: string; responseStatus?: string; self?: boolean }>)
+    : [];
+  const selfAttendee =
+    attendees.find((a) => a.self) ??
+    attendees.find((a) => (a.email ?? "").toLowerCase() === (organizer.email ?? "").toLowerCase() && organizer.self);
   return {
     id: String(item.id),
     summary: item.summary ? String(item.summary) : null,
@@ -153,5 +218,14 @@ function parseEvent(item: Record<string, unknown>): CalendarEvent {
     location: item.location ? String(item.location) : null,
     status: String(item.status ?? "confirmed"),
     allDay,
+    organizerEmail: organizer.email ? String(organizer.email).toLowerCase() : null,
+    selfResponseStatus: selfAttendee?.responseStatus
+      ? String(selfAttendee.responseStatus)
+      : organizer.self
+        ? "accepted"
+        : null,
+    createdIso: item.created ? String(item.created) : null,
+    updatedIso: item.updated ? String(item.updated) : null,
+    htmlLink: item.htmlLink ? String(item.htmlLink) : null,
   };
 }

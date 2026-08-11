@@ -96,6 +96,32 @@ export function parseForgetCommand(
   return { label: rest.slice(0, 120) };
 }
 
+/**
+ * Schedule overview for today/tomorrow — deterministic, bypasses the brain.
+ * Avoids "is X scheduled tomorrow?" style questions (those stay with the brain).
+ */
+export function parseScheduleDayQuery(text: string): "today" | "tomorrow" | null {
+  const t = normalizeCommandText(text);
+  const wantsTomorrow = /\btomorrow\b/.test(t);
+  const wantsToday = /\btoday\b/.test(t);
+  if (wantsTomorrow === wantsToday) return null; // neither or both
+
+  // "scheduled" without asking for the schedule itself → leave to brain
+  if (/\bscheduled\b/.test(t) && !/\b(my\s+)?(schedule|calendar|agenda|plan)\b/.test(t)) {
+    return null;
+  }
+
+  const scheduleish =
+    /\b(schedule|calendar|agenda|plan)\b/.test(t) ||
+    /\b(what'?s|whats|what is|how'?s|hows|how is)\s+on\b/.test(t) ||
+    /\banything\s+(on|up)\b/.test(t) ||
+    /\bwhat'?s\s+(up|happening)\b/.test(t) ||
+    /\b(what'?s|whats|what is|how'?s|hows|how is)\s+(my\s+)?(day|week)\b/.test(t);
+
+  if (!scheduleish) return null;
+  return wantsTomorrow ? "tomorrow" : "today";
+}
+
 /** waiting on <person> for <thing> */
 export function parseWaitingOnCommand(
   text: string,

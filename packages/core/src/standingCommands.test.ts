@@ -10,6 +10,7 @@ import {
   parseAboutPersonCommand,
   parseCancelWatchCommand,
   parseForgetCommand,
+  parseScheduleDayQuery,
   parseWaitingOnCommand,
   STANDING_HELP,
 } from "./standingCommands.js";
@@ -61,6 +62,16 @@ describe("standing commands", () => {
       thing: "board deck",
     });
     assert.equal(parseCancelWatchCommand("cancel watch Rajeev"), "Rajeev");
+  });
+
+  it("parses schedule day overview queries", () => {
+    assert.equal(parseScheduleDayQuery("Hows the schedule for tomorrow?"), "tomorrow");
+    assert.equal(parseScheduleDayQuery("what's my plan for today"), "today");
+    assert.equal(parseScheduleDayQuery("tomorrow's calendar"), "tomorrow");
+    assert.equal(parseScheduleDayQuery("anything on tomorrow"), "tomorrow");
+    // specific "scheduled" questions stay with the brain
+    assert.equal(parseScheduleDayQuery("is the GVP meeting scheduled tomorrow?"), null);
+    assert.equal(parseScheduleDayQuery("help"), null);
   });
 
   it("recognizes how it works + delete helpers", () => {

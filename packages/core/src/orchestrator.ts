@@ -21,6 +21,7 @@ import {
   parseCancelWatchCommand,
   parseCommitmentCloseCommand,
   parseForgetCommand,
+  parseScheduleDayQuery,
   parseWaitingOnCommand,
 } from "./standingCommands.js";
 import {
@@ -33,6 +34,7 @@ import {
 import {
   formatLocalHm,
   formatLocalIsoWall,
+  formatLocalWhenFriendly,
   isTimezoneAffirmative,
   parseCalendarCreateHint,
   parseHmInput,
@@ -177,6 +179,7 @@ export interface OrchestratorDeps {
   getBriefingContext?: (userId: string) => Promise<{
     openCommitmentsSummary: string;
     calendarToday: string;
+    calendarTomorrow?: string;
     recentMail: string;
     timezone: string;
     ignoredPatterns: string[];
@@ -317,7 +320,7 @@ export function looksLikeNewActionIntent(
 ): boolean {
   const t = message.trim();
   if (!t || t.length < 4) return false;
-  if (/^(yes|y|yeah|yep|ok|okay|confirm|cancel|no|nope|edit)\b/i.test(t)) return false;
+  if (/^(yes|y|yeah|yep|ok|okay|confirm|cancel|no|nope|edit|alternate)\b/i.test(t)) return false;
   if (isBriefRequest(t)) return true;
   if (
     /^(mute|unmute|sync|google|help|commands|pause|resume|briefs|status|pending|open|delete|forget|memory|about|done|drop|snooze|places|home|office|waiting)\b/i.test(
@@ -333,6 +336,7 @@ export function looksLikeNewActionIntent(
     Boolean(parseAboutPersonCommand(t)) ||
     Boolean(parseWaitingOnCommand(t)) ||
     Boolean(parseCancelWatchCommand(t)) ||
+    Boolean(parseScheduleDayQuery(t)) ||
     isHowItWorksCommand(t) ||
     parseCommitmentCloseCommand(t) ||
     parsePlaceSetCommands(t).length > 0 ||
@@ -410,7 +414,15 @@ async function proposeCalendarCreatePending(
   let conflictNote: string | null = null;
   if (deps.checkCalendarConflict) {
     const startIso = String(payload.start ?? payload.startIso ?? "").trim();
-    const endIso = String(payload.end ?? payload.endIso ?? "").trim();
+    let endIso = String(payload.end ?? payload.endIso ?? "").trim();
+    if (startIso && !endIso) {
+      const startMs = Date.parse(startIso);
+      if (!Number.isNaN(startMs)) {
+        endIso = new Date(startMs + 60 * 60 * 1000).toISOString();
+        payload.end = endIso;
+        payload.endIso = endIso;
+      }
+    }
     if (startIso && endIso) {
       try {
         const conflict = await deps.checkCalendarConflict(msg.userId, {
@@ -419,18 +431,14 @@ async function proposeCalendarCreatePending(
           timezone: timeZone,
         });
         conflictNote = conflict.conflictNote;
-        if (!conflict.clear && conflict.suggested) {
-          payload.start = conflict.suggested.startIso;
-          payload.end = conflict.suggested.endIso;
-          payload.startIso = conflict.suggested.startIso;
-          payload.endIso = conflict.suggested.endIso;
-          payload.conflictAdjusted = true;
-          payload.originalStart = startIso;
-          payload.originalEnd = endIso;
-          if (conflict.conflictTitle) payload.conflictWith = conflict.conflictTitle;
-        } else if (!conflict.clear) {
+        if (!conflict.clear) {
+          // Keep the requested time — user chooses go-ahead vs alternate.
           payload.conflictWarning = true;
           if (conflict.conflictTitle) payload.conflictWith = conflict.conflictTitle;
+          if (conflict.suggested) {
+            payload.suggestedStart = conflict.suggested.startIso;
+            payload.suggestedEnd = conflict.suggested.endIso;
+          }
         }
       } catch (err) {
         console.error(
@@ -460,6 +468,9 @@ async function proposeCalendarCreatePending(
     summary,
     payload,
   });
+  const confirmHint = conflictNote
+    ? "Reply yes to go ahead anyway, alternate for next free, or cancel."
+    : "Reply yes to write to Google Calendar, cancel to drop.";
   return [
     {
       text: [
@@ -467,7 +478,7 @@ async function proposeCalendarCreatePending(
         `Proposed (${pending.kind}):`,
         pending.summary,
         "",
-        "Reply yes to write to Google Calendar, cancel to drop.",
+        confirmHint,
       ].join("\n"),
     },
   ];
@@ -661,18 +672,127 @@ export async function handleInbound(
 
   if (openPending && deps.confirmPending && deps.rejectPending) {
     const isCancelKind = openPending.kind === "calendar_cancel";
+    const isConflictKind = openPending.kind === "calendar_conflict";
     const affirm = isCancelKind
       ? /^(yes|y|yeah|yep|ok|okay|confirm|do it|go ahead|approved?|cancel( it| this| now)?)$/i.test(
           lower,
         )
-      : /^(yes|y|yeah|yep|ok|okay|confirm|do it|go ahead|approved?)$/i.test(lower);
+      : /^(yes|y|yeah|yep|ok|okay|confirm|do it|go ahead|approved?|keep|accept)$/i.test(
+          lower,
+        );
     const reject = isCancelKind
       ? /^(no|nope|keep( it)?|never ?mind|abort|drop|don't|dont)$/i.test(lower)
-      : /^(cancel|no|nope|reject|don't|dont|never ?mind|abort)$/i.test(lower);
+      : isConflictKind
+        ? /^(decline|reject|cancel|no|nope|don't|dont|never ?mind|abort)$/i.test(lower)
+        : /^(cancel|no|nope|reject|don't|dont|never ?mind|abort)$/i.test(lower);
 
     if (affirm) {
       const r = await deps.confirmPending(msg.userId);
       return [{ text: r.ok ? r.message : `Couldn't complete: ${r.message}` }];
+    }
+    const wantAlternate =
+      (openPending.kind === "calendar_create" || isConflictKind) &&
+      /^(alternate|propose alternate|next free|suggest(ed)?( time)?|reschedule)$/i.test(
+        lower,
+      );
+    if (wantAlternate && isConflictKind && deps.createPending) {
+      const sugStart = String(openPending.payload.suggestedStart ?? "").trim();
+      const sugEnd = String(openPending.payload.suggestedEnd ?? "").trim();
+      const organizer = String(openPending.payload.organizerEmail ?? "").trim();
+      const title = String(openPending.payload.title ?? "the meeting").trim();
+      if (!sugStart || !sugEnd) {
+        return [
+          {
+            text: "No alternate slot on file. Say a time to propose, or decline.",
+          },
+        ];
+      }
+      if (!organizer.includes("@")) {
+        return [
+          {
+            text: [
+              `Next free: ${formatLocalWhenFriendly(new Date(sugStart), tzForPending.timezone)}–${formatLocalHm(new Date(sugEnd), tzForPending.timezone)}.`,
+              "I don't have the organizer email to draft a reschedule — reply to them directly, or decline.",
+            ].join("\n"),
+          },
+        ];
+      }
+      const when = formatLocalWhenFriendly(new Date(sugStart), tzForPending.timezone);
+      const endHm = formatLocalHm(new Date(sugEnd), tzForPending.timezone);
+      const body = [
+        `Hi — can we move “${title}” to ${when}–${endHm}?`,
+        "I have a conflict at the original time.",
+        "",
+        "Thanks",
+      ].join("\n");
+      await deps.createPending({
+        userId: msg.userId,
+        kind: "email_draft",
+        summary: `Email draft to ${organizer}: Reschedule ${title}`,
+        payload: {
+          accountLabel: String(openPending.payload.accountLabel ?? "personal"),
+          to: organizer,
+          subject: `Reschedule: ${title}`,
+          body,
+        },
+      });
+      return [
+        {
+          text: [
+            "Email ready to send.",
+            "Reply yes to send via Gmail, cancel to drop, or edit <change>.",
+          ].join("\n"),
+        },
+        {
+          text: [`To: ${organizer}`, `Subject: Reschedule: ${title}`, body].join("\n"),
+        },
+      ];
+    }
+    if (wantAlternate && openPending.kind === "calendar_create" && deps.editPending) {
+      const sugStart = String(openPending.payload.suggestedStart ?? "").trim();
+      const sugEnd = String(openPending.payload.suggestedEnd ?? "").trim();
+      if (!sugStart || !sugEnd) {
+        return [
+          {
+            text: "No alternate slot on file for this proposal. Say a new time, or cancel.",
+          },
+        ];
+      }
+      const nextPayload: Record<string, unknown> = {
+        ...openPending.payload,
+        start: sugStart,
+        end: sugEnd,
+        startIso: sugStart,
+        endIso: sugEnd,
+        conflictAdjusted: true,
+        conflictWarning: false,
+      };
+      delete nextPayload.suggestedStart;
+      delete nextPayload.suggestedEnd;
+      const attendees = Array.isArray(nextPayload.attendees)
+        ? nextPayload.attendees.map((a) => String(a))
+        : [];
+      const summary = formatCalendarProposalSummary({
+        kind: "calendar_create",
+        title: String(nextPayload.title ?? "event"),
+        startIso: sugStart,
+        endIso: sugEnd,
+        timeZone: tzForPending.timezone,
+        attendees,
+      });
+      const r = await deps.editPending(msg.userId, nextPayload, summary);
+      return [
+        {
+          text: r.ok
+            ? [
+                "Switched to next free slot:",
+                summary,
+                "",
+                "Reply yes to write to Google Calendar, cancel to drop.",
+              ].join("\n")
+            : r.message,
+        },
+      ];
     }
     if (reject) {
       const r = await deps.rejectPending(msg.userId);
@@ -709,6 +829,7 @@ export async function handleInbound(
       Boolean(parseAboutPersonCommand(text)) ||
       Boolean(parseWaitingOnCommand(text)) ||
       Boolean(parseCancelWatchCommand(text)) ||
+      Boolean(parseScheduleDayQuery(text)) ||
       isDeleteMenuCommand(text) ||
       isDeletePendingCommand(text) ||
       isClearMemoryCommand(text) ||
@@ -730,7 +851,12 @@ export async function handleInbound(
             `Pending: ${openPending.summary}`,
             isCancelKind
               ? "Reply yes to cancel it on Google, or no to keep it."
-              : "Reply yes to confirm, cancel to drop, or edit <change>.",
+              : openPending.kind === "calendar_conflict"
+                ? "Reply yes to accept, alternate to propose next free, or decline."
+                : openPending.kind === "calendar_create" &&
+                    Boolean(openPending.payload.conflictWarning)
+                  ? "Reply yes to go ahead anyway, alternate for next free, cancel to drop, or edit <change>."
+                  : "Reply yes to confirm, cancel to drop, or edit <change>.",
           ].join("\n"),
         },
       ];
@@ -770,6 +896,31 @@ export async function handleInbound(
     }
     lines.push("", "Send help for all commands.");
     return [{ text: lines.join("\n") }];
+  }
+
+  const scheduleDay = parseScheduleDayQuery(text);
+  if (scheduleDay && deps.getBriefingContext) {
+    if (deps.syncGoogle) {
+      try {
+        await deps.syncGoogle(msg.userId);
+      } catch (err) {
+        return [
+          {
+            text: `Sync failed: ${err instanceof Error ? err.message : String(err)}`,
+          },
+        ];
+      }
+    }
+    const ctx = await deps.getBriefingContext(msg.userId);
+    const block =
+      scheduleDay === "tomorrow"
+        ? (ctx.calendarTomorrow ?? "none yet")
+        : ctx.calendarToday;
+    const label = scheduleDay === "tomorrow" ? "Tomorrow" : "Today";
+    if (!block || block === "none yet") {
+      return [{ text: `${label}: nothing on the calendar yet.` }];
+    }
+    return [{ text: `${label}:\n${block}` }];
   }
 
   if (isAboutMeCommand(text)) {
@@ -1350,6 +1501,7 @@ export async function handleInbound(
           ignoredPatterns: ctx.ignoredPatterns,
           openCommitmentsSummary: ctx.openCommitmentsSummary,
           calendarToday: ctx.calendarToday,
+          ...(ctx.calendarTomorrow ? { calendarTomorrow: ctx.calendarTomorrow } : {}),
           contextGraphSummary: deps.getContextGraphSummary
             ? await deps.getContextGraphSummary(msg.userId)
             : "none yet",
@@ -1399,6 +1551,7 @@ export async function handleInbound(
     : {
         openCommitmentsSummary: "none yet",
         calendarToday: "none yet",
+        calendarTomorrow: "none yet",
         recentMail: "none yet",
         timezone: tzState.timezone,
         ignoredPatterns: [] as string[],
@@ -1486,6 +1639,9 @@ export async function handleInbound(
       ignoredPatterns: briefCtx.ignoredPatterns,
       openCommitmentsSummary: briefCtx.openCommitmentsSummary,
       calendarToday: briefCtx.calendarToday,
+      ...(briefCtx.calendarTomorrow
+        ? { calendarTomorrow: briefCtx.calendarTomorrow }
+        : {}),
       contextGraphSummary,
       ...(recentChatSummary ? { recentChatSummary } : {}),
       ...(replyToSummary ? { replyToSummary } : {}),
@@ -1672,7 +1828,15 @@ export async function handleInbound(
       let conflictNote: string | null = null;
       if (kind === "calendar_create" && deps.checkCalendarConflict) {
         const startIso = strPayload(payload.start) || strPayload(payload.startIso);
-        const endIso = strPayload(payload.end) || strPayload(payload.endIso);
+        let endIso = strPayload(payload.end) || strPayload(payload.endIso);
+        if (startIso && !endIso) {
+          const startMs = Date.parse(startIso);
+          if (!Number.isNaN(startMs)) {
+            endIso = new Date(startMs + 60 * 60 * 1000).toISOString();
+            payload.end = endIso;
+            payload.endIso = endIso;
+          }
+        }
         if (startIso && endIso) {
           try {
             const conflict = await deps.checkCalendarConflict(msg.userId, {
@@ -1681,18 +1845,14 @@ export async function handleInbound(
               timezone: briefCtx.timezone,
             });
             conflictNote = conflict.conflictNote;
-            if (!conflict.clear && conflict.suggested) {
-              payload.start = conflict.suggested.startIso;
-              payload.end = conflict.suggested.endIso;
-              payload.startIso = conflict.suggested.startIso;
-              payload.endIso = conflict.suggested.endIso;
-              payload.conflictAdjusted = true;
-              payload.originalStart = startIso;
-              payload.originalEnd = endIso;
-              if (conflict.conflictTitle) payload.conflictWith = conflict.conflictTitle;
-            } else if (!conflict.clear) {
+            if (!conflict.clear) {
+              // Keep requested time; user picks go-ahead vs alternate.
               payload.conflictWarning = true;
               if (conflict.conflictTitle) payload.conflictWith = conflict.conflictTitle;
+              if (conflict.suggested) {
+                payload.suggestedStart = conflict.suggested.startIso;
+                payload.suggestedEnd = conflict.suggested.endIso;
+              }
             }
           } catch (err) {
             console.error(
@@ -1851,7 +2011,9 @@ export async function handleInbound(
             `Proposed (${pending.kind}):`,
             pending.summary,
             "",
-            "Reply yes to write to Google Calendar, cancel to drop.",
+            conflictNote && kind === "calendar_create"
+              ? "Reply yes to go ahead anyway, alternate for next free, or cancel."
+              : "Reply yes to write to Google Calendar, cancel to drop.",
           ].join("\n"),
         },
       ];

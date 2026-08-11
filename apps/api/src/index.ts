@@ -65,6 +65,8 @@ import {
   summarizeAboutMe,
   summarizeAboutPerson,
   summarizeCalendarToday,
+  summarizeCalendarTomorrow,
+  listSyncedCalendarBlocks,
   summarizeContextGraph,
   summarizeOpenCommitments,
   summarizeRecentMail,
@@ -342,6 +344,9 @@ function orchestratorDeps(): OrchestratorDeps {
         calendarToday: await summarizeCalendarToday(db, userId, timezone, {
           includeIds: true,
         }),
+        calendarTomorrow: await summarizeCalendarTomorrow(db, userId, timezone, {
+          includeIds: true,
+        }),
         recentMail: await summarizeRecentMail(
           db,
           userId,
@@ -502,6 +507,13 @@ function orchestratorDeps(): OrchestratorDeps {
         return { clear: true, conflictNote: null, suggested: null, conflictTitle: null };
       }
       const blocks: CalendarBlock[] = [];
+      const seen = new Set<string>();
+      const pushBlock = (b: CalendarBlock) => {
+        const key = `${b.start.toISOString()}|${b.end.toISOString()}|${b.title.toLowerCase()}`;
+        if (seen.has(key)) return;
+        seen.add(key);
+        blocks.push(b);
+      };
       const rangeStart = localDayBoundsUtc(opts.timezone, start).timeMin;
       const rangeEnd = new Date(start.getTime() + 3 * 86_400_000);
 
@@ -523,7 +535,7 @@ function orchestratorDeps(): OrchestratorDeps {
                 ? new Date(ev.endIso)
                 : new Date(evStart.getTime() + 60 * 60 * 1000);
               if (Number.isNaN(evStart.getTime()) || Number.isNaN(evEnd.getTime())) continue;
-              blocks.push({
+              pushBlock({
                 title: (ev.summary ?? "Event").trim() || "Event",
                 start: evStart,
                 end: evEnd,
@@ -541,6 +553,17 @@ function orchestratorDeps(): OrchestratorDeps {
             );
           }
         }
+      }
+
+      // Fallback / merge synced rows so conflicts still fire if live Google is empty/failed.
+      const synced = await listSyncedCalendarBlocks(db, userId, rangeStart, rangeEnd);
+      for (const e of synced) {
+        pushBlock({
+          title: e.title,
+          start: e.start,
+          end: e.end,
+          allDay: e.allDay,
+        });
       }
 
       const result = checkSlotConflicts(blocks, start, end, opts.timezone);
@@ -575,11 +598,7 @@ function orchestratorDeps(): OrchestratorDeps {
     rejectPending: async (userId) => {
       const row = await getOpenPendingAction(db, userId);
       if (!row) return { ok: false, message: "Nothing pending to cancel." };
-      await rejectPendingAction(db, row);
-      if (row.kind === "calendar_cancel") {
-        return { ok: true, message: "Kept — event not cancelled." };
-      }
-      return { ok: true, message: "Cancelled — nothing written." };
+      return rejectPendingAction(db, row, googleCfg);
     },
     editPending: async (userId, patch, summary) => {
       const row = await getOpenPendingAction(db, userId);
@@ -983,6 +1002,7 @@ startWatchWorker({
   alertTemplate: settings.wabaTemplateAlert,
   languageCode: "en",
   intervalMs: 120_000,
+  googleCfg,
 });
 
 startBriefWorker({

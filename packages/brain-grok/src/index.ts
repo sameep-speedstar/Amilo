@@ -222,6 +222,7 @@ function buildSystemPrompt(docs: string): string {
     "When the user asks to send a calendar invite / invite someone to a meeting, use calendar_create with attendees (emails). If Silent context graph has person email=…, use that — do not ask them to restate the email. Never use email_draft for calendar invites.",
     "When the user asks to send/email someone (not a calendar invite), return propose_action with action {\"type\":\"email_draft\",\"to\":\"...\",\"subject\":\"...\",\"body\":\"full draft in user voice\"}. Orchestrator confirms with yes, then sends via Gmail. Resolve to= from context graph person email when only a name is given.",
     "All times the user mentions are in their timezone (see User line). Never assume UTC.",
+    "Calendar lines include absolute dates like 'Tue 11 Aug (today)' / '(tomorrow)'. Never move a (today) event into Tomorrow — if Calendar tomorrow is none yet, say tomorrow is clear. Prefer Calendar today/tomorrow over Recent chat if they disagree on day labels.",
     "When the user is deciding, use advisor framing (tradeoffs + recommendation).",
     "If Reply-to is set, the user quoted that exact prior message — treat it as the target event/item (cancel/update/remind/clarify THAT), not a vague guess from calendar alone.",
     "Use Recent chat for continuity across turns; do not re-ask what was just discussed.",
@@ -247,6 +248,7 @@ function buildUserPayload(ctx: BrainUserContext, message: string): string {
     `Ignored: ${ctx.ignoredPatterns.join(", ") || "none"}`,
     `Open commitments: ${ctx.openCommitmentsSummary}`,
     `Calendar today: ${ctx.calendarToday}`,
+    `Calendar tomorrow: ${ctx.calendarTomorrow ?? "none yet"}`,
     `Silent context graph:\n${ctx.contextGraphSummary ?? "none yet"}`,
     `Recent chat (oldest→newest):\n${ctx.recentChatSummary ?? "none yet"}`,
   ];
@@ -290,6 +292,7 @@ export function createGrokBrain(cfg: GrokBrainConfig): BrainPort {
         `User: ${ctx.name}`,
         `Open commitments: ${ctx.openCommitmentsSummary}`,
         `Calendar today: ${ctx.calendarToday}`,
+        `Calendar tomorrow: ${ctx.calendarTomorrow ?? "none yet"}`,
         "Gmail/Calendar sync is not live yet — be honest if data is empty. Cap 5 attention items.",
       ].join("\n\n");
       const text = await chatCompletion(api, system, user);

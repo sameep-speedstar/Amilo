@@ -5,6 +5,7 @@ import {
   hasGmailSendScope,
   patchCalendarEvent,
   sendGmailMessage,
+  setCalendarRsvp,
   type GoogleOAuthConfig,
 } from "@amilo/google";
 import {
@@ -238,6 +239,44 @@ export async function executePendingAction(
       return { ok: true, message: `Cancelled calendar event (${label}).` };
     }
 
+    if (row.kind === "calendar_conflict") {
+      const eventId = str(payload.eventId);
+      if (!eventId) throw new Error("Missing eventId for conflict RSVP");
+      const account =
+        (await getGoogleAccount(db, row.userId, label)) ??
+        (await listGoogleAccounts(db, row.userId))[0];
+      const attendeeEmail =
+        str(payload.accountEmail) ||
+        account?.email ||
+        "";
+      if (!attendeeEmail.includes("@")) {
+        throw new Error("Missing account email to accept the invite");
+      }
+      await setCalendarRsvp(accessToken, eventId, attendeeEmail, "accepted");
+      await resolvePendingAction(db, row.id, {
+        status: "confirmed",
+        result: { eventId, responseStatus: "accepted", accountLabel: label },
+      });
+      await appendAudit(db, {
+        userId: row.userId,
+        action: "calendar_conflict_accepted",
+        detail: { pendingId: row.id, eventId, accountLabel: label },
+        confirmed: true,
+      });
+      await logEvalEvent(db, {
+        userId: row.userId,
+        event: "action_confirmed",
+        note: "calendar_conflict_accepted",
+        meta: { pendingId: row.id, eventId },
+      });
+      const title = str(payload.title, "the invite");
+      const conflictWith = str(payload.conflictWith, "your other block");
+      return {
+        ok: true,
+        message: `Accepted “${title}” — still overlaps “${conflictWith}”. Move one later if you need to.`,
+      };
+    }
+
     throw new Error(`Unsupported action kind: ${row.kind}`);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -258,7 +297,58 @@ export async function executePendingAction(
 export async function rejectPendingAction(
   db: Db,
   row: PendingActionRow,
-): Promise<void> {
+  cfg?: GoogleOAuthConfig | null,
+): Promise<{ ok: boolean; message: string }> {
+  // Inbound conflict: "decline" means RSVP declined + notify organizer.
+  if (row.kind === "calendar_conflict" && cfg) {
+    const payload = (row.payload ?? {}) as Record<string, unknown>;
+    try {
+      const accountLabel = str(payload.accountLabel, "personal");
+      const { accessToken, label } = await resolveAccountToken(
+        db,
+        cfg,
+        row.userId,
+        accountLabel,
+      );
+      const eventId = str(payload.eventId);
+      const account =
+        (await getGoogleAccount(db, row.userId, label)) ??
+        (await listGoogleAccounts(db, row.userId))[0];
+      const attendeeEmail = str(payload.accountEmail) || account?.email || "";
+      if (!eventId || !attendeeEmail.includes("@")) {
+        throw new Error("Missing event or email to decline");
+      }
+      await setCalendarRsvp(accessToken, eventId, attendeeEmail, "declined");
+      await resolvePendingAction(db, row.id, {
+        status: "rejected",
+        result: { eventId, responseStatus: "declined" },
+      });
+      await appendAudit(db, {
+        userId: row.userId,
+        action: "calendar_conflict_declined",
+        detail: { pendingId: row.id, eventId },
+        confirmed: true,
+      });
+      await logEvalEvent(db, {
+        userId: row.userId,
+        event: "action_rejected",
+        note: "calendar_conflict_declined",
+        meta: { pendingId: row.id, eventId },
+      });
+      return {
+        ok: true,
+        message: `Declined “${str(payload.title, "the invite")}” — organizer notified.`,
+      };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      await resolvePendingAction(db, row.id, {
+        status: "failed",
+        result: { error: message },
+      });
+      return { ok: false, message };
+    }
+  }
+
   await resolvePendingAction(db, row.id, { status: "rejected", result: {} });
   await appendAudit(db, {
     userId: row.userId,
@@ -272,4 +362,8 @@ export async function rejectPendingAction(
     note: row.kind,
     meta: { pendingId: row.id },
   });
+  if (row.kind === "calendar_cancel") {
+    return { ok: true, message: "Kept — event not cancelled." };
+  }
+  return { ok: true, message: "Cancelled — nothing written." };
 }

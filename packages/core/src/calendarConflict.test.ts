@@ -38,7 +38,9 @@ describe("calendar conflict", () => {
 
     const note = formatConflictProposalNote(result, tz);
     assert.ok(note);
-    assert.match(note!, /10:00 is taken/i);
+    assert.match(note!, /10:00 conflicts/i);
+    assert.match(note!, /go ahead/i);
+    assert.match(note!, /alternate/i);
     assert.match(note!, /11:00/i);
   });
 

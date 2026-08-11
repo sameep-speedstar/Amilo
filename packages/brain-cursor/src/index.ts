@@ -91,6 +91,7 @@ export function createCursorBrain(cfg: CursorBrainConfig): BrainPort {
         `Ignored: ${ctx.ignoredPatterns.join(", ") || "none"}`,
         `Open commitments: ${ctx.openCommitmentsSummary}`,
         `Calendar today: ${ctx.calendarToday}`,
+        `Calendar tomorrow: ${ctx.calendarTomorrow ?? "none yet"}`,
         `Events: ${JSON.stringify(events)}`,
       ].join("\n\n");
       const text = await runPrompt(cfg, ctx.userId, prompt);
@@ -105,6 +106,7 @@ export function createCursorBrain(cfg: CursorBrainConfig): BrainPort {
         `User: ${ctx.name}`,
         `Open commitments: ${ctx.openCommitmentsSummary}`,
         `Calendar today: ${ctx.calendarToday}`,
+        `Calendar tomorrow: ${ctx.calendarTomorrow ?? "none yet"}`,
         "Hard cap: at most 5 needs_attention items. Always state how many were handled quietly.",
       ].join("\n\n");
       const text = await runPrompt(cfg, ctx.userId, prompt);

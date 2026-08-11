@@ -139,23 +139,29 @@ export function checkSlotConflicts(
   };
 }
 
-/** One-line conflict explanation for WhatsApp. */
+/** One-line conflict explanation for WhatsApp — keep original time; offer choice. */
 export function formatConflictProposalNote(
   result: ConflictCheckResult,
   timeZone: string,
 ): string | null {
   if (result.clear) return null;
   const taken = result.conflicts[0]!;
-  const takenHm = formatLocalHm(result.requestedStart, timeZone);
+  const wantHm = formatLocalHm(result.requestedStart, timeZone);
   const blocker = (taken.title || "an existing event").trim();
   const blockerWhen = `${formatLocalHm(taken.start, timeZone)}–${formatLocalHm(taken.end, timeZone)}`;
 
   if (result.suggested) {
     const freeHm = formatLocalHm(result.suggested.start, timeZone);
     const freeEnd = formatLocalHm(result.suggested.end, timeZone);
-    return `${takenHm} is taken by “${blocker}” (${blockerWhen}). Next free: ${freeHm}–${freeEnd} — propose that instead?`;
+    return (
+      `${wantHm} conflicts with “${blocker}” (${blockerWhen}). ` +
+      `Reply yes to go ahead anyway, alternate for next free (${freeHm}–${freeEnd}), or cancel.`
+    );
   }
-  return `${takenHm} overlaps “${blocker}” (${blockerWhen}). No open slot in the next few days — still book ${takenHm} anyway?`;
+  return (
+    `${wantHm} conflicts with “${blocker}” (${blockerWhen}). ` +
+    `No open slot in the next few days — reply yes to go ahead anyway, or cancel.`
+  );
 }
 
 /** Exported for tests — local wall clock helper. */

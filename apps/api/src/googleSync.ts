@@ -115,6 +115,9 @@ async function syncOneAccount(
         accountEmail: emailTag,
         calendarId: ev.id,
         ...(ev.location ? { location: ev.location } : {}),
+        ...(ev.organizerEmail ? { organizerEmail: ev.organizerEmail } : {}),
+        ...(ev.selfResponseStatus ? { selfResponseStatus: ev.selfResponseStatus } : {}),
+        ...(ev.createdIso ? { createdIso: ev.createdIso } : {}),
       },
       occursAt: ev.startIso ? new Date(ev.startIso) : null,
     });
