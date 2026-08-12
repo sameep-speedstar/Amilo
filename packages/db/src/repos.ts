@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gte, isNull, lte, ne, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, isNull, lt, lte, ne, or, sql } from "drizzle-orm";
 import type { GraphUpdate } from "@amilo/brain-contract";
 import { formatLocalDayShort, formatLocalHm, guessTimezoneFromPhone, localDayBoundsUtc, cleanCalendarDisplayTitle, formatLeaveByBriefLine, detectTravelConflictsFromCoords, describeTravelConflict } from "@amilo/core";
 import type { Db } from "./index.js";
@@ -1122,7 +1122,7 @@ export async function summarizeCalendarToday(
       eq(events.source, "calendar"),
       gte(events.occursAt, timeMin),
       // timeMax is exclusive (start of next local day)
-      sql`${events.occursAt} < ${timeMax}`,
+      lt(events.occursAt, timeMax),
     ),
     orderBy: [events.occursAt],
     limit: 20,
