@@ -155,12 +155,12 @@ export function formatConflictProposalNote(
     const freeEnd = formatLocalHm(result.suggested.end, timeZone);
     return (
       `${wantHm} conflicts with “${blocker}” (${blockerWhen}). ` +
-      `Reply yes to go ahead anyway, alternate for next free (${freeHm}–${freeEnd}), or cancel.`
+      `Next free: ${freeHm}–${freeEnd}.`
     );
   }
   return (
     `${wantHm} conflicts with “${blocker}” (${blockerWhen}). ` +
-    `No open slot in the next few days — reply yes to go ahead anyway, or cancel.`
+    `No open slot in the next few days.`
   );
 }
 

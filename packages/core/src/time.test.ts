@@ -196,4 +196,31 @@ describe("timezone helpers", () => {
       "Thursday 13 August · 1:00 pm",
     );
   });
+
+  it("recognises school pickup without book/add verb", () => {
+    const now = new Date("2026-08-13T11:11:00.000Z");
+    const hint = parseCalendarCreateHint(
+      "school pickup of daughter tomorrow at 3pm",
+      "Asia/Kolkata",
+      now,
+    );
+    assert.ok(hint);
+    assert.match(hint!.title, /pickup/i);
+    assert.match(hint!.title, /daughter/i);
+    assert.equal(
+      formatLocalWhenFriendly(new Date(hint!.startIso), "Asia/Kolkata"),
+      "Friday 14 August · 3:00 pm",
+    );
+  });
+
+  it("strips another/also from meeting titles", () => {
+    const now = new Date("2026-08-13T11:11:00.000Z");
+    const hint = parseCalendarCreateHint(
+      "book another meeting with Vivek tomorrow at 4pm",
+      "Asia/Kolkata",
+      now,
+    );
+    assert.ok(hint);
+    assert.equal(hint!.title, "Meeting with Vivek");
+  });
 });

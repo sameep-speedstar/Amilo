@@ -151,11 +151,25 @@ export function parseCalendarCreateHint(
     .trim();
   if (
     !/\b(add|schedule|book|create|put|block|invite|fix)\b/i.test(text) &&
-    !/\b(meeting|lunch|call|event|appointment|calendar invite)\b/i.test(text)
+    !/\b(meeting|lunch|call|event|appointment|calendar invite)\b/i.test(text) &&
+    !/\b(pickup|pick\s*up|drop[\s-]?off|dropoff|school)\b/i.test(text)
   ) {
     return null;
   }
   if (/^remind\b/i.test(text)) return null;
+  // Bare lifestyle chatter without a clock — don't invent a booking.
+  if (
+    /\b(pickup|pick\s*up|drop[\s-]?off|dropoff|school)\b/i.test(text) &&
+    !/\b(add|schedule|book|create|put|block|invite|fix|meeting|lunch|call|event|appointment)\b/i.test(
+      text,
+    ) &&
+    !/\b(?:at|@)\s*\d{1,2}/i.test(text) &&
+    !/\b\d{1,2}(?::\d{2})?\s*(?:am|pm)\b/i.test(text) &&
+    !/\b(?:[01]?\d|2[0-3]):[0-5]\d\b/.test(text) &&
+    !/\b(?:from\s+)?\d{1,2}(?::\d{2})?\s*(?:am|pm)?\s*(?:to|-|–|—)\s*\d{1,2}/i.test(text)
+  ) {
+    return null;
+  }
 
   const { day: today } = localDayBoundsUtc(timeZone, now);
   let day = today;
@@ -215,6 +229,11 @@ export function parseCalendarCreateHint(
       /\b(?:add|schedule|book|create|put|block|invite|send)\s+(?:a\s+|an\s+|me\s+)?/gi,
       "",
     )
+    // Filler before the real title ("another meeting", "one more call")
+    .replace(
+      /^(?:another|also|again|one more|extra|quick|short|brief)\s+/i,
+      "",
+    )
     .replace(/\b(?:calendar\s+)?invite\b/gi, "")
     .replace(/\bto\s+[A-Za-z][A-Za-z.'-]{1,40}\b/gi, (m) =>
       /\bto\s+(today|tomorrow|me|calendar)\b/i.test(m) ? m : "",
@@ -235,21 +254,45 @@ export function parseCalendarCreateHint(
     .replace(/\b(?:in the morning|in the evening|in the afternoon)\b/gi, "")
     .replace(/\b(?:we have to|i have to|have to|need to|going to|go to)\b/gi, "")
     .replace(/\b(?:play)\b/gi, "")
+    // "of/for daughter" → keep as "daughter" phrasing; normalize pickup wording later
     .replace(/\s+/g, " ")
     .replace(/^[\s,.\-–—]+|[\s,.\-–—]+$/g, "")
     .trim();
 
+  // "meeting with Vivek" / "call with Raj" — title-case Meeting/Call
+  if (/^(?:meeting|call|lunch|sync|catch[\s-]?up)\s+with\s+\S/i.test(title)) {
+    title = title.replace(
+      /^(meeting|call|lunch|sync|catch[\s-]?up)\b/i,
+      (m) => m.charAt(0).toUpperCase() + m.slice(1).toLowerCase(),
+    );
+  }
   if (/^with\s+\S/i.test(title)) {
     title = `Meeting ${title}`;
   }
+  // Normalize pickup / drop-off phrasing
+  if (/\bpick\s*up\b/i.test(title) || /\bpickup\b/i.test(title)) {
+    title = title
+      .replace(/\bpick\s*up\b/gi, "Pickup")
+      .replace(/\bpickup\b/gi, "Pickup");
+  }
+  if (/\bdrop[\s-]?off\b/i.test(title) || /\bdropoff\b/i.test(title)) {
+    title = title
+      .replace(/\bdrop[\s-]?off\b/gi, "Drop-off")
+      .replace(/\bdropoff\b/gi, "Drop-off");
+  }
   // Bare leftovers after "block calendar for tomorrow 10am"
-  if (!title || /^(calendar|for|on|at|the|a|an|event|from|to)$/i.test(title)) {
+  if (!title || /^(calendar|for|on|at|the|a|an|event|from|to|another)$/i.test(title)) {
     title = /\bblock\b/i.test(message) ? "Busy" : "Event";
   }
-  // Title-case short activity phrases ("table tennis")
-  if (title === title.toLowerCase() && title.length <= 40) {
+  // Title-case short activity phrases ("school pickup of daughter")
+  if (title === title.toLowerCase() && title.length <= 60) {
     title = title.replace(/\b\w/g, (c) => c.toUpperCase());
   }
+  // Prefer "School Pickup — Daughter" when "of/for" names a person
+  title = title.replace(
+    /^(.*?\b(?:Pickup|Drop-off))\s+(?:Of|For)\s+(.+)$/i,
+    (_, kind: string, who: string) => `${kind} — ${who}`,
+  );
 
   const start = zonedLocalDateTime(timeZone, day, startClock.hour, startClock.minute);
   let end: Date;
