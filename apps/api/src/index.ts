@@ -19,6 +19,7 @@ import {
   formatConflictProposalNote,
   handleInbound,
   localDayBoundsUtc,
+  scheduleBlocksForRange,
   type CalendarBlock,
   type InboundMessage,
   type OrchestratorDeps,
@@ -67,6 +68,9 @@ import {
   summarizeCalendarToday,
   summarizeCalendarTomorrow,
   listSyncedCalendarBlocks,
+  listScheduleNodes as listScheduleNodesRepo,
+  upsertScheduleNode as upsertScheduleNodeRepo,
+  clearScheduleHolds as clearScheduleHoldsRepo,
   summarizeContextGraph,
   summarizeOpenCommitments,
   summarizeRecentMail,
@@ -236,6 +240,12 @@ async function checkUserCalendarConflict(
     });
   }
 
+  // Personal schedule memory (pickup/gym/…) — not on Google.
+  const schedules = await listScheduleNodesRepo(db, userId);
+  for (const b of scheduleBlocksForRange(schedules, opts.timezone, rangeStart, rangeEnd)) {
+    pushBlock(b);
+  }
+
   const result = checkSlotConflicts(blocks, start, end, opts.timezone);
   const conflictNote = formatConflictProposalNote(result, opts.timezone);
   return {
@@ -394,6 +404,16 @@ function orchestratorDeps(): OrchestratorDeps {
         ...(opts.sourceMessageId ? { sourceMessageId: opts.sourceMessageId } : {}),
       });
     },
+    listScheduleNodes: async (userId) => {
+      const rows = await listScheduleNodesRepo(db, userId);
+      return rows.map((r) => ({ label: r.label, attrs: r.attrs }));
+    },
+    upsertScheduleNode: async (userId, opts) => {
+      const row = await upsertScheduleNodeRepo(db, userId, opts.label, opts.attrs);
+      return { label: row.label };
+    },
+    clearScheduleHolds: (userId, labelHint) =>
+      clearScheduleHoldsRepo(db, userId, labelHint),
     getGoogleAuthUrl: async (userId, label) => {
       if (!googleCfg) return null;
       return buildAuthUrl(googleCfg, userId, label);

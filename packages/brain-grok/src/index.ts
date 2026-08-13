@@ -30,6 +30,7 @@ const NODE_KINDS: ReadonlySet<string> = new Set([
   "preference",
   "constraint",
   "goal",
+  "schedule",
 ]);
 
 function findBrainDir(explicit?: string): string {
@@ -221,6 +222,8 @@ function buildSystemPrompt(docs: string): string {
     "Strip acknowledgements and instruction verbs from calendar titles: ignore Cool/Ok/Sure/Thanks; book/add/schedule are instructions not title words; 'book 1 hour with Rajeev at 1pm' → title like 'Meeting with Rajeev', start 1pm, end +1h.",
     "When the user asks to send a calendar invite / invite someone to a meeting, use calendar_create with attendees (emails). If Silent context graph has person email=…, use that — do not ask them to restate the email. Never use email_draft for calendar invites.",
     "When the user asks to send/email someone (not a calendar invite), return propose_action with action {\"type\":\"email_draft\",\"to\":\"...\",\"subject\":\"...\",\"body\":\"full draft in user voice\"}. Orchestrator confirms with yes, then sends via Gmail. Resolve to= from context graph person email when only a name is given.",
+    "When the user states a recurring personal window they do NOT want on Google Calendar (school pickup, gym, golf), upsert graph kind schedule with attrs days/startHm/endHm — not calendar_create. Prefer schedule over constraint for timed windows.",
+    "When the user extends a schedule or says don't book (e.g. pickup till 5), the orchestrator handles holds; still ack briefly if you reply.",
     "All times the user mentions are in their timezone (see User line). Never assume UTC.",
     "Calendar lines include absolute dates like 'Tue 11 Aug (today)' / '(tomorrow)'. Never move a (today) event into Tomorrow — if Calendar tomorrow is none yet, say tomorrow is clear. Prefer Calendar today/tomorrow over Recent chat if they disagree on day labels.",
     "When the user is deciding, use advisor framing (tradeoffs + recommendation).",

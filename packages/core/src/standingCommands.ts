@@ -229,6 +229,7 @@ export const STANDING_HELP = [
   "• remind me … at 12:30",
   "• waiting on <person> for <thing> — watch for their reply",
   "• cancel watch <hint> — drop an open watch",
+  "• schedules (memory): “school pickup 4–4:30 daily” · extend till 5 · cancel hold",
   "",
   "Travel",
   "• home is <address> / office is <address>",

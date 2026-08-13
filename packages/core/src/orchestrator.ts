@@ -44,6 +44,13 @@ import {
   formatCalendarProposalSummary,
   timezoneFriendlyLabel,
 } from "./time.js";
+import {
+  formatScheduleAck,
+  holdUntilIsoForHm,
+  matchScheduleLabel,
+  parseScheduleAttrs,
+  parseScheduleIntent,
+} from "./schedules.js";
 
 const STANDING: Record<string, string> = {
   help: STANDING_HELP,
@@ -83,6 +90,14 @@ export function isBriefRequest(text: string): boolean {
 
 function strPayload(v: unknown): string {
   return v == null ? "" : String(v).trim();
+}
+
+function titleCaseScheduleHint(raw: string): string {
+  return raw
+    .trim()
+    .replace(/\s+/g, " ")
+    .replace(/\b\w/g, (c) => c.toUpperCase())
+    .slice(0, 80);
 }
 
 /** Sanitize account label: personal|work|custom slug. */
@@ -159,6 +174,18 @@ export interface OrchestratorDeps {
     updates: GraphUpdate[];
     sourceMessageId?: string;
   }) => Promise<void>;
+  /** Schedule memory (protected windows — not Google). */
+  listScheduleNodes?: (
+    userId: string,
+  ) => Promise<Array<{ label: string; attrs: Record<string, unknown> }>>;
+  upsertScheduleNode?: (
+    userId: string,
+    opts: { label: string; attrs: Record<string, unknown> },
+  ) => Promise<{ label: string }>;
+  clearScheduleHolds?: (
+    userId: string,
+    labelHint?: string | null,
+  ) => Promise<{ cleared: number; labels: string[] }>;
   /** Google OAuth + sync hooks (M4 multi-account). */
   getGoogleAuthUrl?: (userId: string, label: string) => Promise<string | null>;
   listGoogleAccounts?: (
@@ -346,6 +373,7 @@ export function looksLikeNewActionIntent(
   }
   if (extractMutePatternFromMessage(t)) return true;
   if (parseCalendarCreateHint(t, timeZone, now)) return true;
+  if (parseScheduleIntent(t)) return true;
   if (parseForwardToCalendar(t, timeZone, now)) return true;
   if (isCalendarInviteIntent(t)) return true;
   if (parseReminderMessage(t, timeZone, now).length > 0) return true;
@@ -1056,6 +1084,86 @@ export async function handleInbound(
   }
   if (placeSets.length && !deps.setPlace) {
     return [{ text: "Places aren't wired yet (need Google Maps key)." }];
+  }
+
+  // --- Schedule memory (standing / extend-hold / cancel hold) ---
+  const scheduleIntent = parseScheduleIntent(text);
+  if (scheduleIntent && (deps.upsertScheduleNode || deps.clearScheduleHolds || deps.listScheduleNodes)) {
+    const tz = tzState.timezone;
+    if (scheduleIntent.type === "cancel_hold") {
+      if (!deps.clearScheduleHolds) {
+        return [{ text: "Schedule holds aren't wired yet." }];
+      }
+      const r = await deps.clearScheduleHolds(msg.userId, scheduleIntent.labelHint);
+      if (!r.cleared) {
+        return [{ text: "No active hold to clear." }];
+      }
+      return [
+        {
+          text:
+            r.labels.length === 1
+              ? `Hold lifted on ${r.labels[0]}.`
+              : `Hold lifted on ${r.labels.join(", ")}.`,
+        },
+      ];
+    }
+    if (scheduleIntent.type === "standing" && deps.upsertScheduleNode) {
+      await deps.upsertScheduleNode(msg.userId, {
+        label: scheduleIntent.label,
+        attrs: {
+          days: scheduleIntent.days,
+          startHm: scheduleIntent.startHm,
+          endHm: scheduleIntent.endHm,
+        },
+      });
+      return [
+        {
+          text: formatScheduleAck({
+            label: scheduleIntent.label,
+            startHm: scheduleIntent.startHm,
+            endHm: scheduleIntent.endHm,
+            days: scheduleIntent.days,
+            timeZone: tz,
+          }),
+        },
+      ];
+    }
+    if (scheduleIntent.type === "extend_hold" && deps.upsertScheduleNode && deps.listScheduleNodes) {
+      const nodes = await deps.listScheduleNodes(msg.userId);
+      const hit = matchScheduleLabel(nodes, scheduleIntent.labelHint);
+      const holdIso = holdUntilIsoForHm(scheduleIntent.untilHm, tz);
+      if (!holdIso) {
+        return [{ text: "Couldn't parse the hold time. Try: extend school pickup till 5pm." }];
+      }
+      const label = hit?.label ?? titleCaseScheduleHint(scheduleIntent.labelHint);
+      const existing = hit ? parseScheduleAttrs(hit.attrs) : null;
+      const startHm = existing?.startHm ?? "16:00";
+      const endHm = scheduleIntent.untilHm;
+      const days = existing?.days ?? "weekdays";
+      await deps.upsertScheduleNode(msg.userId, {
+        label,
+        attrs: {
+          days,
+          startHm,
+          endHm,
+          holdUntilIso: holdIso,
+          autoDecline: scheduleIntent.autoDecline,
+        },
+      });
+      return [
+        {
+          text: formatScheduleAck({
+            label,
+            startHm,
+            endHm,
+            days,
+            holdUntilIso: holdIso,
+            autoDecline: scheduleIntent.autoDecline,
+            timeZone: tz,
+          }),
+        },
+      ];
+    }
   }
 
   if (isPlacesListCommand(text)) {

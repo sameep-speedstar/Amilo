@@ -473,6 +473,63 @@ export async function summarizeContextGraph(db: Db, userId: string): Promise<str
     .join("\n");
 }
 
+/** Schedule memory nodes (personal protected windows — not Google Calendar). */
+export async function listScheduleNodes(
+  db: Db,
+  userId: string,
+): Promise<Array<{ id: string; label: string; attrs: Record<string, unknown> }>> {
+  const nodes = await db.query.contextNodes.findMany({
+    where: and(eq(contextNodes.userId, userId), eq(contextNodes.kind, "schedule")),
+    orderBy: [desc(contextNodes.lastSeenAt)],
+    limit: 40,
+  });
+  return nodes.map((n) => ({
+    id: n.id,
+    label: n.label,
+    attrs: (n.attrs ?? {}) as Record<string, unknown>,
+  }));
+}
+
+export async function upsertScheduleNode(
+  db: Db,
+  userId: string,
+  label: string,
+  attrs: Record<string, unknown>,
+  confidence = 95,
+): Promise<ContextNodeRow> {
+  return upsertNode(db, userId, "schedule", label, attrs, confidence);
+}
+
+/** Clear hold overlay on one schedule (by label hint) or all schedules. */
+export async function clearScheduleHolds(
+  db: Db,
+  userId: string,
+  labelHint?: string | null,
+): Promise<{ cleared: number; labels: string[] }> {
+  const nodes = await listScheduleNodes(db, userId);
+  const needle = (labelHint ?? "").trim().toLowerCase();
+  const targets = needle
+    ? nodes.filter(
+        (n) =>
+          n.label.toLowerCase().includes(needle) ||
+          needle.includes(n.label.toLowerCase()) ||
+          needle.split(/\s+/).some((w) => w.length > 2 && n.label.toLowerCase().includes(w)),
+      )
+    : nodes.filter((n) => n.attrs.holdUntilIso || n.attrs.autoDecline);
+  const labels: string[] = [];
+  for (const n of targets) {
+    const next = { ...n.attrs };
+    delete next.holdUntilIso;
+    delete next.autoDecline;
+    await db
+      .update(contextNodes)
+      .set({ attrs: next, lastSeenAt: new Date() })
+      .where(eq(contextNodes.id, n.id));
+    labels.push(n.label);
+  }
+  return { cleared: labels.length, labels };
+}
+
 /** User-facing memory dump (only for explicit "about me" commands). */
 export async function summarizeAboutMe(db: Db, userId: string): Promise<string> {
   const nodes = await db.query.contextNodes.findMany({
@@ -486,6 +543,7 @@ export async function summarizeAboutMe(db: Db, userId: string): Promise<string> 
 
   const people: string[] = [];
   const prefs: string[] = [];
+  const schedules: string[] = [];
   const other: string[] = [];
   for (const n of nodes) {
     const attrs = (n.attrs ?? {}) as Record<string, unknown>;
@@ -497,11 +555,13 @@ export async function summarizeAboutMe(db: Db, userId: string): Promise<string> 
     const line = bits.length ? `• ${n.label} (${bits.join(", ")})` : `• ${n.label}`;
     if (n.kind === "person") people.push(line);
     else if (n.kind === "preference") prefs.push(line);
+    else if (n.kind === "schedule") schedules.push(line);
     else other.push(`• [${n.kind}] ${n.label}${bits.length ? ` (${bits.join(", ")})` : ""}`);
   }
 
   const sections = [
     people.length ? ["People", ...people.slice(0, 15)].join("\n") : null,
+    schedules.length ? ["Schedules", ...schedules.slice(0, 10)].join("\n") : null,
     prefs.length ? ["Preferences", ...prefs.slice(0, 10)].join("\n") : null,
     other.length ? ["Other", ...other.slice(0, 10)].join("\n") : null,
   ].filter(Boolean);

@@ -42,7 +42,8 @@ export type ContextNodeKind =
   | "topic"
   | "preference"
   | "constraint"
-  | "goal";
+  | "goal"
+  | "schedule";
 
 export interface GraphNodeUpdate {
   op: "upsert_node";

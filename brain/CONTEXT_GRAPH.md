@@ -12,13 +12,16 @@ The same `context_nodes` / `context_edges` (plus linked commitments, watches, an
 |------|----------|
 | person | Priya (CFO), Rajeev (co-founder) |
 | org | Speedstar, Paykraft |
-| place | Mumbai office, school pickup |
+| place | Mumbai office |
 | topic | ICICI margin, Series A |
 | preference | mornings for deep work, WhatsApp over email |
-| constraint | no meetings before 10, school pickup 2pm |
+| schedule | School pickup weekdays 16:00–16:30, Gym, Golf — personal protected windows **not** on Google Calendar |
+| constraint | no meetings before 10 (non-timed / soft rules) |
 | goal | close Q3 budget, ship Amilo WA |
 
 Prefer typed **edges** over stuffing relations into attrs. Important CoS edge: `waiting_on` (user → person) when the user arms a watch.
+
+For timed recurring “don’t book me” windows, use **`schedule`** (attrs: `days`, `startHm`, `endHm`; optional hold: `holdUntilIso`, `autoDecline`). Do not invent Google Calendar events for gym/pickup/golf unless the user asks to put them on the calendar.
 
 ## Edge relations (examples)
 
@@ -26,7 +29,7 @@ Prefer typed **edges** over stuffing relations into attrs. Important CoS edge: `
 
 ## Rules
 
-1. Extract only **durable** facts — not one-off chatter. Prefer `preference`, `constraint`, and `goal` when the user states lasting work/life ops facts (still no emotional/companion diary).
+1. Extract only **durable** facts — not one-off chatter. Prefer `preference`, `schedule`, `constraint`, and `goal` when the user states lasting work/life ops facts (still no emotional/companion diary).
 2. Prefer upsert by label (case-insensitive) over duplicate nodes.
 3. Confidence 0–1; lower when inferred, higher when explicit ("Priya is my CFO").
 4. Graph is **silent context** in normal replies — never perform memory ("as you told me…"). **Exception:** when the user explicitly inspects (`about me`, `about <name>`, `memory`), answer with stored facts only.

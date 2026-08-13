@@ -1,12 +1,18 @@
 import {
   buildInboundConflictAlert,
   findInboundInviteConflicts,
+  formatLocalHm,
   formatLocalWhenFriendly,
+  intervalsOverlap,
+  isAutoDeclineHoldActive,
   isInQuietHours,
   localDayBoundsUtc,
+  parseScheduleAttrs,
+  scheduleBlocksForRange,
   underWatcherDailyCap,
   type ChannelPort,
   type InboundCalendarBlock,
+  type ScheduleNodeLike,
 } from "@amilo/core";
 import { and, eq } from "drizzle-orm";
 import {
@@ -16,17 +22,43 @@ import {
   getUserById,
   getUserPrefs,
   listGoogleAccounts,
+  listScheduleNodes,
   listUsersWithGoogleForScan,
   logMessage,
   markCalendarConflictAlerted,
   type Db,
 } from "@amilo/db";
-import { listCalendarRange, type GoogleOAuthConfig } from "@amilo/google";
+import {
+  listCalendarRange,
+  setCalendarRsvp,
+  type GoogleOAuthConfig,
+} from "@amilo/google";
 import { ensureAccessToken } from "./googleSync.js";
 
+function inviteHitsAutoDeclineHold(
+  invite: { start: Date; end: Date },
+  schedules: ScheduleNodeLike[],
+  timezone: string,
+  now: Date,
+): { label: string; holdUntil: Date } | null {
+  for (const n of schedules) {
+    const attrs = parseScheduleAttrs(n.attrs);
+    if (!attrs || !isAutoDeclineHoldActive(attrs, now)) continue;
+    const holdUntil = new Date(attrs.holdUntilIso!);
+    const windows = scheduleBlocksForRange([n], timezone, invite.start, invite.end, now);
+    for (const w of windows) {
+      if (intervalsOverlap(invite.start, invite.end, w.start, w.end)) {
+        return { label: n.label, holdUntil };
+      }
+    }
+  }
+  return null;
+}
+
 /**
- * Live-scan connected calendars for inbound invites that overlap existing blocks.
- * Creates a calendar_conflict pending + WhatsApp alert (capped / quiet hours).
+ * Live-scan connected calendars for inbound invites that overlap existing blocks
+ * or schedule-memory windows. Creates a calendar_conflict pending + WhatsApp alert,
+ * or auto-declines when an active schedule hold requests it.
  */
 export async function scanInboundCalendarConflicts(opts: {
   db: Db;
@@ -104,17 +136,120 @@ export async function scanInboundCalendarConflicts(opts: {
     }
   }
 
+  const scheduleRows = await listScheduleNodes(opts.db, opts.userId);
+  const schedules: ScheduleNodeLike[] = scheduleRows.map((r) => ({
+    label: r.label,
+    attrs: r.attrs,
+  }));
+  for (const b of scheduleBlocksForRange(schedules, timezone, rangeStart, rangeEnd, now)) {
+    blocks.push({
+      eventId: `schedule:${b.title}`,
+      title: b.title,
+      start: b.start,
+      end: b.end,
+      allDay: false,
+    });
+  }
+
   const hits = findInboundInviteConflicts(blocks, timezone, now);
   if (!hits.length) return { alerted: 0 };
 
-  // One alert per tick (attention discipline).
+  // One action per tick (attention discipline).
   const hit = hits[0]!;
-  const body = buildInboundConflictAlert(hit, timezone);
   const inv = hit.invite;
-  const account = accounts.find(
-    (a) => (a.email ?? "").toLowerCase() === (inv.accountEmail ?? "").toLowerCase(),
-  ) ?? accounts[0]!;
+  const account =
+    accounts.find(
+      (a) => (a.email ?? "").toLowerCase() === (inv.accountEmail ?? "").toLowerCase(),
+    ) ?? accounts[0]!;
+  const attendeeEmail = (inv.accountEmail ?? account.email ?? "").trim();
 
+  const hold = inviteHitsAutoDeclineHold(inv, schedules, timezone, now);
+  if (hold && attendeeEmail.includes("@")) {
+    try {
+      const { accessToken } = await ensureAccessToken(opts.db, opts.googleCfg, account);
+      await setCalendarRsvp(accessToken, inv.eventId, attendeeEmail, "declined");
+      const untilHm = formatLocalHm(hold.holdUntil, timezone);
+      const want = `${formatLocalHm(inv.start, timezone)}–${formatLocalHm(inv.end, timezone)}`;
+      const body = `Declined “${inv.title}” (${want}) — ${hold.label} hold till ${untilHm}.`;
+      const name = (user.name || "there").split(/\s+/)[0] || "there";
+      let sent = false;
+      try {
+        const waMessageId = await opts.channel.send(opts.userId, { text: body });
+        await logMessage(opts.db, {
+          userId: opts.userId,
+          channel: "whatsapp",
+          direction: "out",
+          kind: "text",
+          bodyRef: body.slice(0, 500),
+          meta: {
+            watchId: `calconflict-autodecline:${inv.eventId}`,
+            watchKind: "calendar_conflict",
+            calendarConflictEventId: inv.eventId,
+            autoDeclined: true,
+            ...(waMessageId ? { waMessageId } : {}),
+          },
+        });
+        sent = true;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (/Outside 24h|24h window/i.test(msg) && opts.alertTemplate) {
+          const param = body.replace(/\n/g, " ").replace(/\s{2,}/g, " ").slice(0, 900);
+          const waMessageId = await opts.channel.send(opts.userId, {
+            templateName: opts.alertTemplate,
+            languageCode: opts.languageCode ?? "en",
+            variables: [name, param],
+          });
+          await logMessage(opts.db, {
+            userId: opts.userId,
+            channel: "whatsapp",
+            direction: "out",
+            kind: "template",
+            bodyRef: param.slice(0, 500),
+            meta: {
+              watchId: `calconflict-autodecline:${inv.eventId}`,
+              watchKind: "calendar_conflict",
+              calendarConflictEventId: inv.eventId,
+              autoDeclined: true,
+              via: "template",
+              ...(waMessageId ? { waMessageId } : {}),
+            },
+          });
+          sent = true;
+        } else {
+          console.error(
+            JSON.stringify({
+              event: "inbound_conflict_autodecline_send_error",
+              userId: opts.userId,
+              error: msg,
+            }),
+          );
+        }
+      }
+      await markCalendarConflictAlerted(opts.db, opts.userId, inv.eventId, now);
+      console.log(
+        JSON.stringify({
+          event: "inbound_conflict_auto_declined",
+          userId: opts.userId,
+          eventId: inv.eventId,
+          hold: hold.label,
+          when: formatLocalWhenFriendly(inv.start, timezone),
+        }),
+      );
+      return { alerted: sent ? 1 : 0 };
+    } catch (err) {
+      console.error(
+        JSON.stringify({
+          event: "inbound_conflict_autodecline_error",
+          userId: opts.userId,
+          eventId: inv.eventId,
+          error: err instanceof Error ? err.message : String(err),
+        }),
+      );
+      // Fall through to manual pending alert.
+    }
+  }
+
+  const body = buildInboundConflictAlert(hit, timezone);
   const summary = `Conflict: ${inv.title} vs ${hit.blockers[0]?.title ?? "busy"}`;
   await createPendingAction(opts.db, {
     userId: opts.userId,

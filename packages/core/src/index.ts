@@ -17,6 +17,20 @@ export {
   type ConflictCheckResult,
 } from "./calendarConflict.js";
 export {
+  formatScheduleAck,
+  holdUntilIsoForHm,
+  isAutoDeclineHoldActive,
+  matchScheduleLabel,
+  parseScheduleAttrs,
+  parseScheduleIntent,
+  scheduleAppliesOnDay,
+  scheduleBlocksForRange,
+  type ScheduleAttrs,
+  type ScheduleDays,
+  type ScheduleIntent,
+  type ScheduleNodeLike,
+} from "./schedules.js";
+export {
   buildInboundConflictAlert,
   findInboundInviteConflicts,
   isInboundInviteCandidate,
