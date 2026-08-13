@@ -157,4 +157,43 @@ describe("timezone helpers", () => {
     assert.ok(play);
     assert.match(play!.title, /table tennis/i);
   });
+
+  it("parses from–to range (Nisha: noon–2pm, not 2–3pm)", () => {
+    // Thu 13 Aug 2026 ~16:41 IST — "tomorrow" = Fri 14 Aug
+    const now = new Date("2026-08-13T11:11:00.000Z");
+    const hint = parseCalendarCreateHint(
+      "Fix meeting with Nisha tomorrow from 12 to 2 PM",
+      "Asia/Kolkata",
+      now,
+    );
+    assert.ok(hint);
+    assert.match(hint!.title, /nisha/i);
+    assert.doesNotMatch(hint!.title, /\bfrom\b|\bto\b|\d/i);
+    assert.equal(
+      formatLocalWhenFriendly(new Date(hint!.startIso), "Asia/Kolkata"),
+      "Friday 14 August · 12:00 pm",
+    );
+    assert.equal(
+      formatLocalWhenFriendly(new Date(hint!.endIso), "Asia/Kolkata"),
+      "Friday 14 August · 2:00 pm",
+    );
+  });
+
+  it("infers am for start when end is pm and start hour is later (11 to 1pm)", () => {
+    const now = new Date("2026-08-13T11:11:00.000Z");
+    const hint = parseCalendarCreateHint(
+      "Book call with Raj today from 11 to 1pm",
+      "Asia/Kolkata",
+      now,
+    );
+    assert.ok(hint);
+    assert.equal(
+      formatLocalWhenFriendly(new Date(hint!.startIso), "Asia/Kolkata"),
+      "Thursday 13 August · 11:00 am",
+    );
+    assert.equal(
+      formatLocalWhenFriendly(new Date(hint!.endIso), "Asia/Kolkata"),
+      "Thursday 13 August · 1:00 pm",
+    );
+  });
 });

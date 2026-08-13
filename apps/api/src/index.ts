@@ -163,6 +163,94 @@ const waChannel = createWhatsAppChannel({
   },
 });
 
+async function checkUserCalendarConflict(
+  userId: string,
+  opts: { startIso: string; endIso: string; timezone: string },
+): Promise<{
+  clear: boolean;
+  conflictNote: string | null;
+  suggested: { startIso: string; endIso: string } | null;
+  conflictTitle: string | null;
+}> {
+  const start = new Date(opts.startIso);
+  const end = new Date(opts.endIso);
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
+    return { clear: true, conflictNote: null, suggested: null, conflictTitle: null };
+  }
+  const blocks: CalendarBlock[] = [];
+  const seen = new Set<string>();
+  const pushBlock = (b: CalendarBlock) => {
+    const key = `${b.start.toISOString()}|${b.end.toISOString()}|${b.title.toLowerCase()}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    blocks.push(b);
+  };
+  const rangeStart = localDayBoundsUtc(opts.timezone, start).timeMin;
+  const rangeEnd = new Date(start.getTime() + 3 * 86_400_000);
+
+  if (googleCfg) {
+    const accounts = await listGoogleAccounts(db, userId);
+    for (const acct of accounts) {
+      try {
+        const { accessToken } = await ensureAccessToken(db, googleCfg, acct);
+        const live = await listCalendarRange(
+          accessToken,
+          rangeStart,
+          rangeEnd,
+          opts.timezone,
+        );
+        for (const ev of live) {
+          if (ev.status === "cancelled" || !ev.startIso) continue;
+          const evStart = new Date(ev.startIso);
+          const evEnd = ev.endIso
+            ? new Date(ev.endIso)
+            : new Date(evStart.getTime() + 60 * 60 * 1000);
+          if (Number.isNaN(evStart.getTime()) || Number.isNaN(evEnd.getTime())) continue;
+          pushBlock({
+            title: (ev.summary ?? "Event").trim() || "Event",
+            start: evStart,
+            end: evEnd,
+            allDay: ev.allDay,
+          });
+        }
+      } catch (err) {
+        console.error(
+          JSON.stringify({
+            event: "calendar_conflict_live_error",
+            userId,
+            label: acct.label,
+            error: err instanceof Error ? err.message : String(err),
+          }),
+        );
+      }
+    }
+  }
+
+  const synced = await listSyncedCalendarBlocks(db, userId, rangeStart, rangeEnd);
+  for (const e of synced) {
+    pushBlock({
+      title: e.title,
+      start: e.start,
+      end: e.end,
+      allDay: e.allDay,
+    });
+  }
+
+  const result = checkSlotConflicts(blocks, start, end, opts.timezone);
+  const conflictNote = formatConflictProposalNote(result, opts.timezone);
+  return {
+    clear: result.clear,
+    conflictNote,
+    suggested: result.suggested
+      ? {
+          startIso: result.suggested.start.toISOString(),
+          endIso: result.suggested.end.toISOString(),
+        }
+      : null,
+    conflictTitle: result.conflicts[0]?.title ?? null,
+  };
+}
+
 function orchestratorDeps(): OrchestratorDeps {
   return {
     brain,
@@ -500,86 +588,7 @@ function orchestratorDeps(): OrchestratorDeps {
       matches = await findCalendarEventMatches(db, userId, opts);
       return matches;
     },
-    checkCalendarConflict: async (userId, opts) => {
-      const start = new Date(opts.startIso);
-      const end = new Date(opts.endIso);
-      if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
-        return { clear: true, conflictNote: null, suggested: null, conflictTitle: null };
-      }
-      const blocks: CalendarBlock[] = [];
-      const seen = new Set<string>();
-      const pushBlock = (b: CalendarBlock) => {
-        const key = `${b.start.toISOString()}|${b.end.toISOString()}|${b.title.toLowerCase()}`;
-        if (seen.has(key)) return;
-        seen.add(key);
-        blocks.push(b);
-      };
-      const rangeStart = localDayBoundsUtc(opts.timezone, start).timeMin;
-      const rangeEnd = new Date(start.getTime() + 3 * 86_400_000);
-
-      if (googleCfg) {
-        const accounts = await listGoogleAccounts(db, userId);
-        for (const acct of accounts) {
-          try {
-            const { accessToken } = await ensureAccessToken(db, googleCfg, acct);
-            const live = await listCalendarRange(
-              accessToken,
-              rangeStart,
-              rangeEnd,
-              opts.timezone,
-            );
-            for (const ev of live) {
-              if (ev.status === "cancelled" || !ev.startIso) continue;
-              const evStart = new Date(ev.startIso);
-              const evEnd = ev.endIso
-                ? new Date(ev.endIso)
-                : new Date(evStart.getTime() + 60 * 60 * 1000);
-              if (Number.isNaN(evStart.getTime()) || Number.isNaN(evEnd.getTime())) continue;
-              pushBlock({
-                title: (ev.summary ?? "Event").trim() || "Event",
-                start: evStart,
-                end: evEnd,
-                allDay: ev.allDay,
-              });
-            }
-          } catch (err) {
-            console.error(
-              JSON.stringify({
-                event: "calendar_conflict_live_error",
-                userId,
-                label: acct.label,
-                error: err instanceof Error ? err.message : String(err),
-              }),
-            );
-          }
-        }
-      }
-
-      // Fallback / merge synced rows so conflicts still fire if live Google is empty/failed.
-      const synced = await listSyncedCalendarBlocks(db, userId, rangeStart, rangeEnd);
-      for (const e of synced) {
-        pushBlock({
-          title: e.title,
-          start: e.start,
-          end: e.end,
-          allDay: e.allDay,
-        });
-      }
-
-      const result = checkSlotConflicts(blocks, start, end, opts.timezone);
-      const conflictNote = formatConflictProposalNote(result, opts.timezone);
-      return {
-        clear: result.clear,
-        conflictNote,
-        suggested: result.suggested
-          ? {
-              startIso: result.suggested.start.toISOString(),
-              endIso: result.suggested.end.toISOString(),
-            }
-          : null,
-        conflictTitle: result.conflicts[0]?.title ?? null,
-      };
-    },
+    checkCalendarConflict: checkUserCalendarConflict,
     createPending: async (opts) => {
       const row = await createPendingAction(db, {
         userId: opts.userId,
@@ -593,7 +602,56 @@ function orchestratorDeps(): OrchestratorDeps {
       const row = await getOpenPendingAction(db, userId);
       if (!row) return { ok: false, message: "Nothing pending to confirm." };
       const u = await getUserById(db, userId);
-      return executePendingAction(db, googleCfg, row, u?.timezone ?? "Asia/Kolkata");
+      const timezone = u?.timezone ?? "Asia/Kolkata";
+
+      // Re-check conflicts on confirm so a missed propose-time check can't write over a busy slot.
+      // If the user already saw a conflict warning and said yes, proceed.
+      if (row.kind === "calendar_create") {
+        const payload = { ...(row.payload as Record<string, unknown>) };
+        const alreadyWarned =
+          Boolean(payload.conflictWarning) || Boolean(payload.conflictAdjusted);
+        if (!alreadyWarned) {
+          const startIso = String(payload.start ?? payload.startIso ?? "").trim();
+          const endIso = String(payload.end ?? payload.endIso ?? "").trim();
+          if (startIso && endIso) {
+            try {
+              const conflict = await checkUserCalendarConflict(userId, {
+                startIso,
+                endIso,
+                timezone,
+              });
+              if (!conflict.clear) {
+                payload.conflictWarning = true;
+                if (conflict.conflictTitle) payload.conflictWith = conflict.conflictTitle;
+                if (conflict.suggested) {
+                  payload.suggestedStart = conflict.suggested.startIso;
+                  payload.suggestedEnd = conflict.suggested.endIso;
+                }
+                await updatePendingPayload(db, row.id, payload);
+                return {
+                  ok: true,
+                  message: [
+                    conflict.conflictNote ??
+                      "That slot conflicts with something on your calendar.",
+                    "",
+                    "Reply yes to go ahead anyway, alternate for next free, or cancel.",
+                  ].join("\n"),
+                };
+              }
+            } catch (err) {
+              console.error(
+                JSON.stringify({
+                  event: "calendar_confirm_conflict_check_failed",
+                  userId,
+                  error: err instanceof Error ? err.message : String(err),
+                }),
+              );
+            }
+          }
+        }
+      }
+
+      return executePendingAction(db, googleCfg, row, timezone);
     },
     rejectPending: async (userId) => {
       const row = await getOpenPendingAction(db, userId);

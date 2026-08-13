@@ -150,7 +150,7 @@ export function parseCalendarCreateHint(
     .replace(/\bp\.m\./gi, "pm")
     .trim();
   if (
-    !/\b(add|schedule|book|create|put|block|invite)\b/i.test(text) &&
+    !/\b(add|schedule|book|create|put|block|invite|fix)\b/i.test(text) &&
     !/\b(meeting|lunch|call|event|appointment|calendar invite)\b/i.test(text)
   ) {
     return null;
@@ -168,40 +168,47 @@ export function parseCalendarCreateHint(
     if (inDays) day = addCalendarDays(today, Number(inDays[1]));
   }
 
-  // Duration: "1 hour" / "30 min" (default 60m). Prefer this over bare "1" as a clock.
+  // Explicit range: "from 12 to 2 PM", "12–2pm", "10:30 to 11:30am"
+  const rangeParsed = parseClockRange(text);
+  let startClock: ParsedClock | null = rangeParsed?.start ?? null;
+  let endClock: ParsedClock | null = rangeParsed?.end ?? null;
   let durationMs = 60 * 60 * 1000;
-  const durMatch = text.match(
-    /\b(\d{1,2}(?:\.\d+)?)\s*(hours?|hrs?|h|minutes?|mins?|m)\b/i,
-  );
-  if (durMatch) {
-    const n = Number(durMatch[1]);
-    const unit = durMatch[2]!.toLowerCase();
-    if (Number.isFinite(n) && n > 0) {
-      durationMs = /^(minutes?|mins?|m)$/.test(unit)
-        ? Math.round(n * 60_000)
-        : Math.round(n * 3_600_000);
+
+  if (!startClock) {
+    // Duration: "1 hour" / "30 min" (default 60m). Prefer this over bare "1" as a clock.
+    const durMatch = text.match(
+      /\b(\d{1,2}(?:\.\d+)?)\s*(hours?|hrs?|h|minutes?|mins?|m)\b/i,
+    );
+    if (durMatch) {
+      const n = Number(durMatch[1]);
+      const unit = durMatch[2]!.toLowerCase();
+      if (Number.isFinite(n) && n > 0) {
+        durationMs = /^(minutes?|mins?|m)$/.test(unit)
+          ? Math.round(n * 60_000)
+          : Math.round(n * 3_600_000);
+      }
+    }
+
+    // Clock: prefer "at 1pm" / "1:00 pm"; avoid treating "1 hour" as 1:00.
+    const clockMatch = text.match(
+      /\b(?:at|@)\s*(\d{1,2}(?::\d{2})?\s*(?:am|pm)?|\d{1,2}:\d{2})\b/i,
+    );
+    startClock = clockMatch?.[1] ? parseClockToken(clockMatch[1]) : null;
+    if (!startClock) {
+      const bare = text.match(/\b(\d{1,2}(?::\d{2})?\s*(?:am|pm))\b/i);
+      startClock = bare?.[1] ? parseClockToken(bare[1]) : null;
+    }
+    if (!startClock) {
+      const hm24 = text.match(/\b([01]?\d|2[0-3]):([0-5]\d)\b/);
+      startClock = hm24?.[0] ? parseClockToken(hm24[0]) : null;
     }
   }
-
-  // Clock: prefer "at 1pm" / "1:00 pm"; avoid treating "1 hour" as 1:00.
-  const clockMatch = text.match(
-    /\b(?:at|@)\s*(\d{1,2}(?::\d{2})?\s*(?:am|pm)?|\d{1,2}:\d{2})\b/i,
-  );
-  let clock = clockMatch?.[1] ? parseClockToken(clockMatch[1]) : null;
-  if (!clock) {
-    const bare = text.match(/\b(\d{1,2}(?::\d{2})?\s*(?:am|pm))\b/i);
-    clock = bare?.[1] ? parseClockToken(bare[1]) : null;
-  }
-  if (!clock) {
-    const hm24 = text.match(/\b([01]?\d|2[0-3]):([0-5]\d)\b/);
-    clock = hm24?.[0] ? parseClockToken(hm24[0]) : null;
-  }
-  if (!clock) return null;
+  if (!startClock) return null;
 
   let title = text
     // Instruction verbs — not part of the event title
     .replace(
-      /^(?:please\s+)?(?:add|schedule|book|create|put|block|invite|send)\s+(?:a\s+|an\s+|me\s+)?/i,
+      /^(?:please\s+)?(?:add|schedule|book|create|put|block|invite|send|fix)\s+(?:a\s+|an\s+|me\s+)?/i,
       "",
     )
     .replace(
@@ -213,6 +220,11 @@ export function parseCalendarCreateHint(
       /\bto\s+(today|tomorrow|me|calendar)\b/i.test(m) ? m : "",
     )
     .replace(/\b(?:today|tomorrow|tomorow|tommorow|in\s+\d+\s+days?)\b/gi, "")
+    // Strip time ranges before single clocks so "from 12 to" doesn't linger in the title.
+    .replace(
+      /\b(?:from\s+)?\d{1,2}(?::\d{2})?\s*(?:am|pm)?\s*(?:to|-|–|—)\s*\d{1,2}(?::\d{2})?\s*(?:am|pm)?\b/gi,
+      "",
+    )
     .replace(/\b(?:at|@)\s*\d{1,2}(?::\d{2})?\s*(?:am|pm)?\b/gi, "")
     .replace(/\b\d{1,2}(?::\d{2})?\s*(?:am|pm)\b/gi, "")
     .replace(/\b(?:[01]?\d|2[0-3]):[0-5]\d\b/g, "")
@@ -231,7 +243,7 @@ export function parseCalendarCreateHint(
     title = `Meeting ${title}`;
   }
   // Bare leftovers after "block calendar for tomorrow 10am"
-  if (!title || /^(calendar|for|on|at|the|a|an|event)$/i.test(title)) {
+  if (!title || /^(calendar|for|on|at|the|a|an|event|from|to)$/i.test(title)) {
     title = /\bblock\b/i.test(message) ? "Busy" : "Event";
   }
   // Title-case short activity phrases ("table tennis")
@@ -239,13 +251,91 @@ export function parseCalendarCreateHint(
     title = title.replace(/\b\w/g, (c) => c.toUpperCase());
   }
 
-  const start = zonedLocalDateTime(timeZone, day, clock.hour, clock.minute);
-  const end = new Date(start.getTime() + durationMs);
+  const start = zonedLocalDateTime(timeZone, day, startClock.hour, startClock.minute);
+  let end: Date;
+  if (endClock) {
+    end = zonedLocalDateTime(timeZone, day, endClock.hour, endClock.minute);
+    if (end.getTime() <= start.getTime()) {
+      // Cross-midnight range (rare in CoS booking).
+      end = new Date(end.getTime() + 24 * 60 * 60 * 1000);
+    }
+  } else {
+    end = new Date(start.getTime() + durationMs);
+  }
   return {
     title,
     startIso: start.toISOString(),
     endIso: end.toISOString(),
   };
+}
+
+/** "from 12 to 2 PM" / "10-11am" → start+end clocks with shared meridiem inference. */
+export function parseClockRange(
+  text: string,
+): { start: ParsedClock; end: ParsedClock } | null {
+  const m = text.match(
+    /\b(?:from\s+)?(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\s*(?:to|-|–|—)\s*(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\b/i,
+  );
+  if (!m?.[1] || !m[2]) return null;
+  const startRaw = m[1].trim();
+  const endRaw = m[2].trim();
+  const startHasMer = /am|pm/i.test(startRaw);
+  const endHasMer = /am|pm/i.test(endRaw);
+
+  let end = parseClockToken(endRaw) ?? parseBareHourClock(endRaw);
+  let start = parseClockToken(startRaw) ?? parseBareHourClock(startRaw);
+  if (!start || !end) return null;
+
+  if (!startHasMer && endHasMer) {
+    const endMer = /pm/i.test(endRaw) ? "pm" : "am";
+    start = applyMeridiemToBareHour(startRaw, endMer, end);
+    if (!start) return null;
+  } else if (startHasMer && !endHasMer) {
+    const startMer = /pm/i.test(startRaw) ? "pm" : "am";
+    end = applyMeridiemToBareHour(endRaw, startMer, start);
+    if (!end) return null;
+  }
+
+  if (end.hour * 60 + end.minute <= start.hour * 60 + start.minute) {
+    // e.g. bare "11 to 1" with no meridiem — bump end into afternoon if both < 12.
+    if (!startHasMer && !endHasMer && end.hour < 12 && start.hour < 12) {
+      end = { hour: end.hour + 12, minute: end.minute };
+    }
+  }
+  return { start, end };
+}
+
+function parseBareHourClock(raw: string): ParsedClock | null {
+  const s = raw.trim().toLowerCase().replace(/\s+/g, "");
+  const m = s.match(/^(\d{1,2})(?::(\d{2}))?$/);
+  if (!m) return null;
+  const hour = Number(m[1]);
+  const minute = Number(m[2] ?? 0);
+  if (!Number.isFinite(hour) || hour > 23 || minute > 59) return null;
+  return { hour, minute };
+}
+
+/** Apply am/pm from the peer clock onto a bare hour like "12" or "10:30". */
+function applyMeridiemToBareHour(
+  raw: string,
+  mer: "am" | "pm",
+  peer: ParsedClock,
+): ParsedClock | null {
+  const bare = parseBareHourClock(raw);
+  if (!bare) return parseClockToken(raw);
+  // Already 24h-looking
+  if (bare.hour > 12) return bare;
+
+  const peerH12 = peer.hour === 0 ? 12 : peer.hour > 12 ? peer.hour - 12 : peer.hour;
+  // "11 to 1pm" → 11am; "12 to 2pm" → noon; "1 to 3pm" → 1pm
+  if (mer === "pm") {
+    if (bare.hour === 12) return { hour: 12, minute: bare.minute }; // noon
+    if (bare.hour > peerH12) return { hour: bare.hour, minute: bare.minute }; // morning before pm end
+    return { hour: bare.hour + 12, minute: bare.minute };
+  }
+  // am
+  if (bare.hour === 12) return { hour: 0, minute: bare.minute }; // midnight
+  return { hour: bare.hour, minute: bare.minute };
 }
 
 export function formatCalendarProposalSummary(opts: {

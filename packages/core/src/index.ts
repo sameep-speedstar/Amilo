@@ -96,6 +96,7 @@ export {
   localHm,
   minutesToHm,
   parseCalendarCreateHint,
+  parseClockRange,
   parseHmInput,
   parseIsoDate,
   parseReminderMessage,
