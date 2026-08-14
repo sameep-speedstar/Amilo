@@ -17,6 +17,7 @@ Most things do **not** deserve the user's attention. False `needs_attention` cos
 - Gmail CATEGORY_PROMOTIONS / CATEGORY_SOCIAL → default `handled` unless VIP/money/deadline
 - Appointment / commitment emails → protect from newsletter heuristics; treat scheduled time as commitment
 - CoS watcher alerts → `needs_attention` but still under daily watcher + attention caps (see `WATCHERS.md`)
+- **Closed brief priorities** (user said `done 1` / `done <item>`) → stay out of morning/evening PRIORITIES until **new mail on the same Gmail thread**; commitments closed with `done`/`drop` stay closed
 
 ## Output
 

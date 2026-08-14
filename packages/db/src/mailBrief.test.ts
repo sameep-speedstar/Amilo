@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
   isActionDemandingMail,
+  isClosedMailThreadSuppressed,
   isFyiRecruitingMail,
   isPassiveTransactionalMail,
   mailPriorityScore,
@@ -170,6 +171,27 @@ describe("brief mail action filter", () => {
     assert.equal(
       mailPriorityScore("Weekly digest", "ceo@acme.com", ["ceo@acme.com"], "FYI only"),
       0,
+    );
+  });
+});
+
+describe("closed brief mail suppress", () => {
+  it("suppresses closed thread until newer mail", () => {
+    const closedAt = "2026-08-13T14:00:00.000Z";
+    const closed = { thr1: closedAt };
+    const older = new Date("2026-08-13T12:00:00.000Z");
+    const newer = new Date("2026-08-13T16:00:00.000Z");
+    assert.equal(
+      isClosedMailThreadSuppressed("thr1", older, closed, older),
+      true,
+    );
+    assert.equal(
+      isClosedMailThreadSuppressed("thr1", newer, closed, newer),
+      false,
+    );
+    assert.equal(
+      isClosedMailThreadSuppressed("other", older, closed, older),
+      false,
     );
   });
 });

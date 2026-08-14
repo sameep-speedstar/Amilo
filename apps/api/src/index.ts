@@ -29,6 +29,7 @@ import {
   addMutedPattern,
   applyGraphUpdates,
   buildPriorityBriefPayload,
+  closeBriefPriorityItem,
   claimWebhookMessage,
   clearContextGraph,
   createCommitment,
@@ -475,7 +476,7 @@ function orchestratorDeps(): OrchestratorDeps {
         timezone,
         prefs.mutedPatterns,
         prefs.vipList,
-        { kind },
+        { kind, closedMailThreads: prefs.closedMailThreads },
       );
       await patchUserPrefs(db, userId, {
         lastBriefItems: brief.items,
@@ -491,6 +492,21 @@ function orchestratorDeps(): OrchestratorDeps {
     getLastBriefItems: async (userId) => {
       const prefs = await getUserPrefs(db, userId);
       return { items: prefs.lastBriefItems, more: prefs.lastBriefMore };
+    },
+    closeBriefPriority: async (userId, opts) => {
+      return closeBriefPriorityItem(db, userId, {
+        kind:
+          opts.kind === "mail" || opts.kind === "commitment" || opts.kind === "calendar"
+            ? opts.kind
+            : opts.kind
+              ? "mail"
+              : null,
+        eventId: opts.eventId ?? null,
+        threadId: opts.threadId ?? null,
+        commitmentId: opts.commitmentId ?? null,
+        label: opts.label ?? null,
+        status: opts.status ?? "done",
+      });
     },
     briefingTemplates: {
       morning: settings.wabaTemplateMorning,

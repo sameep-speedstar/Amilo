@@ -249,6 +249,7 @@ export const STANDING_HELP = [
   "",
   "Commitments",
   "• done <title> / drop <title> — close an open item",
+  "• done 1 / done 2 / done 3 — close a brief priority (until new mail)",
   "• snooze <title> to tomorrow — push due date",
   "",
   "Voice notes work like text. Everything else: just talk.",

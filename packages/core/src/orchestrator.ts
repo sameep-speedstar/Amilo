@@ -223,9 +223,28 @@ export interface OrchestratorDeps {
     commitmentCount: number;
   }>;
   getLastBriefItems?: (userId: string) => Promise<{
-    items: Array<{ index: number; label: string; detail: string }>;
+    items: Array<{
+      index: number;
+      label: string;
+      detail: string;
+      kind?: string;
+      eventId?: string | null;
+      threadId?: string | null;
+      commitmentId?: string | null;
+    }>;
     more: string | null;
   }>;
+  closeBriefPriority?: (
+    userId: string,
+    opts: {
+      kind?: string | null;
+      eventId?: string | null;
+      threadId?: string | null;
+      commitmentId?: string | null;
+      label?: string | null;
+      status?: "done" | "dropped";
+    },
+  ) => Promise<{ ok: boolean; message: string }>;
   /** Approved WABA template names for briefings (channel-blind names). */
   briefingTemplates?: {
     morning: string;
@@ -1180,40 +1199,109 @@ export async function handleInbound(
   }
 
   const closeCmd = parseCommitmentCloseCommand(text);
-  if (closeCmd && deps.resolveCommitment) {
-    let snoozeUntil: Date | undefined;
-    if (closeCmd.status === "snoozed" && closeCmd.snoozeRaw) {
-      const hint = parseCalendarCreateHint(
-        `book meeting ${closeCmd.snoozeRaw} at 9am`,
-        tzState.timezone,
-      );
-      snoozeUntil = hint
-        ? new Date(hint.startIso)
-        : new Date(Date.now() + 24 * 3600_000);
+  if (closeCmd) {
+    // done 1 / done 2 / done 3 → close last brief priority by index
+    const idxMatch = closeCmd.titleHint.match(/^([123])$/);
+    if (idxMatch && deps.closeBriefPriority && deps.getLastBriefItems) {
+      const stored = await deps.getLastBriefItems(msg.userId);
+      const item = stored.items.find((i) => i.index === Number(idxMatch[1]));
+      if (!item) {
+        return [
+          {
+            text: stored.items.length
+              ? `No item ${idxMatch[1]} in the last brief. Available: ${stored.items
+                  .map((i) => i.index)
+                  .join(", ")}.`
+              : "No brief items stored yet — send brief first.",
+          },
+        ];
+      }
+      const r = await deps.closeBriefPriority(msg.userId, {
+        kind: item.kind ?? null,
+        eventId: item.eventId ?? null,
+        threadId: item.threadId ?? null,
+        commitmentId: item.commitmentId ?? null,
+        label: item.label,
+        status: closeCmd.status === "snoozed" ? "done" : closeCmd.status,
+      });
+      return [{ text: r.ok ? r.message : r.message }];
     }
-    const r = await deps.resolveCommitment(msg.userId, {
-      titleHint: closeCmd.titleHint,
-      status: closeCmd.status,
-      ...(snoozeUntil ? { snoozeUntil } : {}),
-    });
-    if (r.ok) {
-      const verb =
-        r.status === "done" ? "Done" : r.status === "dropped" ? "Dropped" : "Snoozed";
-      return [{ text: `${verb}: ${r.title}` }];
+
+    if (deps.resolveCommitment) {
+      let snoozeUntil: Date | undefined;
+      if (closeCmd.status === "snoozed" && closeCmd.snoozeRaw) {
+        const hint = parseCalendarCreateHint(
+          `book meeting ${closeCmd.snoozeRaw} at 9am`,
+          tzState.timezone,
+        );
+        snoozeUntil = hint
+          ? new Date(hint.startIso)
+          : new Date(Date.now() + 24 * 3600_000);
+      }
+      const r = await deps.resolveCommitment(msg.userId, {
+        titleHint: closeCmd.titleHint,
+        status: closeCmd.status,
+        ...(snoozeUntil ? { snoozeUntil } : {}),
+      });
+      if (r.ok) {
+        const verb =
+          r.status === "done" ? "Done" : r.status === "dropped" ? "Dropped" : "Snoozed";
+        return [{ text: `${verb}: ${r.title}` }];
+      }
+      if (r.reason === "ambiguous") {
+        return [
+          {
+            text: [
+              "Which one?",
+              ...r.matches.map((m) => `• ${m}`),
+              "",
+              "Reply done <exact title> or drop <exact title>.",
+            ].join("\n"),
+          },
+        ];
+      }
     }
-    if (r.reason === "ambiguous") {
-      return [
-        {
-          text: [
-            "Which one?",
-            ...r.matches.map((m) => `• ${m}`),
-            "",
-            "Reply done <exact title> or drop <exact title>.",
-          ].join("\n"),
-        },
-      ];
+
+    // Mail / brief priority by label (after commitment miss).
+    if (
+      deps.closeBriefPriority &&
+      (closeCmd.status === "done" || closeCmd.status === "dropped")
+    ) {
+      // Prefer matching a stored brief item label first.
+      if (deps.getLastBriefItems) {
+        const stored = await deps.getLastBriefItems(msg.userId);
+        const needle = closeCmd.titleHint.toLowerCase();
+        const item = stored.items.find(
+          (i) =>
+            i.label.toLowerCase().includes(needle) ||
+            needle.includes(i.label.toLowerCase().slice(0, 24)),
+        );
+        if (item) {
+          const r = await deps.closeBriefPriority(msg.userId, {
+            kind: item.kind ?? null,
+            eventId: item.eventId ?? null,
+            threadId: item.threadId ?? null,
+            commitmentId: item.commitmentId ?? null,
+            label: item.label,
+            status: closeCmd.status,
+          });
+          if (r.ok) return [{ text: r.message }];
+        }
+      }
+      const r = await deps.closeBriefPriority(msg.userId, {
+        kind: "mail",
+        label: closeCmd.titleHint,
+        status: closeCmd.status,
+      });
+      if (r.ok) return [{ text: r.message }];
+      return [{ text: r.message }];
     }
-    return [{ text: `No open commitment matching “${closeCmd.titleHint}”. Send status to list.` }];
+
+    return [
+      {
+        text: `No open commitment matching “${closeCmd.titleHint}”. Send status to list, or done 1 after a brief.`,
+      },
+    ];
   }
 
   if (deps.setTimezone) {

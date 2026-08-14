@@ -1038,6 +1038,14 @@ export async function upsertEvent(
   ) {
     nextMeta.conflictAlertedAt = prevMeta.conflictAlertedAt;
   }
+  // Preserve brief close markers (user dismissed a priority until new mail).
+  if (
+    prevMeta.briefClosedAt != null &&
+    row.meta &&
+    !("briefClosedAt" in row.meta)
+  ) {
+    nextMeta.briefClosedAt = prevMeta.briefClosedAt;
+  }
 
   await db
     .insert(events)
@@ -1419,6 +1427,11 @@ export type BriefPriorityItem = {
   label: string;
   detail: string;
   kind: "calendar" | "mail" | "commitment";
+  /** Synced gmail/calendar event id when known. */
+  eventId?: string | null;
+  /** Gmail thread id — close suppresses until newer mail on this thread. */
+  threadId?: string | null;
+  commitmentId?: string | null;
 };
 
 export type UserPrefs = {
@@ -1435,6 +1448,11 @@ export type UserPrefs = {
   /** Last scheduled/on-demand brief priorities for 1/2/3/M replies. */
   lastBriefItems: BriefPriorityItem[];
   lastBriefMore: string | null;
+  /**
+   * Gmail threadId → ISO time the user closed that priority.
+   * Suppressed in briefs until a newer message lands on the thread.
+   */
+  closedMailThreads: Record<string, string>;
 };
 
 const DEFAULT_PREFS: UserPrefs = {
@@ -1450,6 +1468,7 @@ const DEFAULT_PREFS: UserPrefs = {
   lastEveningBriefDay: null,
   lastBriefItems: [],
   lastBriefMore: null,
+  closedMailThreads: {},
 };
 
 function asHm(raw: unknown, fallback: string): string {
@@ -1470,6 +1489,7 @@ export function parseUserPrefs(raw: Record<string, unknown> | null | undefined):
     ? raw!.vipList.map(String).map((s) => s.trim()).filter(Boolean)
     : [];
   const lastBriefItems = parseBriefItems(raw?.lastBriefItems);
+  const closedMailThreads = parseClosedMailThreads(raw?.closedMailThreads);
   return {
     mutedPatterns: muted,
     vipList: vip,
@@ -1492,7 +1512,21 @@ export function parseUserPrefs(raw: Record<string, unknown> | null | undefined):
       typeof raw?.lastBriefMore === "string" && raw.lastBriefMore.trim()
         ? raw.lastBriefMore.trim().slice(0, 1500)
         : null,
+    closedMailThreads,
   };
+}
+
+function parseClosedMailThreads(raw: unknown): Record<string, string> {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+    const key = String(k).trim();
+    const iso = String(v ?? "").trim();
+    if (!key || !iso) continue;
+    if (Number.isNaN(Date.parse(iso))) continue;
+    out[key] = iso;
+  }
+  return out;
 }
 
 function parseBriefItems(raw: unknown): BriefPriorityItem[] {
@@ -1514,6 +1548,15 @@ function parseBriefItems(raw: unknown): BriefPriorityItem[] {
         kind === "calendar" || kind === "commitment" || kind === "mail"
           ? kind
           : "mail",
+      ...(typeof o.eventId === "string" && o.eventId.trim()
+        ? { eventId: o.eventId.trim() }
+        : {}),
+      ...(typeof o.threadId === "string" && o.threadId.trim()
+        ? { threadId: o.threadId.trim() }
+        : {}),
+      ...(typeof o.commitmentId === "string" && o.commitmentId.trim()
+        ? { commitmentId: o.commitmentId.trim() }
+        : {}),
     });
   }
   return out.slice(0, 8);
@@ -1533,6 +1576,7 @@ export function prefsToJson(prefs: UserPrefs): Record<string, unknown> {
     lastEveningBriefDay: prefs.lastEveningBriefDay,
     lastBriefItems: prefs.lastBriefItems,
     lastBriefMore: prefs.lastBriefMore,
+    closedMailThreads: prefs.closedMailThreads,
   };
 }
 
@@ -1706,6 +1750,149 @@ async function listMailCandidates(
       return e.kind === "mail" || !e.kind;
     })
     .slice(0, limit);
+}
+
+export function gmailThreadIdFromMeta(meta: unknown): string | null {
+  if (!meta || typeof meta !== "object") return null;
+  const tid = String((meta as { threadId?: unknown }).threadId ?? "").trim();
+  return tid || null;
+}
+
+function newestMailCreatedByThread(
+  rows: Array<{ createdAt: Date; meta: unknown }>,
+): Map<string, Date> {
+  const map = new Map<string, Date>();
+  for (const e of rows) {
+    const tid = gmailThreadIdFromMeta(e.meta);
+    if (!tid) continue;
+    const prev = map.get(tid);
+    if (!prev || e.createdAt.getTime() > prev.getTime()) map.set(tid, e.createdAt);
+  }
+  return map;
+}
+
+/**
+ * Closed brief mail stays quiet until a newer message on the same Gmail thread.
+ * Exported for unit tests.
+ */
+export function isClosedMailThreadSuppressed(
+  threadId: string | null | undefined,
+  _eventCreatedAt: Date,
+  closedThreads: Record<string, string>,
+  newestInThread: Date,
+): boolean {
+  if (!threadId) return false;
+  const closedAtRaw = closedThreads[threadId];
+  if (!closedAtRaw) return false;
+  const closedAt = Date.parse(closedAtRaw);
+  if (Number.isNaN(closedAt)) return false;
+  // New mail after the user closed → allow resurfacing.
+  if (newestInThread.getTime() > closedAt) return false;
+  return true;
+}
+
+/**
+ * Mark a brief priority closed. Mail: suppress thread until newer mail.
+ * Commitment: resolve as done/dropped when commitmentId present.
+ */
+export async function closeBriefPriorityItem(
+  db: Db,
+  userId: string,
+  opts: {
+    kind?: BriefPriorityItem["kind"] | null;
+    eventId?: string | null;
+    threadId?: string | null;
+    commitmentId?: string | null;
+    label?: string | null;
+    status?: "done" | "dropped";
+  },
+): Promise<{ ok: boolean; message: string }> {
+  const status = opts.status ?? "done";
+  if (opts.kind === "commitment" || opts.commitmentId) {
+    if (opts.commitmentId) {
+      const title = String(opts.label ?? "commitment").slice(0, 200);
+      await finalizeCommitment(db, opts.commitmentId, title, status);
+      return {
+        ok: true,
+        message: `${status === "dropped" ? "Dropped" : "Done"}: ${title.slice(0, 80)}`,
+      };
+    }
+    if (opts.label) {
+      const r = await resolveCommitmentByHint(db, userId, opts.label, status);
+      if (r.ok) {
+        return {
+          ok: true,
+          message: `${status === "dropped" ? "Dropped" : "Done"}: ${r.title}`,
+        };
+      }
+    }
+  }
+
+  let threadId = (opts.threadId ?? "").trim() || null;
+  const eventId = (opts.eventId ?? "").trim() || null;
+
+  if (!threadId && eventId) {
+    const row = await db.query.events.findFirst({
+      where: and(eq(events.id, eventId), eq(events.userId, userId)),
+    });
+    threadId = gmailThreadIdFromMeta(row?.meta) ?? null;
+    if (row) {
+      const meta = {
+        ...((row.meta ?? {}) as Record<string, unknown>),
+        briefClosedAt: new Date().toISOString(),
+      };
+      await db.update(events).set({ meta }).where(eq(events.id, row.id));
+    }
+  }
+
+  if (!threadId && opts.label) {
+    const prefs = await getUserPrefs(db, userId);
+    const mailRows = await listMailCandidates(db, userId, prefs.mutedPatterns, 40, {
+      excludePassive: true,
+    });
+    const needle = opts.label.toLowerCase().replace(/\s+/g, " ").slice(0, 80);
+    const hit = mailRows.find((e) => {
+      const subject = cleanSubject(e.title).toLowerCase();
+      const from = shortActor(e.actor).toLowerCase();
+      const label = `${subject} — ${from}`.slice(0, 90);
+      return (
+        label.includes(needle.slice(0, 40)) ||
+        needle.includes(subject.slice(0, 24)) ||
+        subject.includes(needle.split("—")[0]?.trim().slice(0, 24) ?? "___")
+      );
+    });
+    if (hit) {
+      threadId = gmailThreadIdFromMeta(hit.meta);
+      const meta = {
+        ...((hit.meta ?? {}) as Record<string, unknown>),
+        briefClosedAt: new Date().toISOString(),
+      };
+      await db.update(events).set({ meta }).where(eq(events.id, hit.id));
+    }
+  }
+
+  if (threadId) {
+    const prefs = await getUserPrefs(db, userId);
+    const closedMailThreads = {
+      ...prefs.closedMailThreads,
+      [threadId]: new Date().toISOString(),
+    };
+    // Cap map size
+    const entries = Object.entries(closedMailThreads).sort(
+      (a, b) => Date.parse(b[1]) - Date.parse(a[1]),
+    );
+    const trimmed = Object.fromEntries(entries.slice(0, 80));
+    await patchUserPrefs(db, userId, { closedMailThreads: trimmed });
+    return {
+      ok: true,
+      message: `${status === "dropped" ? "Dropped" : "Done"}: ${String(opts.label ?? "mail item").slice(0, 80)}. Won't resurface unless there's new mail on that thread.`,
+    };
+  }
+
+  return {
+    ok: false,
+    message: `Couldn't close “${String(opts.label ?? "item").slice(0, 60)}” — no thread/commitment on file. Try done 1 after a brief, or mute <phrase>.`,
+  };
 }
 
 function looksLikePromoMail(hay: string): boolean {
@@ -2127,7 +2314,11 @@ export async function buildPriorityBriefPayload(
   timezone: string,
   mutedPatterns: string[] = [],
   vipList: string[] = [],
-  opts?: { kind?: "am" | "pm"; now?: Date },
+  opts?: {
+    kind?: "am" | "pm";
+    now?: Date;
+    closedMailThreads?: Record<string, string>;
+  },
 ): Promise<{
   digestFlat: string;
   digestText: string;
@@ -2139,6 +2330,7 @@ export async function buildPriorityBriefPayload(
 }> {
   const kind = opts?.kind ?? "am";
   const now = opts?.now ?? new Date();
+  const closedMailThreads = opts?.closedMailThreads ?? {};
   const todayBounds = localDayBoundsUtc(timezone, now);
   // Evening looks ahead to tomorrow; morning is today.
   const focusBounds =
@@ -2147,7 +2339,15 @@ export async function buildPriorityBriefPayload(
       : todayBounds;
   const { timeMin, timeMax } = focusBounds;
   const apptDayOffset = kind === "pm" ? 1 : 0;
-  type Cand = { score: number; label: string; detail: string; kind: BriefPriorityItem["kind"] };
+  type Cand = {
+    score: number;
+    label: string;
+    detail: string;
+    kind: BriefPriorityItem["kind"];
+    eventId?: string;
+    threadId?: string;
+    commitmentId?: string;
+  };
   const cands: Cand[] = [];
 
   const calRows = await db.query.events.findMany({
@@ -2181,18 +2381,21 @@ export async function buildPriorityBriefPayload(
       kind: "commitment",
       label: (due ? `${due} ${c.title}` : c.title).slice(0, 80),
       detail: [`Reminder: ${c.title}`, due ? `Due: ${due}` : "No due time set"].join("\n"),
+      commitmentId: c.id,
     });
   }
 
   const mailRows = await listMailCandidates(db, userId, mutedPatterns, 30, {
     excludePassive: true,
   });
+  const newestByThread = newestMailCreatedByThread(mailRows);
   const apptByKey = new Map<string, { label: string; detail: string; clockSort: string }>();
   for (const e of mailRows) {
     const from = shortActor(e.actor);
     const subject = cleanSubject(e.title);
     const fullTitle = (e.title ?? "").trim();
     const snippet = (e.snippet ?? "").replace(/\s+/g, " ").trim().slice(0, 280);
+    const threadId = gmailThreadIdFromMeta(e.meta);
     // Appointment reminders → calendar only (never PRIORITIES / STILL OPEN).
     if (/appointment reminder/i.test(fullTitle)) {
       const appt = parseAppointmentReminder(fullTitle, timezone, now, snippet);
@@ -2206,6 +2409,16 @@ export async function buildPriorityBriefPayload(
           });
         }
       }
+      continue;
+    }
+    if (
+      isClosedMailThreadSuppressed(
+        threadId,
+        e.createdAt,
+        closedMailThreads,
+        threadId ? newestByThread.get(threadId) ?? e.createdAt : e.createdAt,
+      )
+    ) {
       continue;
     }
     const score = mailPriorityScore(fullTitle, e.actor ?? "", vipList, snippet, {
@@ -2222,6 +2435,8 @@ export async function buildPriorityBriefPayload(
       detail: [`From: ${from}`, `Subject: ${subject}`, snippet ? `Preview: ${snippet}` : null]
         .filter(Boolean)
         .join("\n"),
+      eventId: e.id,
+      ...(threadId ? { threadId } : {}),
     });
   }
 
@@ -2243,6 +2458,9 @@ export async function buildPriorityBriefPayload(
     label: c.label,
     detail: c.detail,
     kind: c.kind,
+    ...(c.eventId ? { eventId: c.eventId } : {}),
+    ...(c.threadId ? { threadId: c.threadId } : {}),
+    ...(c.commitmentId ? { commitmentId: c.commitmentId } : {}),
   }));
   const moreText = rest.length
     ? rest.map((c, i) => `${i + 4}) ${c.label}`).join("\n")

@@ -22,5 +22,6 @@ Watcher alerts (reply detected / stall) count as a touch. See `WATCHERS.md`. Clo
 
 - When triaging, open commitments are silent context that raise the bar for competing noise.
 - When the user says something is done, close it — do not resurface as urgent next cycle.
+- Brief **mail** priorities closed with `done 1` / `done <label>` stay suppressed until **new mail arrives on the same Gmail thread**.
 - Prefer linking a commitment to a source event when one exists.
 - `waiting_on` edges on the context graph mark open waits for the future Mind Map.

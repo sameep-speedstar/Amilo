@@ -94,7 +94,7 @@ export function startBriefWorker(opts: {
             tz,
             prefs.mutedPatterns,
             prefs.vipList,
-            { kind: "am", now },
+            { kind: "am", now, closedMailThreads: prefs.closedMailThreads },
           );
           try {
             let waMessageId: string | void;
@@ -172,7 +172,7 @@ export function startBriefWorker(opts: {
             tz,
             prefs.mutedPatterns,
             prefs.vipList,
-            { kind: "pm", now },
+            { kind: "pm", now, closedMailThreads: prefs.closedMailThreads },
           );
           try {
             let waMessageId: string | void;
