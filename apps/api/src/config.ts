@@ -25,6 +25,11 @@ export interface Settings {
   sarvamModel: string;
   sarvamLanguageCode: string;
   googleMapsApiKey: string;
+  adminToken: string;
+  /** WhatsApp business number for wa.me deep links (E.164). */
+  wabaDisplayPhone: string;
+  usageDayCap: number;
+  usageWeekCap: number;
 }
 
 function req(name: string, fallback?: string): string {
@@ -72,6 +77,10 @@ export function loadSettings(): Settings {
     sarvamModel: req("SARVAM_MODEL", "saarika:v2.5"),
     sarvamLanguageCode: req("SARVAM_LANGUAGE_CODE", "unknown"),
     googleMapsApiKey: req("GOOGLE_MAPS_API_KEY"),
+    adminToken: req("ADMIN_TOKEN"),
+    wabaDisplayPhone: req("WABA_DISPLAY_PHONE"),
+    usageDayCap: Number(req("USAGE_DAY_CAP", "40")) || 40,
+    usageWeekCap: Number(req("USAGE_WEEK_CAP", "150")) || 150,
   };
 }
 

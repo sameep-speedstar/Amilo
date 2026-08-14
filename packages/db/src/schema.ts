@@ -329,3 +329,54 @@ export const watches = pgTable(
     index("watches_status_kind_idx").on(t.status, t.kind),
   ],
 );
+
+/** Beta allowlist — phones permitted to message Amilo (env ALLOWED_PHONES is also honored). */
+export const allowedPhones = pgTable(
+  "allowed_phones",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    phoneE164: varchar("phone_e164", { length: 20 }).notNull(),
+    label: varchar("label", { length: 120 }),
+    note: text("note"),
+    active: boolean("active").notNull().default(true),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex("allowed_phones_e164_uidx").on(t.phoneE164)],
+);
+
+/** Invite links / QR for beta onboarding. */
+export const invites = pgTable(
+  "invites",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    token: varchar("token", { length: 40 }).notNull(),
+    /** Optional: pre-bound phone (admin already allowlisted). */
+    phoneE164: varchar("phone_e164", { length: 20 }),
+    label: varchar("label", { length: 120 }),
+    maxUses: integer("max_uses").notNull().default(1),
+    useCount: integer("use_count").notNull().default(0),
+    expiresAt: timestamp("expires_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex("invites_token_uidx").on(t.token)],
+);
+
+/** Per-user usage / cost meter (brain, STT, maps, WA). */
+export const usageEvents = pgTable(
+  "usage_events",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    userId: uuid("user_id").references(() => users.id, { onDelete: "set null" }),
+    kind: varchar("kind", { length: 40 }).notNull(),
+    /** Billable units (e.g. 1 interaction, token count). */
+    units: integer("units").notNull().default(1),
+    /** Estimated cost in micro-USD (1e-6 USD). */
+    costMicros: integer("cost_micros").notNull().default(0),
+    meta: jsonb("meta").$type<Record<string, unknown>>().notNull().default({}),
+    ts: timestamp("ts", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("usage_events_user_ts_idx").on(t.userId, t.ts),
+    index("usage_events_kind_ts_idx").on(t.kind, t.ts),
+  ],
+);

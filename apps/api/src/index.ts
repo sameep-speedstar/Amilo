@@ -9,7 +9,6 @@ import type { BrainPort } from "@amilo/brain-contract";
 import {
   createWhatsAppChannel,
   downloadWhatsAppMedia,
-  isPhoneAllowed,
   parseWhatsAppWebhook,
   verifyWebhookSignature,
   type WindowStore,
@@ -78,6 +77,17 @@ import {
   upsertPlace,
   touchWhatsAppInbound,
   updatePendingPayload,
+  isPhoneAllowlisted,
+  checkUsageCaps,
+  recordUsage,
+  USAGE_COST_MICROS,
+  claimInvite,
+  createInvite,
+  addAllowedPhone,
+  deactivateAllowedPhone,
+  getInviteByToken,
+  inviteIsOpen,
+  waMeUrl,
   upsertGoogleAccount,
   upsertWhatsAppUser,
   upsertEvent,
@@ -102,6 +112,13 @@ import { startReminderWorker } from "./reminders.js";
 import { startTravelWorker } from "./travelWorker.js";
 import { startWatchWorker } from "./watchWorker.js";
 import { correctTravelOrigin, geocodeAddress } from "./travelService.js";
+import {
+  adminAuthOk,
+  buildQrPngDataUrl,
+  renderAdminDashboard,
+  renderInvitePage,
+  setAdminCookie,
+} from "./adminUi.js";
 
 loadEnv();
 
@@ -748,7 +765,7 @@ async function processInbound(rawJson: unknown): Promise<void> {
       continue;
     }
 
-    if (!isPhoneAllowed(parsed.waId, settings.allowedPhones)) {
+    if (!(await isPhoneAllowlisted(db, parsed.waId, settings.allowedPhones))) {
       console.log(
         JSON.stringify({
           event: "wa_ignored_not_allowlisted",
@@ -764,6 +781,15 @@ async function processInbound(rawJson: unknown): Promise<void> {
       ...(parsed.profileName ? { profileName: parsed.profileName } : {}),
     });
     await touchWhatsAppInbound(db, parsed.waId, parsed.timestamp);
+
+    const caps = await checkUsageCaps(db, user.id, {
+      day: settings.usageDayCap,
+      week: settings.usageWeekCap,
+    });
+    if (!caps.ok) {
+      await sendAndLogOutbound(user.id, { text: caps.message });
+      continue;
+    }
 
     let replyToContent: string | undefined;
     let replyToDirection: "in" | "out" | undefined;
@@ -828,6 +854,13 @@ async function processInbound(rawJson: unknown): Promise<void> {
           continue;
         }
         voiceHeard = content;
+        await recordUsage(db, {
+          userId: user.id,
+          kind: "stt",
+          units: 1,
+          costMicros: USAGE_COST_MICROS.stt,
+          meta: { model: settings.sarvamModel },
+        });
         await logMessage(db, {
           userId: user.id,
           channel: "whatsapp",
@@ -895,6 +928,13 @@ async function processInbound(rawJson: unknown): Promise<void> {
       for (const msg of outbound) {
         await sendAndLogOutbound(user.id, msg);
       }
+      await recordUsage(db, {
+        userId: user.id,
+        kind: "brain",
+        units: 1,
+        costMicros: USAGE_COST_MICROS.brain,
+        meta: { brain: brainLabel, outbound: outbound.length },
+      });
       console.log(
         JSON.stringify({
           event: "wa_outbound",
@@ -934,6 +974,179 @@ app.get("/health", async (c) => {
     db: dbOk ? "up" : "down",
     voice: settings.sarvamApiKey ? "sarvam" : "off",
     milestone: "M5.5",
+  });
+});
+
+function adminAuthorized(c: Parameters<typeof adminAuthOk>[0], bodyToken?: string): boolean {
+  if (!settings.adminToken) return false;
+  if (adminAuthOk(c, settings.adminToken)) return true;
+  return Boolean(bodyToken && bodyToken === settings.adminToken);
+}
+
+app.get("/admin", async (c) => {
+  if (!settings.adminToken) return c.text("Set ADMIN_TOKEN to enable the beta admin dashboard.", 503);
+  if (!adminAuthorized(c)) return c.text("Unauthorized — open /admin?token=…", 401);
+  if (c.req.query("token") === settings.adminToken) {
+    c.header("Set-Cookie", setAdminCookie(settings.adminToken));
+  }
+  const html = await renderAdminDashboard({
+    db,
+    publicBaseUrl: settings.publicBaseUrl,
+    adminToken: settings.adminToken,
+  });
+  return c.html(html);
+});
+
+app.post("/admin/phones/add", async (c) => {
+  const body = await c.req.parseBody();
+  if (!adminAuthorized(c, String(body.token ?? ""))) return c.text("Unauthorized", 401);
+  const phone = String(body.phone ?? "");
+  const label = String(body.label ?? "");
+  try {
+    await addAllowedPhone(db, {
+      phoneE164: phone,
+      ...(label ? { label } : {}),
+    });
+  } catch (e) {
+    const html = await renderAdminDashboard({
+      db,
+      publicBaseUrl: settings.publicBaseUrl,
+      adminToken: settings.adminToken,
+      message: e instanceof Error ? e.message : String(e),
+    });
+    return c.html(html, 400);
+  }
+  return c.redirect(`/admin?token=${encodeURIComponent(settings.adminToken)}`);
+});
+
+app.post("/admin/phones/remove", async (c) => {
+  const body = await c.req.parseBody();
+  if (!adminAuthorized(c, String(body.token ?? ""))) return c.text("Unauthorized", 401);
+  await deactivateAllowedPhone(db, String(body.phone ?? ""));
+  return c.redirect(`/admin?token=${encodeURIComponent(settings.adminToken)}`);
+});
+
+app.post("/admin/invites/create", async (c) => {
+  const body = await c.req.parseBody();
+  if (!adminAuthorized(c, String(body.token ?? ""))) return c.text("Unauthorized", 401);
+  const phone = String(body.phone ?? "").trim();
+  const label = String(body.label ?? "").trim();
+  const maxUses = Number(body.maxUses ?? 1) || 1;
+  try {
+    await createInvite(db, {
+      ...(phone ? { phoneE164: phone } : {}),
+      ...(label ? { label } : {}),
+      maxUses,
+      expiresInDays: 14,
+    });
+  } catch (e) {
+    const html = await renderAdminDashboard({
+      db,
+      publicBaseUrl: settings.publicBaseUrl,
+      adminToken: settings.adminToken,
+      message: e instanceof Error ? e.message : String(e),
+    });
+    return c.html(html, 400);
+  }
+  return c.redirect(`/admin?token=${encodeURIComponent(settings.adminToken)}`);
+});
+
+app.get("/i/:token", async (c) => {
+  const token = c.req.param("token");
+  const invite = await getInviteByToken(db, token);
+  if (!invite) return c.html(renderInvitePage({
+    token,
+    publicBaseUrl: settings.publicBaseUrl,
+    waDisplayPhone: settings.wabaDisplayPhone,
+    invitePhone: null,
+    open: false,
+  }), 404);
+
+  if (!settings.wabaDisplayPhone) {
+    return c.html(
+      renderInvitePage({
+        token,
+        publicBaseUrl: settings.publicBaseUrl,
+        waDisplayPhone: "",
+        invitePhone: invite.phoneE164,
+        open: false,
+        error: "Invite landing misconfigured (WABA_DISPLAY_PHONE).",
+      }),
+      503,
+    );
+  }
+
+  // Pre-bound phone: allowlisted at invite creation; claim bumps useCount once, then always show WA.
+  if (invite.phoneE164) {
+    if (inviteIsOpen(invite)) {
+      await claimInvite(db, token);
+    }
+    const wa = waMeUrl(settings.wabaDisplayPhone, "Hi Amilo");
+    return c.html(
+      renderInvitePage({
+        token,
+        publicBaseUrl: settings.publicBaseUrl,
+        waDisplayPhone: settings.wabaDisplayPhone,
+        invitePhone: invite.phoneE164,
+        open: true,
+        claimedWaUrl: wa,
+      }),
+    );
+  }
+
+  return c.html(
+    renderInvitePage({
+      token,
+      publicBaseUrl: settings.publicBaseUrl,
+      waDisplayPhone: settings.wabaDisplayPhone,
+      invitePhone: null,
+      open: inviteIsOpen(invite),
+    }),
+  );
+});
+
+app.post("/i/:token", async (c) => {
+  const token = c.req.param("token");
+  const body = await c.req.parseBody();
+  const phone = String(body.phone ?? "");
+  const result = await claimInvite(db, token, phone);
+  if (!result.ok) {
+    const invite = await getInviteByToken(db, token);
+    return c.html(
+      renderInvitePage({
+        token,
+        publicBaseUrl: settings.publicBaseUrl,
+        waDisplayPhone: settings.wabaDisplayPhone,
+        invitePhone: invite?.phoneE164 ?? null,
+        open: invite ? inviteIsOpen(invite) : false,
+        error: result.reason,
+      }),
+      400,
+    );
+  }
+  if (!settings.wabaDisplayPhone) {
+    return c.text("WABA_DISPLAY_PHONE not configured", 503);
+  }
+  return c.redirect(waMeUrl(settings.wabaDisplayPhone, "Hi Amilo"));
+});
+
+app.get("/i/:token/qr", async (c) => {
+  const token = c.req.param("token");
+  const invite = await getInviteByToken(db, token);
+  if (!invite) return c.text("Invite not found", 404);
+  // Pre-bound: QR opens WhatsApp even after invite is "used". Self-serve: landing page while open.
+  if (invite.phoneE164 && settings.wabaDisplayPhone) {
+    const png = await buildQrPngDataUrl(waMeUrl(settings.wabaDisplayPhone, "Hi Amilo"));
+    return new Response(new Uint8Array(png), {
+      status: 200,
+      headers: { "Content-Type": "image/png", "Cache-Control": "no-store" },
+    });
+  }
+  if (!inviteIsOpen(invite)) return c.text("Invite closed", 404);
+  const png = await buildQrPngDataUrl(`${settings.publicBaseUrl}/i/${token}`);
+  return new Response(new Uint8Array(png), {
+    status: 200,
+    headers: { "Content-Type": "image/png", "Cache-Control": "no-store" },
   });
 });
 

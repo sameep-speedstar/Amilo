@@ -21,6 +21,7 @@
   - `waiting on <person> for <thing>` → commitment + `awaiting_reply` watch + `waiting_on` graph edge
   - `cancel watch <hint>`; watchWorker (reply detect + commitment stall, quiet hours, ≤2/day)
   - Docs name **Mind Map** as destination (visual life map after graph dogfood + M6 shell)
+- **Beta onboarding:** invite link/QR → WhatsApp; admin allowlist + usage caps (see `docs/ONBOARDING.md`)
 - Azure Postgres `amilo-pg` + live `api.amilo.io`
 - High-IQ docs under `brain/`
 
@@ -50,7 +51,7 @@
 
 ## Not done (next)
 
-- M6: App-ready shell (onboarding web, second channel)
+- M6: App-ready shell (richer onboarding web, second channel)
 - Mind Map UI over context graph + commitments/events
 - Stronger A/B scoring harness vs Claude Telegram
 

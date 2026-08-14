@@ -20,9 +20,11 @@
     "@amilo/google": "*",
     "@hono/node-server": "^1.14.1",
     "dotenv": "^17.4.2",
-    "hono": "^4.7.8"
+    "hono": "^4.7.8",
+    "qrcode": "^1.5.4"
   },
   "devDependencies": {
+    "@types/qrcode": "^1.5.6",
     "tsx": "^4.19.3"
   }
 }

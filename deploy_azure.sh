@@ -109,6 +109,10 @@ az webapp config appsettings set --name "$APP_NAME" --resource-group "$RESOURCE_
     SARVAM_MODEL="${SARVAM_MODEL:-saarika:v2.5}" \
     SARVAM_LANGUAGE_CODE="${SARVAM_LANGUAGE_CODE:-unknown}" \
     GOOGLE_MAPS_API_KEY="${GOOGLE_MAPS_API_KEY:-}" \
+    ADMIN_TOKEN="${ADMIN_TOKEN:-}" \
+    WABA_DISPLAY_PHONE="${WABA_DISPLAY_PHONE:-}" \
+    USAGE_DAY_CAP="${USAGE_DAY_CAP:-40}" \
+    USAGE_WEEK_CAP="${USAGE_WEEK_CAP:-150}" \
     DOCKER_ENABLE_CI=true \
     WEBSITE_PULL_IMAGE_OVER_VNET=false \
   >/dev/null
