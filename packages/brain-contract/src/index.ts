@@ -97,6 +97,11 @@ export interface BrainUserContext {
   recentMail?: string;
   /** Live linked Google labels, e.g. "personal=a@x.com · work=b@y.com" or "none". */
   googleAccountsSummary?: string;
+  /**
+   * Last mail find (from/To/subject/snippet). Ground truth for yes+CTA and
+   * follow-ups (action points, reply, schedule). Empty = honest none.
+   */
+  mailWorkingSet?: string;
 }
 
 export interface BrainPort {

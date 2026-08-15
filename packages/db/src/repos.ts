@@ -1,6 +1,6 @@
 import { and, asc, desc, eq, gte, isNull, lt, lte, ne, or, sql } from "drizzle-orm";
 import type { GraphUpdate } from "@amilo/brain-contract";
-import { formatLocalDayShort, formatLocalHm, guessTimezoneFromPhone, localDayBoundsUtc, cleanCalendarDisplayTitle, formatLeaveByBriefLine, detectTravelConflictsFromCoords, describeTravelConflict, mailHayMatchesQuery, mailSearchTokens, mailTokenInHay } from "@amilo/core";
+import { formatLocalDayShort, formatLocalHm, guessTimezoneFromPhone, localDayBoundsUtc, cleanCalendarDisplayTitle, formatLeaveByBriefLine, detectTravelConflictsFromCoords, describeTravelConflict, mailHayMatchesQuery, mailSearchTokens, mailTokenInHay, type MailWorkingSet } from "@amilo/core";
 import type { Db } from "./index.js";
 import {
   calendarLocationFromEvent,
@@ -1454,6 +1454,8 @@ export type UserPrefs = {
    * Suppressed in briefs until a newer message lands on the thread.
    */
   closedMailThreads: Record<string, string>;
+  /** Last mail find for CoS follow-ups (action points / reply / schedule). */
+  mailWorkingSet: MailWorkingSet | null;
 };
 
 const DEFAULT_PREFS: UserPrefs = {
@@ -1470,6 +1472,7 @@ const DEFAULT_PREFS: UserPrefs = {
   lastBriefItems: [],
   lastBriefMore: null,
   closedMailThreads: {},
+  mailWorkingSet: null,
 };
 
 function asHm(raw: unknown, fallback: string): string {
@@ -1514,6 +1517,7 @@ export function parseUserPrefs(raw: Record<string, unknown> | null | undefined):
         ? raw.lastBriefMore.trim().slice(0, 1500)
         : null,
     closedMailThreads,
+    mailWorkingSet: parseMailWorkingSet(raw?.mailWorkingSet),
   };
 }
 
@@ -1528,6 +1532,40 @@ function parseClosedMailThreads(raw: unknown): Record<string, string> {
     out[key] = iso;
   }
   return out;
+}
+
+function parseMailWorkingSet(raw: unknown): MailWorkingSet | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const o = raw as Record<string, unknown>;
+  const query = String(o.query ?? "").trim();
+  const savedAt = String(o.savedAt ?? "").trim();
+  const lookbackDays = Number(o.lookbackDays);
+  if (!query || !savedAt || Number.isNaN(Date.parse(savedAt))) return null;
+  const hitsIn = Array.isArray(o.hits) ? o.hits : [];
+  const hits: MailWorkingSet["hits"] = [];
+  for (const item of hitsIn.slice(0, 8)) {
+    if (!item || typeof item !== "object") continue;
+    const h = item as Record<string, unknown>;
+    const from = String(h.from ?? "").trim();
+    const subject = String(h.subject ?? "").trim();
+    if (!from && !subject) continue;
+    hits.push({
+      from: from.slice(0, 160) || "Unknown",
+      subject: (subject || "(no subject)").slice(0, 200),
+      snippet: String(h.snippet ?? "").replace(/\s+/g, " ").trim().slice(0, 800),
+      ...(typeof h.to === "string" && h.to.trim() ? { to: h.to.trim().slice(0, 200) } : {}),
+      ...(typeof h.date === "string" && h.date.trim() ? { date: h.date.trim().slice(0, 40) } : {}),
+      ...(typeof h.eventId === "string" && h.eventId.trim()
+        ? { eventId: h.eventId.trim() }
+        : {}),
+    });
+  }
+  return {
+    query: query.slice(0, 160),
+    lookbackDays: Number.isFinite(lookbackDays) && lookbackDays > 0 ? lookbackDays : 14,
+    savedAt,
+    hits,
+  };
 }
 
 function parseBriefItems(raw: unknown): BriefPriorityItem[] {
@@ -1578,6 +1616,7 @@ export function prefsToJson(prefs: UserPrefs): Record<string, unknown> {
     lastBriefItems: prefs.lastBriefItems,
     lastBriefMore: prefs.lastBriefMore,
     closedMailThreads: prefs.closedMailThreads,
+    mailWorkingSet: prefs.mailWorkingSet,
   };
 }
 
@@ -1650,9 +1689,11 @@ export async function removeMutedPattern(
 
 export type MailSearchHit = {
   from: string;
+  to?: string;
   subject: string;
   snippet: string;
   createdAt: Date;
+  eventId?: string;
 };
 
 export async function searchMailEvents(
@@ -1677,8 +1718,9 @@ export async function searchMailEvents(
   for (const e of rows) {
     const from = (e.actor ?? "").slice(0, 120);
     const subject = (e.title ?? "(no subject)").slice(0, 160);
-    const snippet = (e.snippet ?? "").replace(/\s+/g, " ").trim().slice(0, 180);
-    const hay = `${from} ${subject} ${snippet}`;
+    const snippet = (e.snippet ?? "").replace(/\s+/g, " ").trim().slice(0, 500);
+    const toRaw = String((e.meta as { to?: unknown } | null)?.to ?? "").trim();
+    const hay = `${from} ${toRaw} ${subject} ${snippet}`;
     if (muted.length && matchesMutedPattern(hay.toLowerCase(), muted)) continue;
     if (!mailHayMatchesQuery(hay, opts.query)) continue;
     let score = 0;
@@ -1689,7 +1731,15 @@ export async function searchMailEvents(
       else if (mailTokenInHay(tok, title)) score += 2;
       else score += 1;
     }
-    scored.push({ from, subject, snippet, createdAt: e.createdAt, score });
+    scored.push({
+      from,
+      subject,
+      snippet,
+      createdAt: e.createdAt,
+      score,
+      ...(toRaw ? { to: toRaw.slice(0, 200) } : {}),
+      ...(e.id ? { eventId: e.id } : {}),
+    });
   }
   scored.sort((a, b) => b.score - a.score || b.createdAt.getTime() - a.createdAt.getTime());
   return scored.slice(0, 8).map(({ score: _s, ...hit }) => hit);

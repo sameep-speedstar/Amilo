@@ -22,6 +22,8 @@ import {
   looksLikeInventedMailMiss,
   mailHayMatchesQuery,
   buildGmailSearchQuery,
+  parseWaitingForMail,
+  formatMailWorkingSet,
   STANDING_HELP,
 } from "./standingCommands.js";
 import {
@@ -133,6 +135,29 @@ describe("standing commands", () => {
     assert.ok(e);
     assert.match(e!.query, /valiant/i);
     assert.equal(parseMailLookup("list emails from valiants academy")?.query.toLowerCase().includes("valiant"), true);
+    assert.equal(parseMailLookup("summarise the action points of these emails"), null);
+    assert.equal(parseMailLookup("email had any attachment?"), null);
+    const juhiActions = parseMailLookup("action points from Juhi's email");
+    assert.ok(juhiActions);
+    assert.match(juhiActions!.query, /juhi/i);
+    assert.ok(parseWaitingForMail("I'm waiting for an email from Juhi"));
+    assert.match(parseWaitingForMail("waiting for mail from Valiants")!.query, /valiant/i);
+    const formatted = formatMailWorkingSet({
+      query: "Valiants",
+      lookbackDays: 14,
+      savedAt: new Date().toISOString(),
+      hits: [
+        {
+          from: "Valiants Academy <valiantsacademy@gmail.com>",
+          to: "Sameep Bansal <sameep@excro.in>",
+          subject: "Registration for Independence Day Celebrations - Reminder",
+          snippet: "Kindly complete the registration using the link below",
+          date: "2026-08-14",
+        },
+      ],
+    });
+    assert.match(formatted, /To: Sameep/);
+    assert.match(formatted, /complete the registration/i);
     assert.equal(isMailFollowUp("show emails"), true);
     assert.equal(
       isMailFollowUp("i am asking specifically about valiant academy and independence day"),

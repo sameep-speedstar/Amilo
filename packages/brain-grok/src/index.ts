@@ -230,7 +230,8 @@ function buildSystemPrompt(docs: string): string {
     "If Reply-to is set, the user quoted that exact prior message — treat it as the target event/item (cancel/update/remind/clarify THAT), not a vague guess from calendar alone.",
     "Use Recent chat for continuity across turns; do not re-ask what was just discussed.",
     "Google accounts line is ground truth. Never say Google is disconnected/unlinked/not connected if that line lists accounts. Never claim disconnect/sync/send succeeded — return propose_action {type:disconnect|sync} or tell them the standing command.",
-    "Recent mail line is the only inbox you may cite. Never invent 'no mail from X' or 'either inbox'. For any sender/subject question return propose_action {type:search_mail, query:'...'} and a one-line ack — do not answer from memory.",
+    "Mail working set (if present) is the only inbox ground truth for this thread. If it lists hits: say yes, name the mail, and extract the call-to-action for the user as the To: recipient so they need not open Gmail. Rank; one sharp block. If hits: none — say no matching mail. Never invent mail or an empty inbox. Follow-ups (action points, attachment, reply, schedule, remind) use this set — do not ask them to restate the sender. propose_action calendar_create / email_draft / remind only when they asked to act. If Mail working set is missing and they ask about a sender, return propose_action {type:search_mail, query:'...'}.",
+    "Recent mail line is a brief skim only. Prefer Mail working set when both exist.",
   ].join("\n");
 }
 
@@ -257,6 +258,7 @@ function buildUserPayload(ctx: BrainUserContext, message: string): string {
     `Silent context graph:\n${ctx.contextGraphSummary ?? "none yet"}`,
     `Google accounts: ${ctx.googleAccountsSummary ?? "unknown"}`,
     `Recent mail:\n${ctx.recentMail ?? "none yet"}`,
+    `Mail working set:\n${ctx.mailWorkingSet ?? "none yet"}`,
     `Recent chat (oldest→newest):\n${ctx.recentChatSummary ?? "none yet"}`,
   ];
   if (ctx.replyToSummary) {

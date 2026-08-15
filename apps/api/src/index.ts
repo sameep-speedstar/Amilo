@@ -486,6 +486,9 @@ function orchestratorDeps(): OrchestratorDeps {
             from: h.from,
             subject: h.subject,
             snippet: h.snippet,
+            ...(h.to ? { to: h.to } : {}),
+            date: h.createdAt.toISOString().slice(0, 10),
+            ...(h.eventId ? { eventId: h.eventId } : {}),
           })),
           searchedLive: false,
           connected: true,
@@ -504,7 +507,9 @@ function orchestratorDeps(): OrchestratorDeps {
             hits.push({
               from: m.from.slice(0, 120),
               subject: m.subject.slice(0, 160),
-              snippet: m.snippet.replace(/\s+/g, " ").trim().slice(0, 180),
+              snippet: m.snippet.replace(/\s+/g, " ").trim().slice(0, 500),
+              ...(m.to ? { to: m.to.slice(0, 200) } : {}),
+              ...(m.date ? { date: m.date.slice(0, 40) } : {}),
             });
           }
         } catch (err) {
@@ -520,6 +525,13 @@ function orchestratorDeps(): OrchestratorDeps {
         if (hits.length >= 8) break;
       }
       return { hits: hits.slice(0, 8), searchedLive: true, connected: true };
+    },
+    getMailWorkingSet: async (userId) => {
+      const prefs = await getUserPrefs(db, userId);
+      return prefs.mailWorkingSet;
+    },
+    setMailWorkingSet: async (userId, set) => {
+      await patchUserPrefs(db, userId, { mailWorkingSet: set });
     },
     isGoogleConnected: async (userId) => {
       const rows = await listGoogleAccounts(db, userId);

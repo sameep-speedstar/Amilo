@@ -71,10 +71,15 @@ export {
   isMailFollowUp,
   isMailQueryRefine,
   looksLikeInventedMailMiss,
+  parseWaitingForMail,
+  formatMailWorkingSet,
+  isMailWorkingSetFresh,
   mailSearchTokens,
   mailTokenInHay,
   mailHayMatchesQuery,
   buildGmailSearchQuery,
+  type MailWorkingSet,
+  type MailWorkingHit,
 } from "./standingCommands.js";
 export {
   ALERT_LEAD_MINS,

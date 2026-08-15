@@ -404,6 +404,74 @@ export function looksLikeInventedMailMiss(text: string): boolean {
   return false;
 }
 
+export type MailWorkingHit = {
+  from: string;
+  to?: string;
+  subject: string;
+  snippet: string;
+  date?: string;
+  eventId?: string;
+};
+
+export type MailWorkingSet = {
+  query: string;
+  lookbackDays: number;
+  savedAt: string;
+  hits: MailWorkingHit[];
+};
+
+export const MAIL_WORKING_SET_TTL_MS = 6 * 60 * 60 * 1000;
+
+export function isMailWorkingSetFresh(set: MailWorkingSet | null | undefined, now = Date.now()): boolean {
+  if (!set?.savedAt || !Array.isArray(set.hits)) return false;
+  const t = Date.parse(set.savedAt);
+  return Number.isFinite(t) && now - t < MAIL_WORKING_SET_TTL_MS;
+}
+
+/** Digest / meta on the last find — not a new search. */
+function isMailOperatorAsk(raw: string): boolean {
+  return /\b(action points?|summaris[ee]|summarize|attachment|latest|how many|when did i|when was)\b/i.test(
+    raw,
+  );
+}
+
+export function parseWaitingForMail(text: string): {
+  query: string;
+  lookbackDays: number;
+  watch: true;
+} | null {
+  const m = text
+    .trim()
+    .match(
+      /wait(?:ing)?\s+(?:for|on)\s+(?:an?\s+)?(?:e-?mails?|mails?)\s+from\s+(.+)$/i,
+    );
+  if (!m?.[1]) return null;
+  const query = m[1].replace(/[?.!]+$/g, "").trim();
+  if (query.length < 2) return null;
+  return { query: query.slice(0, 80), lookbackDays: 14, watch: true };
+}
+
+export function formatMailWorkingSet(set: MailWorkingSet): string {
+  if (!set.hits.length) {
+    return `Mail working set: query “${set.query}”, last ${set.lookbackDays}d, hits: none. There is no matching mail. Do not invent any.`;
+  }
+  const blocks = set.hits.slice(0, 5).map((h, i) =>
+    [
+      `${i + 1}. From: ${h.from}`,
+      h.to ? `   To: ${h.to}` : null,
+      h.date ? `   Date: ${h.date}` : null,
+      `   Subject: ${h.subject}`,
+      h.snippet ? `   Snippet: ${h.snippet}` : null,
+    ]
+      .filter(Boolean)
+      .join("\n"),
+  );
+  return [
+    `Mail working set (ground truth for this thread). Query “${set.query}”, last ${set.lookbackDays}d:`,
+    ...blocks,
+  ].join("\n");
+}
+
 export function parseMailLookup(
   text: string,
 ): { query: string; lookbackDays: number } | null {
@@ -412,7 +480,24 @@ export function parseMailLookup(
   if (/\b(send|draft|compose|write)\b/i.test(raw) && !/\b(check|find|any|search|look|from|show|list)\b/i.test(raw)) {
     return null;
   }
-  if (/^summarize\b/i.test(raw)) return null;
+  if (/^summarize\b/i.test(raw) || /^summarise\b/i.test(raw)) return null;
+
+  if (isMailOperatorAsk(raw)) {
+    const fromPerson = raw.match(/\bfrom\s+(.+)$/i);
+    if (fromPerson?.[1] && !/\bthese\b/i.test(raw)) {
+      const name = fromPerson[1]
+        .replace(/[?.!]+$/g, "")
+        .replace(/'s\s+(?:e-?mails?|mails?).*$/i, "")
+        .replace(/\b(?:e-?mails?|mails?)\b/gi, "")
+        .replace(/\b(the|this|that)\b/gi, "")
+        .replace(/\s+/g, " ")
+        .trim();
+      if (name.length >= 3) {
+        return { query: name.slice(0, 80), lookbackDays: parseMailLookbackDays(raw) ?? 14 };
+      }
+    }
+    return null;
+  }
 
   const lookbackDays = parseMailLookbackDays(raw) ?? 14;
   let work = raw

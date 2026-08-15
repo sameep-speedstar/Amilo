@@ -29,11 +29,14 @@ import {
   parseMailLookup,
   parseMailLookbackDays,
   isLookbackOnlyMessage,
-  isMailFollowUp,
-  isMailQueryRefine,
+  parseWaitingForMail,
+  formatMailWorkingSet,
+  isMailWorkingSetFresh,
   looksLikeInventedMailMiss,
   mailLookupFromChatSummary,
   mailSearchTokens,
+  type MailWorkingSet,
+  type MailWorkingHit,
 } from "./standingCommands.js";
 import {
   isPlacesListCommand,
@@ -241,52 +244,71 @@ async function replySyncGoogle(
   }
 }
 
-function formatMailHits(
-  hits: Array<{ from: string; subject: string; snippet: string }>,
-): string {
-  return hits
-    .slice(0, 5)
-    .map((h) => {
-      const who = h.from.replace(/<[^>]+>/g, "").trim().slice(0, 40) || h.from.slice(0, 40);
-      return `• ${who} — ${h.subject}${h.snippet ? `\n  ${h.snippet}` : ""}`;
-    })
-    .join("\n");
+function hitsToWorkingSet(
+  query: string,
+  lookbackDays: number,
+  hits: Array<{
+    from: string;
+    to?: string;
+    subject: string;
+    snippet: string;
+    date?: string;
+    eventId?: string;
+  }>,
+): MailWorkingSet {
+  return {
+    query,
+    lookbackDays,
+    savedAt: new Date().toISOString(),
+    hits: hits.slice(0, 5).map((h) => {
+      const row: MailWorkingHit = {
+        from: h.from,
+        subject: h.subject,
+        snippet: h.snippet,
+      };
+      if (h.to) row.to = h.to;
+      if (h.date) row.date = h.date;
+      if (h.eventId) row.eventId = h.eventId;
+      return row;
+    }),
+  };
 }
 
-async function replyMailLookup(
+async function prepareMailFind(
   userId: string,
   opts: { query: string; lookbackDays: number },
   deps: OrchestratorDeps,
-): Promise<OutboundMessage[]> {
+): Promise<{ hits: MailWorkingHit[]; early?: OutboundMessage[] }> {
   if (!deps.searchMail) {
-    return [
-      {
-        text: "Mail search isn't wired yet. Send sync then brief — I only list what was synced.",
-      },
-    ];
+    return {
+      hits: [],
+      early: [
+        {
+          text: "Mail search isn't wired yet. Send sync then brief — I only list what was synced.",
+        },
+      ],
+    };
   }
   const r = await deps.searchMail(userId, opts);
   if (!r.connected) {
-    return [{ text: "Google isn't connected. Send: connect google personal" }];
+    return {
+      hits: [],
+      early: [{ text: "Google isn't connected. Send: connect google personal" }],
+    };
   }
-  if (r.hits.length) {
-    const src = r.searchedLive ? "Gmail" : "synced mail";
-    return [
-      {
-        text: [
-          `Found in ${src} (last ${opts.lookbackDays}d) for “${opts.query}”:`,
-          formatMailHits(r.hits),
-        ].join("\n"),
-      },
-    ];
+  const set = hitsToWorkingSet(opts.query, opts.lookbackDays, r.hits);
+  if (deps.setMailWorkingSet) await deps.setMailWorkingSet(userId, set);
+  if (!r.hits.length) {
+    return {
+      hits: [],
+      early: [
+        {
+          text: `No mail matching “${opts.query}” in the last ${opts.lookbackDays} days.`,
+        },
+      ],
+    };
   }
-  return [
-    {
-      text: r.searchedLive
-        ? `No mail matching “${opts.query}” in the last ${opts.lookbackDays} days (searched synced mail + Gmail).`
-        : `No mail matching “${opts.query}” in synced mail (last ${opts.lookbackDays}d). Send sync, or I can try again after connect.`,
-    },
-  ];
+  return { hits: set.hits };
 }
 
 export interface OrchestratorDeps {
@@ -391,10 +413,19 @@ export interface OrchestratorDeps {
     userId: string,
     opts: { query: string; lookbackDays: number },
   ) => Promise<{
-    hits: Array<{ from: string; subject: string; snippet: string }>;
+    hits: Array<{
+      from: string;
+      to?: string;
+      subject: string;
+      snippet: string;
+      date?: string;
+      eventId?: string;
+    }>;
     searchedLive: boolean;
     connected: boolean;
   }>;
+  getMailWorkingSet?: (userId: string) => Promise<MailWorkingSet | null>;
+  setMailWorkingSet?: (userId: string, set: MailWorkingSet | null) => Promise<void>;
   isGoogleConnected?: (userId: string) => Promise<boolean>;
   getBriefingContext?: (userId: string) => Promise<{
     openCommitmentsSummary: string;
@@ -1491,30 +1522,47 @@ export async function handleInbound(
     ];
   }
 
-  const mailLookup = parseMailLookup(text);
-  if (mailLookup) {
-    return replyMailLookup(msg.userId, mailLookup, deps);
-  }
-
-  if (deps.searchMail && deps.getRecentChatSummary) {
-    const chat = await deps.getRecentChatSummary(msg.userId, {
-      ...(msg.messageId ? { excludeMessageId: msg.messageId } : {}),
-    });
-    const prior = mailLookupFromChatSummary(chat);
-    if (isLookbackOnlyMessage(text) && prior) {
-      const days = parseMailLookbackDays(text) ?? prior.lookbackDays;
-      return replyMailLookup(msg.userId, { query: prior.query, lookbackDays: days }, deps);
+  const waitingMail = parseWaitingForMail(text);
+  const mailLookup =
+    parseMailLookup(text) ??
+    (waitingMail
+      ? { query: waitingMail.query, lookbackDays: waitingMail.lookbackDays }
+      : null);
+  if (mailLookup && deps.searchMail) {
+    const prepared = await prepareMailFind(msg.userId, mailLookup, deps);
+    if (prepared.early) {
+      if (waitingMail && !prepared.hits.length && deps.createWaitingOnWatch) {
+        const w = await deps.createWaitingOnWatch(msg.userId, {
+          person: mailLookup.query,
+          thing: "email",
+        });
+        const first = prepared.early[0];
+        const noneText = first && "text" in first ? first.text : "";
+        return [{ text: `${noneText} ${w.message}`.trim() }];
+      }
+      return prepared.early;
     }
-    if (prior && (isMailFollowUp(text) || isMailQueryRefine(text, prior.query))) {
-      const tokens = mailSearchTokens(text);
-      return replyMailLookup(
+    // Hits saved as working set — fall through to the brain for yes + CTAs.
+  } else if (isLookbackOnlyMessage(text) && deps.searchMail && deps.getMailWorkingSet) {
+    const stored = await deps.getMailWorkingSet(msg.userId);
+    const prior =
+      stored && isMailWorkingSetFresh(stored)
+        ? stored
+        : deps.getRecentChatSummary
+          ? mailLookupFromChatSummary(
+              await deps.getRecentChatSummary(msg.userId, {
+                ...(msg.messageId ? { excludeMessageId: msg.messageId } : {}),
+              }),
+            )
+          : null;
+    if (prior) {
+      const days = parseMailLookbackDays(text) ?? prior.lookbackDays;
+      const prepared = await prepareMailFind(
         msg.userId,
-        {
-          query: tokens.length ? tokens.join(" ") : prior.query,
-          lookbackDays: prior.lookbackDays,
-        },
+        { query: prior.query, lookbackDays: days },
         deps,
       );
+      if (prepared.early) return prepared.early;
     }
   }
 
@@ -1523,16 +1571,6 @@ export async function handleInbound(
     if (tzUpdate) {
       await deps.setTimezone(msg.userId, tzUpdate, true);
       const tzLine = `Timezone set to ${timezoneFriendlyLabel(tzUpdate)} (${tzUpdate}). Briefs and reminders use this.`;
-      if (deps.getRecentChatSummary && deps.searchMail) {
-        const chat = await deps.getRecentChatSummary(msg.userId, {
-          ...(msg.messageId ? { excludeMessageId: msg.messageId } : {}),
-        });
-        const prior = mailLookupFromChatSummary(chat);
-        if (prior) {
-          const mailOut = await replyMailLookup(msg.userId, prior, deps);
-          return [{ text: tzLine }, ...mailOut];
-        }
-      }
       return [{ text: tzLine }];
     }
   }
@@ -1971,26 +2009,34 @@ export async function handleInbound(
     ? googleAccounts.map((a) => `${a.label}=${a.email ?? "pending"}`).join(" · ")
     : "none";
 
-  const result = await deps.brain.interpret(
-    {
-      userId: msg.userId,
-      name: name || "there",
-      timezone: briefCtx.timezone,
-      vipList: briefCtx.vipList,
-      ignoredPatterns: briefCtx.ignoredPatterns,
-      openCommitmentsSummary: briefCtx.openCommitmentsSummary,
-      calendarToday: briefCtx.calendarToday,
-      ...(briefCtx.calendarTomorrow
-        ? { calendarTomorrow: briefCtx.calendarTomorrow }
-        : {}),
-      contextGraphSummary,
-      ...(recentChatSummary ? { recentChatSummary } : {}),
-      ...(replyToSummary ? { replyToSummary } : {}),
-      recentMail: briefCtx.recentMail,
-      googleAccountsSummary,
-    },
-    text,
-  );
+  const storedMailSet = deps.getMailWorkingSet
+    ? await deps.getMailWorkingSet(msg.userId)
+    : null;
+  const mailWorkingSetText =
+    storedMailSet && isMailWorkingSetFresh(storedMailSet)
+      ? formatMailWorkingSet(storedMailSet)
+      : undefined;
+
+  const interpretCtx = {
+    userId: msg.userId,
+    name: name || "there",
+    timezone: briefCtx.timezone,
+    vipList: briefCtx.vipList,
+    ignoredPatterns: briefCtx.ignoredPatterns,
+    openCommitmentsSummary: briefCtx.openCommitmentsSummary,
+    calendarToday: briefCtx.calendarToday,
+    ...(briefCtx.calendarTomorrow
+      ? { calendarTomorrow: briefCtx.calendarTomorrow }
+      : {}),
+    contextGraphSummary,
+    ...(recentChatSummary ? { recentChatSummary } : {}),
+    ...(replyToSummary ? { replyToSummary } : {}),
+    recentMail: briefCtx.recentMail,
+    googleAccountsSummary,
+    ...(mailWorkingSetText ? { mailWorkingSet: mailWorkingSetText } : {}),
+  };
+
+  let result = await deps.brain.interpret(interpretCtx, text);
 
   if (result.intent.type === "propose_action") {
     const brainType = String(result.intent.action.type ?? "").toLowerCase();
@@ -2017,18 +2063,31 @@ export async function handleInbound(
     }
     if (
       brainType === "search_mail" ||
-      brainType === "find_mail" ||
-      /mail|inbox|gmail/.test(brainType)
+      brainType === "find_mail"
     ) {
       const q = String(result.intent.action.query ?? result.intent.action.q ?? text).trim();
       const parsed = parseMailLookup(q) ?? parseMailLookup(text);
-      const tokens = mailSearchTokens(q) ;
-      if (parsed) return replyMailLookup(msg.userId, parsed, deps);
-      if (tokens.length) {
-        return replyMailLookup(msg.userId, { query: q, lookbackDays: 14 }, deps);
+      const tokens = mailSearchTokens(q);
+      const query = parsed?.query || (tokens.length ? q : mailLookupFromChatSummary(recentChatSummary)?.query);
+      if (query) {
+        const prepared = await prepareMailFind(
+          msg.userId,
+          { query, lookbackDays: parsed?.lookbackDays ?? 14 },
+          deps,
+        );
+        if (prepared.early && !prepared.hits.length) return prepared.early;
+        if (prepared.hits.length) {
+          result = await deps.brain.interpret(
+            {
+              ...interpretCtx,
+              mailWorkingSet: formatMailWorkingSet(
+                hitsToWorkingSet(query, parsed?.lookbackDays ?? 14, prepared.hits),
+              ),
+            },
+            text,
+          );
+        }
       }
-      const prior = mailLookupFromChatSummary(recentChatSummary);
-      if (prior) return replyMailLookup(msg.userId, prior, deps);
     }
   }
 
@@ -2407,29 +2466,35 @@ export async function handleInbound(
     }
   }
 
-  const priorMail = mailLookupFromChatSummary(recentChatSummary);
   const brainSaid = result.intent.type === "reply_text" ? result.intent.text.trim() : "";
-  const userMailish =
-    Boolean(parseMailLookup(text)) ||
-    isMailFollowUp(text) ||
-    /\b(?:e-?mails?|mails?|inbox|gmail)\b/i.test(text);
   if (
     deps.searchMail &&
-    (looksLikeInventedMailMiss(brainSaid) ||
-      (result.intent.type === "propose_action" && userMailish))
+    looksLikeInventedMailMiss(brainSaid) &&
+    !(storedMailSet && isMailWorkingSetFresh(storedMailSet) && storedMailSet.hits.length)
   ) {
     const parsed = parseMailLookup(text);
     const tokens = mailSearchTokens(text);
-    const query = parsed?.query || (tokens.length ? tokens.join(" ") : priorMail?.query);
+    const query =
+      parsed?.query ||
+      (tokens.length ? tokens.join(" ") : mailLookupFromChatSummary(recentChatSummary)?.query);
     if (query) {
-      return replyMailLookup(
+      const prepared = await prepareMailFind(
         msg.userId,
-        {
-          query,
-          lookbackDays: parsed?.lookbackDays ?? priorMail?.lookbackDays ?? 14,
-        },
+        { query, lookbackDays: parsed?.lookbackDays ?? 14 },
         deps,
       );
+      if (prepared.early && !prepared.hits.length) return prepared.early;
+      if (prepared.hits.length) {
+        result = await deps.brain.interpret(
+          {
+            ...interpretCtx,
+            mailWorkingSet: formatMailWorkingSet(
+              hitsToWorkingSet(query, parsed?.lookbackDays ?? 14, prepared.hits),
+            ),
+          },
+          text,
+        );
+      }
     }
   }
 

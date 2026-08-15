@@ -86,6 +86,8 @@ async function syncOneAccount(
         accountLabel: acct.label,
         accountEmail: emailTag,
         gmailId: m.id,
+        ...(m.to ? { to: m.to.slice(0, 400) } : {}),
+        ...(m.date ? { date: m.date } : {}),
       },
     });
     mail += 1;

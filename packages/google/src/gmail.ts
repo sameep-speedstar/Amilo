@@ -2,6 +2,7 @@ export interface GmailMessage {
   id: string;
   threadId: string;
   from: string;
+  to?: string;
   subject: string;
   snippet: string;
   labelIds: string[];
@@ -71,6 +72,7 @@ async function fetchMessage(accessToken: string, id: string): Promise<GmailMessa
     id: String(data.id),
     threadId: String(data.threadId ?? ""),
     from: headers.From ?? "",
+    ...(headers.To ? { to: headers.To } : {}),
     subject: headers.Subject ?? "(no subject)",
     snippet: String(data.snippet ?? ""),
     labelIds: Array.isArray(data.labelIds) ? data.labelIds.map(String) : [],
