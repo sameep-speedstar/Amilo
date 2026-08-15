@@ -230,7 +230,7 @@ function buildSystemPrompt(docs: string): string {
     "If Reply-to is set, the user quoted that exact prior message — treat it as the target event/item (cancel/update/remind/clarify THAT), not a vague guess from calendar alone.",
     "Use Recent chat for continuity across turns; do not re-ask what was just discussed.",
     "Google accounts line is ground truth. Never say Google is disconnected/unlinked/not connected if that line lists accounts. Never claim disconnect/sync/send succeeded — return propose_action {type:disconnect|sync} or tell them the standing command.",
-    "Recent mail line is the only inbox you may cite. If it is none yet / missing, do not invent 'no mail from X' — say you need a search (propose_action type search_mail) or ask them to send sync.",
+    "Recent mail line is the only inbox you may cite. Never invent 'no mail from X' or 'either inbox'. For any sender/subject question return propose_action {type:search_mail, query:'...'} and a one-line ack — do not answer from memory.",
   ].join("\n");
 }
 

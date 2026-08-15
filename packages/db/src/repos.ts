@@ -1,6 +1,6 @@
 import { and, asc, desc, eq, gte, isNull, lt, lte, ne, or, sql } from "drizzle-orm";
 import type { GraphUpdate } from "@amilo/brain-contract";
-import { formatLocalDayShort, formatLocalHm, guessTimezoneFromPhone, localDayBoundsUtc, cleanCalendarDisplayTitle, formatLeaveByBriefLine, detectTravelConflictsFromCoords, describeTravelConflict } from "@amilo/core";
+import { formatLocalDayShort, formatLocalHm, guessTimezoneFromPhone, localDayBoundsUtc, cleanCalendarDisplayTitle, formatLeaveByBriefLine, detectTravelConflictsFromCoords, describeTravelConflict, mailHayMatchesQuery, mailSearchTokens, mailTokenInHay } from "@amilo/core";
 import type { Db } from "./index.js";
 import {
   calendarLocationFromEvent,
@@ -1660,12 +1660,7 @@ export async function searchMailEvents(
   userId: string,
   opts: { query: string; lookbackDays: number; mutedPatterns?: string[] },
 ): Promise<MailSearchHit[]> {
-  const tokens = opts.query
-    .toLowerCase()
-    .split(/[^\p{L}\p{N}]+/u)
-    .map((t) => t.trim())
-    .filter((t) => t.length >= 3)
-    .slice(0, 8);
+  const tokens = mailSearchTokens(opts.query);
   if (!tokens.length) return [];
   const since = new Date(Date.now() - Math.max(1, opts.lookbackDays) * 86_400_000);
   const rows = await db.query.events.findMany({
@@ -1678,23 +1673,26 @@ export async function searchMailEvents(
     limit: 200,
   });
   const muted = opts.mutedPatterns ?? [];
-  const hits: MailSearchHit[] = [];
+  const scored: Array<MailSearchHit & { score: number }> = [];
   for (const e of rows) {
-    const hay = `${e.actor ?? ""} ${e.title ?? ""} ${e.snippet ?? ""}`.toLowerCase();
-    if (muted.length && matchesMutedPattern(hay, muted)) continue;
-    if (!tokens.every((tok) => hay.includes(tok))) {
-      // Match if any distinctive token hits (sender OR subject phrase)
-      if (!tokens.some((tok) => hay.includes(tok))) continue;
+    const from = (e.actor ?? "").slice(0, 120);
+    const subject = (e.title ?? "(no subject)").slice(0, 160);
+    const snippet = (e.snippet ?? "").replace(/\s+/g, " ").trim().slice(0, 180);
+    const hay = `${from} ${subject} ${snippet}`;
+    if (muted.length && matchesMutedPattern(hay.toLowerCase(), muted)) continue;
+    if (!mailHayMatchesQuery(hay, opts.query)) continue;
+    let score = 0;
+    const actor = from.toLowerCase();
+    const title = subject.toLowerCase();
+    for (const tok of tokens) {
+      if (mailTokenInHay(tok, actor)) score += 5;
+      else if (mailTokenInHay(tok, title)) score += 2;
+      else score += 1;
     }
-    hits.push({
-      from: (e.actor ?? "").slice(0, 120),
-      subject: (e.title ?? "(no subject)").slice(0, 160),
-      snippet: (e.snippet ?? "").replace(/\s+/g, " ").trim().slice(0, 180),
-      createdAt: e.createdAt,
-    });
-    if (hits.length >= 8) break;
+    scored.push({ from, subject, snippet, createdAt: e.createdAt, score });
   }
-  return hits;
+  scored.sort((a, b) => b.score - a.score || b.createdAt.getTime() - a.createdAt.getTime());
+  return scored.slice(0, 8).map(({ score: _s, ...hit }) => hit);
 }
 
 export async function summarizeRecentMail(

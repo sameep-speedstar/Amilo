@@ -14,6 +14,7 @@ import {
   type WindowStore,
 } from "@amilo/channels-whatsapp";
 import {
+  buildGmailSearchQuery,
   checkSlotConflicts,
   formatConflictProposalNote,
   handleInbound,
@@ -493,13 +494,7 @@ function orchestratorDeps(): OrchestratorDeps {
       if (!googleCfg) {
         return { hits: [], searchedLive: false, connected: true };
       }
-      const tokens = opts.query
-        .split(/[^\p{L}\p{N}]+/u)
-        .map((t) => t.trim())
-        .filter((t) => t.length >= 3)
-        .slice(0, 6);
-      const qParts = tokens.map((t) => `(from:${t} OR subject:${t})`);
-      const q = `${qParts.join(" OR ") || opts.query} newer_than:${Math.max(1, opts.lookbackDays)}d`.trim();
+      const q = buildGmailSearchQuery(opts.query, opts.lookbackDays);
       const hits: Array<{ from: string; subject: string; snippet: string }> = [];
       for (const account of accounts) {
         try {

@@ -68,6 +68,13 @@ export {
   parseMailLookup,
   parseMailLookbackDays,
   isLookbackOnlyMessage,
+  isMailFollowUp,
+  isMailQueryRefine,
+  looksLikeInventedMailMiss,
+  mailSearchTokens,
+  mailTokenInHay,
+  mailHayMatchesQuery,
+  buildGmailSearchQuery,
 } from "./standingCommands.js";
 export {
   ALERT_LEAD_MINS,

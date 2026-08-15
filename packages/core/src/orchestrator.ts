@@ -29,7 +29,11 @@ import {
   parseMailLookup,
   parseMailLookbackDays,
   isLookbackOnlyMessage,
+  isMailFollowUp,
+  isMailQueryRefine,
+  looksLikeInventedMailMiss,
   mailLookupFromChatSummary,
+  mailSearchTokens,
 } from "./standingCommands.js";
 import {
   isPlacesListCommand,
@@ -1492,14 +1496,25 @@ export async function handleInbound(
     return replyMailLookup(msg.userId, mailLookup, deps);
   }
 
-  if (isLookbackOnlyMessage(text) && deps.searchMail && deps.getRecentChatSummary) {
+  if (deps.searchMail && deps.getRecentChatSummary) {
     const chat = await deps.getRecentChatSummary(msg.userId, {
       ...(msg.messageId ? { excludeMessageId: msg.messageId } : {}),
     });
     const prior = mailLookupFromChatSummary(chat);
-    const days = parseMailLookbackDays(text) ?? prior?.lookbackDays ?? 14;
-    if (prior) {
+    if (isLookbackOnlyMessage(text) && prior) {
+      const days = parseMailLookbackDays(text) ?? prior.lookbackDays;
       return replyMailLookup(msg.userId, { query: prior.query, lookbackDays: days }, deps);
+    }
+    if (prior && (isMailFollowUp(text) || isMailQueryRefine(text, prior.query))) {
+      const tokens = mailSearchTokens(text);
+      return replyMailLookup(
+        msg.userId,
+        {
+          query: tokens.length ? tokens.join(" ") : prior.query,
+          lookbackDays: prior.lookbackDays,
+        },
+        deps,
+      );
     }
   }
 
@@ -2000,10 +2015,20 @@ export async function handleInbound(
         },
       ];
     }
-    if (brainType === "search_mail" || brainType === "find_mail") {
+    if (
+      brainType === "search_mail" ||
+      brainType === "find_mail" ||
+      /mail|inbox|gmail/.test(brainType)
+    ) {
       const q = String(result.intent.action.query ?? result.intent.action.q ?? text).trim();
       const parsed = parseMailLookup(q) ?? parseMailLookup(text);
+      const tokens = mailSearchTokens(q) ;
       if (parsed) return replyMailLookup(msg.userId, parsed, deps);
+      if (tokens.length) {
+        return replyMailLookup(msg.userId, { query: q, lookbackDays: 14 }, deps);
+      }
+      const prior = mailLookupFromChatSummary(recentChatSummary);
+      if (prior) return replyMailLookup(msg.userId, prior, deps);
     }
   }
 
@@ -2379,6 +2404,32 @@ export async function handleInbound(
           ].join("\n"),
         },
       ];
+    }
+  }
+
+  const priorMail = mailLookupFromChatSummary(recentChatSummary);
+  const brainSaid = result.intent.type === "reply_text" ? result.intent.text.trim() : "";
+  const userMailish =
+    Boolean(parseMailLookup(text)) ||
+    isMailFollowUp(text) ||
+    /\b(?:e-?mails?|mails?|inbox|gmail)\b/i.test(text);
+  if (
+    deps.searchMail &&
+    (looksLikeInventedMailMiss(brainSaid) ||
+      (result.intent.type === "propose_action" && userMailish))
+  ) {
+    const parsed = parseMailLookup(text);
+    const tokens = mailSearchTokens(text);
+    const query = parsed?.query || (tokens.length ? tokens.join(" ") : priorMail?.query);
+    if (query) {
+      return replyMailLookup(
+        msg.userId,
+        {
+          query,
+          lookbackDays: parsed?.lookbackDays ?? priorMail?.lookbackDays ?? 14,
+        },
+        deps,
+      );
     }
   }
 

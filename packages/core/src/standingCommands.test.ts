@@ -18,6 +18,10 @@ import {
   parseMailLookup,
   parseMailLookbackDays,
   isLookbackOnlyMessage,
+  isMailFollowUp,
+  looksLikeInventedMailMiss,
+  mailHayMatchesQuery,
+  buildGmailSearchQuery,
   STANDING_HELP,
 } from "./standingCommands.js";
 import {
@@ -125,6 +129,26 @@ describe("standing commands", () => {
     const d = parseMailLookup("any email from Juhi?");
     assert.ok(d);
     assert.match(d!.query, /juhi/i);
+    const e = parseMailLookup("show emails from Valiants Academy");
+    assert.ok(e);
+    assert.match(e!.query, /valiant/i);
+    assert.equal(parseMailLookup("list emails from valiants academy")?.query.toLowerCase().includes("valiant"), true);
+    assert.equal(isMailFollowUp("show emails"), true);
+    assert.equal(
+      isMailFollowUp("i am asking specifically about valiant academy and independence day"),
+      true,
+    );
+    const onecard =
+      "Team OneCard Earn rewards Independence Day Special Nasher Miles backpack";
+    const valiant =
+      "Valiants Academy <valiantsacademy@gmail.com> Registration for Independence Day Celebrations - Reminder";
+    assert.equal(mailHayMatchesQuery(onecard, "Valiants Academy independence day"), false);
+    assert.equal(mailHayMatchesQuery(valiant, "Valiants Academy independence day"), true);
+    assert.equal(mailHayMatchesQuery(valiant, "Valiant Academy independence"), true);
+    assert.equal(mailHayMatchesQuery("Juhi Badle <juhi.badle@idfcfirst.bank.in> IMPS", "Juhi"), true);
+    assert.match(buildGmailSearchQuery("Valiants Academy independence day", 14), /valiant/i);
+    assert.match(buildGmailSearchQuery("Valiants Academy independence day", 14), /newer_than:14d/);
+    assert.equal(looksLikeInventedMailMiss("No emails from Valiants Academy in either inbox."), true);
   });
 
   it("recognizes how it works + delete helpers", () => {

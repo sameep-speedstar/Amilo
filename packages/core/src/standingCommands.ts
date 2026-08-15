@@ -276,19 +276,140 @@ export function parseMailLookbackDays(text: string): number | null {
   return null;
 }
 
+const MAIL_WORD_RE = /\b(?:e-?mails?|mails?|inbox|gmail)\b/i;
+
+const MAIL_SEARCH_STOP = new Set([
+  "about",
+  "regarding",
+  "show",
+  "list",
+  "from",
+  "the",
+  "and",
+  "for",
+  "any",
+  "please",
+  "check",
+  "find",
+  "look",
+  "search",
+  "email",
+  "emails",
+  "mail",
+  "mails",
+  "inbox",
+  "gmail",
+  "specifically",
+  "asking",
+  "there",
+  "this",
+  "that",
+  "those",
+  "them",
+  "with",
+  "your",
+  "have",
+  "just",
+  "some",
+  "into",
+  "over",
+  "last",
+  "week",
+  "weeks",
+  "month",
+  "months",
+  "days",
+  "day",
+  "celebration",
+  "celebrations",
+  "special",
+  "asking",
+]);
+
 export function isLookbackOnlyMessage(text: string): boolean {
   const t = normalizeCommandText(text);
   if (t.length > 48) return false;
-  if (/\b(mail|email|e-mail|inbox|gmail)\b/.test(t)) return false;
+  if (MAIL_WORD_RE.test(t)) return false;
   return parseMailLookbackDays(t) != null;
+}
+
+export function mailTokenVariants(tok: string): string[] {
+  const t = tok.toLowerCase();
+  const out = new Set([t]);
+  if (t.endsWith("s") && t.length > 4) out.add(t.slice(0, -1));
+  else if (t.length >= 4) out.add(`${t}s`);
+  return [...out];
+}
+
+export function mailSearchTokens(query: string): string[] {
+  const seen = new Set<string>();
+  const tokens: string[] = [];
+  for (const raw of query.toLowerCase().split(/[^\p{L}\p{N}]+/u)) {
+    const t = raw.trim();
+    if (t.length < 4 || MAIL_SEARCH_STOP.has(t) || seen.has(t)) continue;
+    seen.add(t);
+    tokens.push(t);
+    if (tokens.length >= 8) break;
+  }
+  return tokens;
+}
+
+export function mailTokenInHay(tok: string, hay: string): boolean {
+  const h = hay.toLowerCase();
+  return mailTokenVariants(tok).some((v) => h.includes(v));
+}
+
+/** True when every distinctive token is present (sender/subject/snippet). */
+export function mailHayMatchesQuery(hay: string, query: string): boolean {
+  const tokens = mailSearchTokens(query);
+  if (!tokens.length) return false;
+  const h = hay.toLowerCase();
+  return tokens.every((tok) => mailTokenInHay(tok, h));
+}
+
+export function buildGmailSearchQuery(query: string, lookbackDays: number): string {
+  const tokens = mailSearchTokens(query);
+  const body =
+    tokens
+      .map((t) => {
+        const vars = mailTokenVariants(t);
+        return vars.length > 1 ? `(${vars.join(" OR ")})` : t;
+      })
+      .join(" ") || query.trim();
+  return `${body} newer_than:${Math.max(1, lookbackDays)}d`.trim();
+}
+
+export function isMailFollowUp(text: string): boolean {
+  const t = normalizeCommandText(text);
+  if (!t || parseMailLookup(t)) return false;
+  if (/\b(show|list|those|that|them)\s+(?:e-?mails?|mails?)\b/.test(t)) return true;
+  if (/^(show|list|find)\s+(them|those|it|that)$/.test(t)) return true;
+  if (/\b(specifically|i mean|i'?m asking|i am asking|asking about)\b/.test(t)) {
+    return true;
+  }
+  return false;
+}
+
+export function isMailQueryRefine(text: string, priorQuery: string): boolean {
+  const cur = mailSearchTokens(text);
+  const prev = mailSearchTokens(priorQuery);
+  if (!cur.length || !prev.length) return false;
+  return cur.some((t) => prev.some((p) => mailTokenInHay(t, p) || mailTokenInHay(p, t)));
+}
+
+export function looksLikeInventedMailMiss(text: string): boolean {
+  const t = text.trim();
+  if (/\beither inbox\b/i.test(t)) return true;
+  if (/\bno (?:e-?mails?|mails?)\b/i.test(t) && /\b(inbox|from)\b/i.test(t)) return true;
+  return false;
 }
 
 export function parseMailLookup(
   text: string,
 ): { query: string; lookbackDays: number } | null {
   const raw = text.trim();
-  if (!/\b(mail|email|e-mail|inbox|gmail)\b/i.test(raw)) return null;
-  if (/\b(send|draft|compose|write)\b/i.test(raw) && !/\b(check|find|any|search|look|from)\b/i.test(raw)) {
+  if (!MAIL_WORD_RE.test(raw)) return null;
+  if (/\b(send|draft|compose|write)\b/i.test(raw) && !/\b(check|find|any|search|look|from|show|list)\b/i.test(raw)) {
     return null;
   }
   if (/^summarize\b/i.test(raw)) return null;
@@ -296,8 +417,11 @@ export function parseMailLookup(
   const lookbackDays = parseMailLookbackDays(raw) ?? 14;
   let work = raw
     .replace(/[?.!]+$/g, "")
-    .replace(/\b(?:please\s+)?(?:check|find|look(?:\s+for)?|search|is there|are there|any)\b/gi, " ")
-    .replace(/\b(?:the\s+)?(?:mail|email|e-mail|inbox|gmail)s?\b/gi, " ")
+    .replace(
+      /\b(?:please\s+)?(?:check|find|look(?:\s+for)?|search|show|list|is there|are there|any)\b/gi,
+      " ",
+    )
+    .replace(/\b(?:the\s+)?(?:e-?mails?|mails?|inbox|gmail)\b/gi, " ")
     .replace(/\bfrom\b/gi, " ")
     .replace(/\b(?:in|over)\s+(?:the\s+)?last\s+\d+\s+(?:days?|weeks?|months?)\b/gi, " ")
     .replace(/\s+/g, " ")
