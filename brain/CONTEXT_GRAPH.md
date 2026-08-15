@@ -10,8 +10,8 @@ The same `context_nodes` / `context_edges` (plus linked commitments, watches, an
 
 | Kind | Examples |
 |------|----------|
-| person | Priya (CFO), Rajeev (co-founder) |
-| org | Speedstar, Paykraft |
+| person | Priya (CFO), Alex (co-founder) — format only, not this user's facts |
+| org | Acme, Northwind |
 | place | Mumbai office |
 | topic | ICICI margin, Series A |
 | preference | mornings for deep work, WhatsApp over email |

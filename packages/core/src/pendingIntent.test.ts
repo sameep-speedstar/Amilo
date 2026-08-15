@@ -40,8 +40,8 @@ describe("pending intent routing", () => {
     assert.match(r.summaryHint, /rajeev@speedstar\.ai/);
   });
 
-  it("corrects rajiv@speedstart.ai typo", () => {
+  it("corrects @speedstart.ai domain typo only", () => {
     const r = applyPendingEditPatch("email_draft", {}, "rajiv@speedstart.ai");
-    assert.equal(r.payload.to, "rajeev@speedstar.ai");
+    assert.equal(r.payload.to, "rajiv@speedstar.ai");
   });
 });

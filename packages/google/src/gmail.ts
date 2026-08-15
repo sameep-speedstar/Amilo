@@ -137,6 +137,24 @@ async function incremental(
   };
 }
 
+/** Live Gmail search (headers/snippet only). Caller supplies a full `q`. */
+export async function searchGmail(
+  accessToken: string,
+  q: string,
+  maxResults = 8,
+): Promise<GmailMessage[]> {
+  const listing = await gmailGet(accessToken, "/messages", {
+    q: q.slice(0, 400),
+    maxResults: String(Math.min(20, Math.max(1, maxResults))),
+  });
+  const ids = ((listing.messages as Array<{ id: string }> | undefined) ?? []).map((m) => m.id);
+  const messages: GmailMessage[] = [];
+  for (const id of ids.slice(0, maxResults)) {
+    messages.push(await fetchMessage(accessToken, id));
+  }
+  return messages;
+}
+
 /** Send a plain-text email via Gmail API (requires gmail.send scope). */
 export async function sendGmailMessage(
   accessToken: string,

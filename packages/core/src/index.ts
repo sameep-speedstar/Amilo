@@ -62,6 +62,12 @@ export {
   parseForgetCommand,
   parseScheduleDayQuery,
   parseWaitingOnCommand,
+  isGoogleListCommand,
+  parseDisconnectGoogleCommand,
+  parseSyncCommand,
+  parseMailLookup,
+  parseMailLookbackDays,
+  isLookbackOnlyMessage,
 } from "./standingCommands.js";
 export {
   ALERT_LEAD_MINS,
@@ -115,6 +121,7 @@ export {
   parseIsoDate,
   parseReminderMessage,
   parseTimezoneUpdateMessage,
+  isDurationLookbackPhrase,
   resolveTimezoneInput,
   timezoneFriendlyLabel,
   zonedLocalDateTime,

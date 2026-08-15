@@ -203,6 +203,132 @@ export function parseCommitmentCloseCommand(
   return null;
 }
 
+export function isGoogleListCommand(text: string): boolean {
+  const t = normalizeCommandText(text);
+  if (
+    t === "google" ||
+    t === "gmail" ||
+    t === "google accounts" ||
+    t === "list google" ||
+    t === "show google" ||
+    t === "show google accounts"
+  ) {
+    return true;
+  }
+  if (/^which\s+\d+\s+accounts?$/.test(t)) return true;
+  if (
+    /google account/.test(t) &&
+    /\b(which|what|show|list|connected|linked)\b/.test(t)
+  ) {
+    return true;
+  }
+  if (/^(show|list|which|what)\s+(are\s+)?(the\s+)?(my\s+)?(linked\s+|connected\s+)?google\b/.test(t)) {
+    return true;
+  }
+  return false;
+}
+
+/** disconnect personal2 / disconnect google personal 2 / unlink google all */
+export function parseDisconnectGoogleCommand(
+  text: string,
+): { rawLabel: string | "all" | null } | null {
+  const t = normalizeCommandText(text);
+  let m = t.match(/^(?:please\s+)?(?:disconnect|unlink)\s+(?:google\s+|gmail\s+)?(.*)$/);
+  if (!m) {
+    m = t.match(/^(?:please\s+)?remove\s+google(?:\s+(.*))?$/);
+  }
+  if (!m) return null;
+  const rest = (m[1] ?? "").trim();
+  if (!rest) return { rawLabel: null };
+  if (/\b(the|this|that)\s+(call|line|chat|meeting)\b/.test(rest)) return null;
+  if (rest === "all" || rest === "everything") return { rawLabel: "all" };
+  return { rawLabel: rest.replace(/\s+/g, "") };
+}
+
+/** sync / sync personal / please sync google */
+export function parseSyncCommand(text: string): { label?: string } | null {
+  const t = normalizeCommandText(text);
+  const m = t.match(/^(?:please\s+)?sync(?:\s+google)?(?:\s+(.+))?$/);
+  if (!m) return null;
+  const rest = (m[1] ?? "").trim();
+  if (!rest) return {};
+  const compact = rest.replace(/\s+/g, "");
+  if (!/^[\w-]{1,40}$/.test(compact)) return null;
+  return { label: compact };
+}
+
+export function parseMailLookbackDays(text: string): number | null {
+  const t = text.trim().toLowerCase().replace(/\s+/g, " ");
+  const numbered = t.match(
+    /\b(?:in\s+(?:the\s+)?)?last\s+(\d+)\s+(day|days|week|weeks|month|months)\b/,
+  );
+  if (numbered?.[1] && numbered[2]) {
+    const n = Number(numbered[1]);
+    if (!Number.isFinite(n) || n < 1) return null;
+    const unit = numbered[2];
+    if (unit.startsWith("week")) return Math.min(90, n * 7);
+    if (unit.startsWith("month")) return Math.min(90, n * 30);
+    return Math.min(90, n);
+  }
+  if (/\b(?:in\s+(?:the\s+)?)?last\s+week\b/.test(t)) return 7;
+  if (/\b(?:in\s+(?:the\s+)?)?last\s+fortnight\b/.test(t)) return 14;
+  if (/\b(?:in\s+(?:the\s+)?)?last\s+month\b/.test(t)) return 30;
+  return null;
+}
+
+export function isLookbackOnlyMessage(text: string): boolean {
+  const t = normalizeCommandText(text);
+  if (t.length > 48) return false;
+  if (/\b(mail|email|e-mail|inbox|gmail)\b/.test(t)) return false;
+  return parseMailLookbackDays(t) != null;
+}
+
+export function parseMailLookup(
+  text: string,
+): { query: string; lookbackDays: number } | null {
+  const raw = text.trim();
+  if (!/\b(mail|email|e-mail|inbox|gmail)\b/i.test(raw)) return null;
+  if (/\b(send|draft|compose|write)\b/i.test(raw) && !/\b(check|find|any|search|look|from)\b/i.test(raw)) {
+    return null;
+  }
+  if (/^summarize\b/i.test(raw)) return null;
+
+  const lookbackDays = parseMailLookbackDays(raw) ?? 14;
+  let work = raw
+    .replace(/[?.!]+$/g, "")
+    .replace(/\b(?:please\s+)?(?:check|find|look(?:\s+for)?|search|is there|are there|any)\b/gi, " ")
+    .replace(/\b(?:the\s+)?(?:mail|email|e-mail|inbox|gmail)s?\b/gi, " ")
+    .replace(/\bfrom\b/gi, " ")
+    .replace(/\b(?:in|over)\s+(?:the\s+)?last\s+\d+\s+(?:days?|weeks?|months?)\b/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  const split = work.match(/^(.+?)\s+(?:on|regarding|about|re)\s+(.+)$/i);
+  if (split?.[1] && split[2]) {
+    const right = split[2].replace(/\bcelebrations?\b/gi, "").trim();
+    work = [split[1].trim(), right].filter(Boolean).join(" ");
+  }
+
+  const query = work.replace(/\s+/g, " ").trim();
+  if (query.length < 3) return null;
+  return { query: query.slice(0, 160), lookbackDays };
+}
+
+export function mailLookupFromChatSummary(summary: string | undefined): {
+  query: string;
+  lookbackDays: number;
+} | null {
+  if (!summary) return null;
+  const lines = summary.split("\n").reverse();
+  for (const line of lines) {
+    const body = line.replace(/^User:\s*/i, "").trim();
+    if (!body || /^Amilo:/i.test(line)) continue;
+    const hit = parseMailLookup(body);
+    if (hit) return hit;
+  }
+  return null;
+}
+
 export const STANDING_HELP = [
   "Amilo — quick commands",
   "",

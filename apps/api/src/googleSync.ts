@@ -146,6 +146,7 @@ export async function syncGoogleForUser(
   userId: string,
   timezone = "Asia/Kolkata",
   mutedPatterns: string[] = [],
+  label?: string,
 ): Promise<{
   mail: number;
   skippedPromo: number;
@@ -153,7 +154,14 @@ export async function syncGoogleForUser(
   calendar: number;
   accounts: number;
 }> {
-  const accounts = await listGoogleAccounts(db, userId);
+  let accounts = await listGoogleAccounts(db, userId);
+  if (label) {
+    const want = label.trim().toLowerCase();
+    accounts = accounts.filter((a) => a.label.toLowerCase() === want);
+    if (!accounts.length) {
+      throw new Error(`No account labeled “${label}”. Send: google`);
+    }
+  }
   if (!accounts.length) {
     throw new Error(
       "Google not connected — send: connect google personal (or work / another label)",

@@ -23,6 +23,13 @@ import {
   parseForgetCommand,
   parseScheduleDayQuery,
   parseWaitingOnCommand,
+  isGoogleListCommand,
+  parseDisconnectGoogleCommand,
+  parseSyncCommand,
+  parseMailLookup,
+  parseMailLookbackDays,
+  isLookbackOnlyMessage,
+  mailLookupFromChatSummary,
 } from "./standingCommands.js";
 import {
   isPlacesListCommand,
@@ -85,6 +92,8 @@ export function isBriefRequest(text: string): boolean {
   }
   // Bare "brief please" / "briefing please"
   if (/^(the\s+)?(brief|briefing)(\s+please)?$/.test(t)) return true;
+  if (/^summarize\s+(my\s+)?(emails?|mail|inbox)\b/.test(t)) return true;
+  if (/^(email|mail)\s+summary$/.test(t)) return true;
   return false;
 }
 
@@ -105,6 +114,175 @@ export function normalizeGoogleLabel(raw: string): string {
   const s = raw.trim().toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "");
   if (!s) return "personal";
   return s.slice(0, 40);
+}
+
+function formatGoogleAccountLines(
+  accounts: Array<{ label: string; email: string | null }>,
+): string[] {
+  return accounts.map((a) => `- ${a.label}: ${a.email ?? "(pending)"}`);
+}
+
+async function replyGoogleList(
+  userId: string,
+  deps: OrchestratorDeps,
+): Promise<OutboundMessage[]> {
+  if (!deps.listGoogleAccounts) {
+    return [{ text: "Google listing isn't wired yet." }];
+  }
+  const accounts = await deps.listGoogleAccounts(userId);
+  if (!accounts.length) {
+    return [
+      {
+        text: "No Google accounts linked. Try: connect google personal\nThen: connect google work",
+      },
+    ];
+  }
+  return [
+    {
+      text: [
+        "Linked Google accounts:",
+        ...formatGoogleAccountLines(accounts),
+        "",
+        "Add another: connect google <label>",
+        "Remove one: disconnect google <label>",
+      ].join("\n"),
+    },
+  ];
+}
+
+async function replyDisconnectGoogle(
+  userId: string,
+  rawLabel: string | "all" | null,
+  deps: OrchestratorDeps,
+): Promise<OutboundMessage[]> {
+  if (!deps.disconnectGoogle || !deps.listGoogleAccounts) {
+    return [{ text: "Google disconnect isn't wired yet." }];
+  }
+  const accounts = await deps.listGoogleAccounts(userId);
+  if (!accounts.length) {
+    return [{ text: "No Google account linked on Amilo WhatsApp." }];
+  }
+  if (rawLabel == null) {
+    if (accounts.length === 1) {
+      return replyDisconnectGoogle(userId, accounts[0]!.label, deps);
+    }
+    return [
+      {
+        text: [
+          "Multiple accounts linked — say which:",
+          ...accounts.map((a) => `- disconnect google ${a.label}  (${a.email ?? "?"})`),
+          "- disconnect google all",
+        ].join("\n"),
+      },
+    ];
+  }
+  if (rawLabel === "all") {
+    const r = await deps.disconnectGoogle(userId, "all");
+    return [
+      {
+        text: r.deleted
+          ? `Disconnected ${r.deleted} account(s): ${r.labels.join(", ")}. None left on Amilo. Telegram LifeOS untouched.`
+          : "No Google accounts to disconnect.",
+      },
+    ];
+  }
+  const label = normalizeGoogleLabel(rawLabel);
+  const r = await deps.disconnectGoogle(userId, label);
+  const left = await deps.listGoogleAccounts(userId);
+  if (!r.deleted) {
+    return [
+      {
+        text: [
+          `No account labeled “${label}”.`,
+          left.length
+            ? `Still linked:\n${formatGoogleAccountLines(left).join("\n")}`
+            : "No Google accounts linked.",
+        ].join("\n"),
+      },
+    ];
+  }
+  return [
+    {
+      text: [
+        `Disconnected “${label}”. Telegram LifeOS untouched.`,
+        left.length
+          ? `Still linked:\n${formatGoogleAccountLines(left).join("\n")}`
+          : "No Google accounts left on Amilo.",
+      ].join("\n"),
+    },
+  ];
+}
+
+async function replySyncGoogle(
+  userId: string,
+  label: string | undefined,
+  deps: OrchestratorDeps,
+): Promise<OutboundMessage[]> {
+  if (!deps.syncGoogle) {
+    return [{ text: "Sync isn't wired yet." }];
+  }
+  try {
+    const r = await deps.syncGoogle(userId, label ? { label } : undefined);
+    const scope = label ? ` “${normalizeGoogleLabel(label)}”` : ` ${r.accounts} account(s)`;
+    return [
+      {
+        text: [
+          `Synced${scope} — ${r.mail} mail kept, ${r.skippedPromo} promo filtered, ${r.skippedMuted} muted, ${r.calendar} calendar today.`,
+          "Send brief for a digest, or ask about a sender/subject.",
+        ].join(" "),
+      },
+    ];
+  } catch (err) {
+    return [{ text: err instanceof Error ? err.message : String(err) }];
+  }
+}
+
+function formatMailHits(
+  hits: Array<{ from: string; subject: string; snippet: string }>,
+): string {
+  return hits
+    .slice(0, 5)
+    .map((h) => {
+      const who = h.from.replace(/<[^>]+>/g, "").trim().slice(0, 40) || h.from.slice(0, 40);
+      return `• ${who} — ${h.subject}${h.snippet ? `\n  ${h.snippet}` : ""}`;
+    })
+    .join("\n");
+}
+
+async function replyMailLookup(
+  userId: string,
+  opts: { query: string; lookbackDays: number },
+  deps: OrchestratorDeps,
+): Promise<OutboundMessage[]> {
+  if (!deps.searchMail) {
+    return [
+      {
+        text: "Mail search isn't wired yet. Send sync then brief — I only list what was synced.",
+      },
+    ];
+  }
+  const r = await deps.searchMail(userId, opts);
+  if (!r.connected) {
+    return [{ text: "Google isn't connected. Send: connect google personal" }];
+  }
+  if (r.hits.length) {
+    const src = r.searchedLive ? "Gmail" : "synced mail";
+    return [
+      {
+        text: [
+          `Found in ${src} (last ${opts.lookbackDays}d) for “${opts.query}”:`,
+          formatMailHits(r.hits),
+        ].join("\n"),
+      },
+    ];
+  }
+  return [
+    {
+      text: r.searchedLive
+        ? `No mail matching “${opts.query}” in the last ${opts.lookbackDays} days (searched synced mail + Gmail).`
+        : `No mail matching “${opts.query}” in synced mail (last ${opts.lookbackDays}d). Send sync, or I can try again after connect.`,
+    },
+  ];
 }
 
 export interface OrchestratorDeps {
@@ -195,12 +373,23 @@ export interface OrchestratorDeps {
     userId: string,
     label: string | "all",
   ) => Promise<{ deleted: number; labels: string[] }>;
-  syncGoogle?: (userId: string) => Promise<{
+  syncGoogle?: (
+    userId: string,
+    opts?: { label?: string },
+  ) => Promise<{
     mail: number;
     skippedPromo: number;
     skippedMuted: number;
     calendar: number;
     accounts: number;
+  }>;
+  searchMail?: (
+    userId: string,
+    opts: { query: string; lookbackDays: number },
+  ) => Promise<{
+    hits: Array<{ from: string; subject: string; snippet: string }>;
+    searchedLive: boolean;
+    connected: boolean;
   }>;
   isGoogleConnected?: (userId: string) => Promise<boolean>;
   getBriefingContext?: (userId: string) => Promise<{
@@ -399,16 +588,15 @@ export function looksLikeNewActionIntent(
   if (/\b(send|draft)\b/i.test(t) && /\b(email|mail|invite)\b/i.test(t)) return true;
   if (/\bcalendar invite\b/i.test(t)) return true;
   if (/\binvite\b/i.test(t) && /@|\bspeedstar\b|\brajeev\b|\brajiv\b/i.test(t)) return true;
+  if (isGoogleListCommand(t) || parseDisconnectGoogleCommand(t) || parseSyncCommand(t)) {
+    return true;
+  }
+  if (parseMailLookup(t) || isLookbackOnlyMessage(t) || isBriefRequest(t)) return true;
   return false;
 }
 
 function normalizeAttendeeEmail(raw: string): string {
-  let to = raw.toLowerCase().trim();
-  to = to.replace(/@speedstart\.ai$/i, "@speedstar.ai");
-  if (/@speedstar\.ai$/i.test(to) && /^(rajiv|rajeev)@/i.test(to)) {
-    to = "rajeev@speedstar.ai";
-  }
-  return to;
+  return raw.toLowerCase().trim().replace(/@speedstart\.ai$/i, "@speedstar.ai");
 }
 
 async function resolveAttendeesFromMessage(
@@ -545,12 +733,7 @@ export function applyPendingEditPatch(
     raw.match(/\bto\s*[:=]?\s*([\w.+-]+@[\w.-]+\.\w+)\b/i) ||
     raw.match(/\b([\w.+-]+@[\w.-]+\.\w+)\b/);
   if (emailMatch?.[1] && (kind === "email_draft" || /email|invite/i.test(kind))) {
-    let to = emailMatch[1].toLowerCase();
-    to = to.replace(/@speedstart\.ai$/i, "@speedstar.ai");
-    if (/@speedstar\.ai$/i.test(to) && /^(rajiv|rajeev)@/i.test(to)) {
-      to = "rajeev@speedstar.ai";
-    }
-    next.to = to;
+    next.to = normalizeAttendeeEmail(emailMatch[1]);
     raw = raw.replace(emailMatch[0], "").trim();
   }
 
@@ -1304,15 +1487,38 @@ export async function handleInbound(
     ];
   }
 
+  const mailLookup = parseMailLookup(text);
+  if (mailLookup) {
+    return replyMailLookup(msg.userId, mailLookup, deps);
+  }
+
+  if (isLookbackOnlyMessage(text) && deps.searchMail && deps.getRecentChatSummary) {
+    const chat = await deps.getRecentChatSummary(msg.userId, {
+      ...(msg.messageId ? { excludeMessageId: msg.messageId } : {}),
+    });
+    const prior = mailLookupFromChatSummary(chat);
+    const days = parseMailLookbackDays(text) ?? prior?.lookbackDays ?? 14;
+    if (prior) {
+      return replyMailLookup(msg.userId, { query: prior.query, lookbackDays: days }, deps);
+    }
+  }
+
   if (deps.setTimezone) {
     const tzUpdate = parseTimezoneUpdateMessage(text);
     if (tzUpdate) {
       await deps.setTimezone(msg.userId, tzUpdate, true);
-      return [
-        {
-          text: `Timezone set to ${timezoneFriendlyLabel(tzUpdate)} (${tzUpdate}). Briefs and reminders use this.`,
-        },
-      ];
+      const tzLine = `Timezone set to ${timezoneFriendlyLabel(tzUpdate)} (${tzUpdate}). Briefs and reminders use this.`;
+      if (deps.getRecentChatSummary && deps.searchMail) {
+        const chat = await deps.getRecentChatSummary(msg.userId, {
+          ...(msg.messageId ? { excludeMessageId: msg.messageId } : {}),
+        });
+        const prior = mailLookupFromChatSummary(chat);
+        if (prior) {
+          const mailOut = await replyMailLookup(msg.userId, prior, deps);
+          return [{ text: tzLine }, ...mailOut];
+        }
+      }
+      return [{ text: tzLine }];
     }
   }
 
@@ -1450,29 +1656,8 @@ export async function handleInbound(
     return scheduleRemindersReply(msg.userId, tzState.timezone, reminderSpecs, deps);
   }
 
-  if (lower === "google" || lower === "google accounts" || lower === "list google") {
-    if (!deps.listGoogleAccounts) {
-      return [{ text: "Google listing isn't wired yet." }];
-    }
-    const accounts = await deps.listGoogleAccounts(msg.userId);
-    if (!accounts.length) {
-      return [
-        {
-          text: 'No Google accounts linked. Try: connect google personal\nThen: connect google work',
-        },
-      ];
-    }
-    return [
-      {
-        text: [
-          "Linked Google accounts:",
-          ...accounts.map((a) => `- ${a.label}: ${a.email ?? "(pending)"}`),
-          "",
-          'Add another: connect google <label>',
-          "Remove one: disconnect google <label>",
-        ].join("\n"),
-      },
-    ];
+  if (isGoogleListCommand(text)) {
+    return replyGoogleList(msg.userId, deps);
   }
 
   const connectMatch = lower.match(
@@ -1525,57 +1710,9 @@ export async function handleInbound(
     ];
   }
 
-  const disconnectMatch = lower.match(
-    /^(?:disconnect google|disconnect gmail)(?:\s+(\S+))?$/,
-  );
-  if (disconnectMatch) {
-    if (!deps.disconnectGoogle || !deps.listGoogleAccounts) {
-      return [{ text: "Google disconnect isn't wired yet." }];
-    }
-    const arg = disconnectMatch[1];
-    const accounts = await deps.listGoogleAccounts(msg.userId);
-    if (!accounts.length) {
-      return [{ text: "No Google account linked on Amilo WhatsApp." }];
-    }
-    if (!arg) {
-      if (accounts.length === 1) {
-        const only = accounts[0]!;
-        const r = await deps.disconnectGoogle(msg.userId, only.label);
-        return [
-          {
-            text: `Disconnected ${r.labels.join(", ") || only.label}. Telegram LifeOS is untouched.`,
-          },
-        ];
-      }
-      return [
-        {
-          text: [
-            "Multiple accounts linked — say which:",
-            ...accounts.map((a) => `- disconnect google ${a.label}  (${a.email ?? "?"})`),
-            "- disconnect google all",
-          ].join("\n"),
-        },
-      ];
-    }
-    if (arg === "all") {
-      const r = await deps.disconnectGoogle(msg.userId, "all");
-      return [
-        {
-          text: r.deleted
-            ? `Disconnected ${r.deleted} account(s): ${r.labels.join(", ")}. Telegram LifeOS untouched.`
-            : "No Google accounts to disconnect.",
-        },
-      ];
-    }
-    const label = normalizeGoogleLabel(arg);
-    const r = await deps.disconnectGoogle(msg.userId, label);
-    return [
-      {
-        text: r.deleted
-          ? `Disconnected “${label}”. Telegram LifeOS untouched.`
-          : `No account labeled “${label}”. Send: google`,
-      },
-    ];
+  const disconnectCmd = parseDisconnectGoogleCommand(text);
+  if (disconnectCmd) {
+    return replyDisconnectGoogle(msg.userId, disconnectCmd.rawLabel, deps);
   }
 
   if (lower === "mutes" || lower === "muted" || lower === "list mutes") {
@@ -1616,23 +1753,9 @@ export async function handleInbound(
     ];
   }
 
-  if (lower === "sync") {
-    if (!deps.syncGoogle) {
-      return [{ text: "Sync isn't wired yet." }];
-    }
-    try {
-      const r = await deps.syncGoogle(msg.userId);
-      return [
-        {
-          text: [
-            `Synced ${r.accounts} account(s) — ${r.mail} mail kept, ${r.skippedPromo} promo filtered, ${r.skippedMuted} muted, ${r.calendar} calendar today.`,
-            "Send brief for a digest.",
-          ].join(" "),
-        },
-      ];
-    } catch (err) {
-      return [{ text: err instanceof Error ? err.message : String(err) }];
-    }
+  const syncCmd = parseSyncCommand(text);
+  if (syncCmd) {
+    return replySyncGoogle(msg.userId, syncCmd.label, deps);
   }
 
   // On-demand brief — same curated path for exact + natural phrasing.
@@ -1826,6 +1949,13 @@ export async function handleInbound(
     }
   }
 
+  const googleAccounts = deps.listGoogleAccounts
+    ? await deps.listGoogleAccounts(msg.userId)
+    : [];
+  const googleAccountsSummary = googleAccounts.length
+    ? googleAccounts.map((a) => `${a.label}=${a.email ?? "pending"}`).join(" · ")
+    : "none";
+
   const result = await deps.brain.interpret(
     {
       userId: msg.userId,
@@ -1841,9 +1971,41 @@ export async function handleInbound(
       contextGraphSummary,
       ...(recentChatSummary ? { recentChatSummary } : {}),
       ...(replyToSummary ? { replyToSummary } : {}),
+      recentMail: briefCtx.recentMail,
+      googleAccountsSummary,
     },
     text,
   );
+
+  if (result.intent.type === "propose_action") {
+    const brainType = String(result.intent.action.type ?? "").toLowerCase();
+    if (/disconnect|unlink/.test(brainType)) {
+      const raw =
+        String(result.intent.action.label ?? result.intent.action.accountLabel ?? "").trim() ||
+        null;
+      return replyDisconnectGoogle(
+        msg.userId,
+        raw ? (raw.toLowerCase() === "all" ? "all" : raw) : null,
+        deps,
+      );
+    }
+    if (brainType === "sync" || brainType === "sync_google") {
+      const label = String(result.intent.action.label ?? result.intent.action.accountLabel ?? "").trim();
+      return replySyncGoogle(msg.userId, label || undefined, deps);
+    }
+    if (brainType === "connect" || brainType === "connect_google") {
+      return [
+        {
+          text: "I won't invent a Google connect. Send: connect google personal (or another label).",
+        },
+      ];
+    }
+    if (brainType === "search_mail" || brainType === "find_mail") {
+      const q = String(result.intent.action.query ?? result.intent.action.q ?? text).trim();
+      const parsed = parseMailLookup(q) ?? parseMailLookup(text);
+      if (parsed) return replyMailLookup(msg.userId, parsed, deps);
+    }
+  }
 
   if (deps.applyGraphUpdates && result.graphUpdates?.length) {
     await deps.applyGraphUpdates({
@@ -1975,11 +2137,15 @@ export async function handleInbound(
         const toRaw = strPayload(payload.to);
         if (toRaw) {
           payload.to = normalizeAttendeeEmail(toRaw);
-        } else if (/\brajeev\b|\brajiv\b/i.test(text)) {
-          const hit = deps.resolveContactEmail
-            ? await deps.resolveContactEmail(msg.userId, "Rajeev")
-            : { email: "rajeev@speedstar.ai", label: "Rajeev" };
-          if (hit?.email) payload.to = hit.email;
+        } else if (deps.resolveContactEmail) {
+          const names = extractInviteeNames(text);
+          for (const n of names) {
+            const hit = await deps.resolveContactEmail(msg.userId, n);
+            if (hit?.email) {
+              payload.to = hit.email;
+              break;
+            }
+          }
         }
         if (strPayload(payload.to) && deps.rememberContactEmail) {
           const names = extractInviteeNames(text);

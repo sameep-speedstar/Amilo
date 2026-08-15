@@ -797,27 +797,33 @@ export async function clearContextGraph(
   return { nodes: nodes.length, edges: edges.length };
 }
 
-const KNOWN_CONTACTS: Array<{
-  label: string;
-  email: string;
-  attrs?: Record<string, unknown>;
-}> = [
-  {
-    label: "Rajeev",
-    email: "rajeev@speedstar.ai",
-    attrs: { role: "CTO", aliases: ["Rajiv", "rajeev", "rajiv"] },
-  },
-];
-
-/** Seed durable person emails we already know (idempotent merge). */
-export async function ensureKnownContacts(db: Db, userId: string): Promise<void> {
-  for (const c of KNOWN_CONTACTS) {
-    await rememberPersonEmail(db, userId, {
-      label: c.label,
-      email: c.email,
-      ...(c.attrs ? { attrs: c.attrs } : {}),
-    });
+/** Remove globally seeded Speedstar contacts from non-owner graphs. */
+export async function scrubSeededKnownContacts(
+  db: Db,
+  ownerPhones: string[],
+): Promise<number> {
+  const ownerDigits = new Set(
+    ownerPhones.map((p) => p.replace(/\D/g, "")).filter((d) => d.length >= 10),
+  );
+  const seeded = await db.query.contextNodes.findMany({
+    where: and(
+      eq(contextNodes.kind, "person"),
+      or(
+        sql`lower(${contextNodes.label}) in ('rajeev', 'rajiv')`,
+        sql`${contextNodes.attrs}::text ilike '%rajeev@speedstar.ai%'`,
+      ),
+    ),
+    limit: 500,
+  });
+  let n = 0;
+  for (const node of seeded) {
+    const user = await db.query.users.findFirst({ where: eq(users.id, node.userId) });
+    const digits = (user?.phoneE164 ?? "").replace(/\D/g, "");
+    if (ownerDigits.has(digits)) continue;
+    await db.delete(contextNodes).where(eq(contextNodes.id, node.id));
+    n += 1;
   }
+  return n;
 }
 
 /** Persist / merge a person node's email for later invite resolution. */
@@ -844,13 +850,8 @@ export async function resolvePersonEmail(
   userId: string,
   nameHint: string,
 ): Promise<{ label: string; email: string } | null> {
-  await ensureKnownContacts(db, userId);
   const needle = nameHint.trim().toLowerCase().replace(/[^a-z]/g, "");
   if (!needle || needle.length < 2) return null;
-
-  if (/^raj(ee|i)v$/.test(needle)) {
-    return { label: "Rajeev", email: "rajeev@speedstar.ai" };
-  }
 
   const nodes = await db.query.contextNodes.findMany({
     where: and(eq(contextNodes.userId, userId), eq(contextNodes.kind, "person")),
@@ -1645,6 +1646,55 @@ export async function removeMutedPattern(
   const next = prefs.mutedPatterns.filter((p) => p.toLowerCase() !== needle);
   await patchUserPrefs(db, userId, { mutedPatterns: next });
   return next;
+}
+
+export type MailSearchHit = {
+  from: string;
+  subject: string;
+  snippet: string;
+  createdAt: Date;
+};
+
+export async function searchMailEvents(
+  db: Db,
+  userId: string,
+  opts: { query: string; lookbackDays: number; mutedPatterns?: string[] },
+): Promise<MailSearchHit[]> {
+  const tokens = opts.query
+    .toLowerCase()
+    .split(/[^\p{L}\p{N}]+/u)
+    .map((t) => t.trim())
+    .filter((t) => t.length >= 3)
+    .slice(0, 8);
+  if (!tokens.length) return [];
+  const since = new Date(Date.now() - Math.max(1, opts.lookbackDays) * 86_400_000);
+  const rows = await db.query.events.findMany({
+    where: and(
+      eq(events.userId, userId),
+      eq(events.source, "gmail"),
+      gte(events.createdAt, since),
+    ),
+    orderBy: [desc(events.createdAt)],
+    limit: 200,
+  });
+  const muted = opts.mutedPatterns ?? [];
+  const hits: MailSearchHit[] = [];
+  for (const e of rows) {
+    const hay = `${e.actor ?? ""} ${e.title ?? ""} ${e.snippet ?? ""}`.toLowerCase();
+    if (muted.length && matchesMutedPattern(hay, muted)) continue;
+    if (!tokens.every((tok) => hay.includes(tok))) {
+      // Match if any distinctive token hits (sender OR subject phrase)
+      if (!tokens.some((tok) => hay.includes(tok))) continue;
+    }
+    hits.push({
+      from: (e.actor ?? "").slice(0, 120),
+      subject: (e.title ?? "(no subject)").slice(0, 160),
+      snippet: (e.snippet ?? "").replace(/\s+/g, " ").trim().slice(0, 180),
+      createdAt: e.createdAt,
+    });
+    if (hits.length >= 8) break;
+  }
+  return hits;
 }
 
 export async function summarizeRecentMail(

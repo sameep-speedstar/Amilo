@@ -18,6 +18,8 @@ describe("isBriefRequest", () => {
       "my briefing",
       "brief please",
       "pull latest brief",
+      "summarize my emails",
+      "summarize mail",
     ]) {
       assert.equal(isBriefRequest(t), true, t);
     }

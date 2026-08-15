@@ -12,6 +12,12 @@ import {
   parseForgetCommand,
   parseScheduleDayQuery,
   parseWaitingOnCommand,
+  isGoogleListCommand,
+  parseDisconnectGoogleCommand,
+  parseSyncCommand,
+  parseMailLookup,
+  parseMailLookbackDays,
+  isLookbackOnlyMessage,
   STANDING_HELP,
 } from "./standingCommands.js";
 import {
@@ -72,6 +78,53 @@ describe("standing commands", () => {
     // specific "scheduled" questions stay with the brain
     assert.equal(parseScheduleDayQuery("is the GVP meeting scheduled tomorrow?"), null);
     assert.equal(parseScheduleDayQuery("help"), null);
+  });
+
+  it("recognizes google list phrasing", () => {
+    assert.equal(isGoogleListCommand("google"), true);
+    assert.equal(isGoogleListCommand("Show google accounts"), true);
+    assert.equal(isGoogleListCommand("Which google account os is connected?"), true);
+    assert.equal(isGoogleListCommand("which 3 accounts"), true);
+    assert.equal(isGoogleListCommand("book google meet"), false);
+  });
+
+  it("parses disconnect / sync", () => {
+    assert.deepEqual(parseDisconnectGoogleCommand("Disconnect personal 2"), {
+      rawLabel: "personal2",
+    });
+    assert.deepEqual(parseDisconnectGoogleCommand("disconnect personal2"), {
+      rawLabel: "personal2",
+    });
+    assert.deepEqual(parseDisconnectGoogleCommand("disconnect google personal2"), {
+      rawLabel: "personal2",
+    });
+    assert.deepEqual(parseSyncCommand("Sync"), {});
+    assert.deepEqual(parseSyncCommand("sync personal"), { label: "personal" });
+  });
+
+  it("parses mail lookup + lookback", () => {
+    const a = parseMailLookup("Is there any mail from Valiant Academy on independence day?");
+    assert.ok(a);
+    assert.match(a!.query, /valiant/i);
+    assert.match(a!.query, /independence/i);
+    assert.equal(a!.lookbackDays, 14);
+    const b = parseMailLookup(
+      "Please check email from Valiants Academy on independence day celebrations",
+    );
+    assert.ok(b);
+    assert.match(b!.query, /valiant/i);
+    assert.equal(parseMailLookbackDays("In last 2 weeks"), 14);
+    assert.equal(isLookbackOnlyMessage("In last 2 weeks"), true);
+    assert.equal(parseMailLookup("summarize my emails"), null);
+    const c = parseMailLookup(
+      "any email from Valiants Academy regarding independence day celebration?",
+    );
+    assert.ok(c);
+    assert.match(c!.query, /valiant/i);
+    assert.match(c!.query, /independence/i);
+    const d = parseMailLookup("any email from Juhi?");
+    assert.ok(d);
+    assert.match(d!.query, /juhi/i);
   });
 
   it("recognizes how it works + delete helpers", () => {

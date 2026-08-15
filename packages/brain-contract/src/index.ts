@@ -93,6 +93,10 @@ export interface BrainUserContext {
   recentChatSummary?: string;
   /** When the user quoted/replied to a specific message. */
   replyToSummary?: string;
+  /** Synced mail lines (or "none yet"). Never invent inbox state beyond this. */
+  recentMail?: string;
+  /** Live linked Google labels, e.g. "personal=a@x.com · work=b@y.com" or "none". */
+  googleAccountsSummary?: string;
 }
 
 export interface BrainPort {

@@ -445,10 +445,37 @@ const PLACE_TZ: Array<{ needles: string[]; tz: string }> = [
   { needles: ["sydney", "australia", "melbourne"], tz: "Australia/Sydney" },
 ];
 
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/** Word-boundary needle match — "la" must not hit "last". */
+function placeNeedleHits(hay: string, needle: string): boolean {
+  const n = needle.trim().toLowerCase();
+  if (!n) return false;
+  if (hay === n) return true;
+  const pattern = n.includes(" ")
+    ? new RegExp(`\\b${escapeRegExp(n)}\\b`, "i")
+    : new RegExp(`(?:^|[^a-z0-9])${escapeRegExp(n)}(?:[^a-z0-9]|$)`, "i");
+  return pattern.test(hay);
+}
+
+/** "in last 2 weeks" is a mail lookback, not travel. */
+export function isDurationLookbackPhrase(raw: string): boolean {
+  const t = raw.trim().toLowerCase().replace(/\s+/g, " ");
+  return (
+    /\b(?:in\s+(?:the\s+)?)?last\s+\d+\s+(?:day|days|week|weeks|month|months)\b/.test(t) ||
+    /\b(?:in\s+(?:the\s+)?)?last\s+(?:week|fortnight|month)\b/.test(t) ||
+    /\b(?:in\s+(?:the\s+)?)?past\s+\d+\s+(?:day|days|week|weeks|month|months)\b/.test(t) ||
+    /\bover\s+the\s+last\b/.test(t)
+  );
+}
+
 /** Resolve free text / IANA id to a timezone, or null. */
 export function resolveTimezoneInput(raw: string): string | null {
   const s = raw.trim();
   if (!s) return null;
+  if (isDurationLookbackPhrase(s)) return null;
   if (/^[A-Za-z]+\/[A-Za-z_]+$/.test(s)) {
     try {
       Intl.DateTimeFormat(undefined, { timeZone: s });
@@ -459,7 +486,7 @@ export function resolveTimezoneInput(raw: string): string | null {
   }
   const lower = s.toLowerCase();
   for (const row of PLACE_TZ) {
-    if (row.needles.some((n) => lower === n || lower.includes(n))) return row.tz;
+    if (row.needles.some((n) => placeNeedleHits(lower, n))) return row.tz;
   }
   return null;
 }
@@ -603,6 +630,7 @@ export function parseReminderMessage(
 /** Extract travel / timezone update from NL. */
 export function parseTimezoneUpdateMessage(message: string): string | null {
   const t = message.trim();
+  if (isDurationLookbackPhrase(t)) return null;
   const cmd = t.match(/^(?:timezone|tz|set timezone|set tz)\s+(.+)$/i);
   if (cmd?.[1]) return resolveTimezoneInput(cmd[1]);
 

@@ -229,6 +229,8 @@ function buildSystemPrompt(docs: string): string {
     "When the user is deciding, use advisor framing (tradeoffs + recommendation).",
     "If Reply-to is set, the user quoted that exact prior message — treat it as the target event/item (cancel/update/remind/clarify THAT), not a vague guess from calendar alone.",
     "Use Recent chat for continuity across turns; do not re-ask what was just discussed.",
+    "Google accounts line is ground truth. Never say Google is disconnected/unlinked/not connected if that line lists accounts. Never claim disconnect/sync/send succeeded — return propose_action {type:disconnect|sync} or tell them the standing command.",
+    "Recent mail line is the only inbox you may cite. If it is none yet / missing, do not invent 'no mail from X' — say you need a search (propose_action type search_mail) or ask them to send sync.",
   ].join("\n");
 }
 
@@ -253,6 +255,8 @@ function buildUserPayload(ctx: BrainUserContext, message: string): string {
     `Calendar today: ${ctx.calendarToday}`,
     `Calendar tomorrow: ${ctx.calendarTomorrow ?? "none yet"}`,
     `Silent context graph:\n${ctx.contextGraphSummary ?? "none yet"}`,
+    `Google accounts: ${ctx.googleAccountsSummary ?? "unknown"}`,
+    `Recent mail:\n${ctx.recentMail ?? "none yet"}`,
     `Recent chat (oldest→newest):\n${ctx.recentChatSummary ?? "none yet"}`,
   ];
   if (ctx.replyToSummary) {

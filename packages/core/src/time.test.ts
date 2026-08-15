@@ -73,6 +73,15 @@ describe("timezone helpers", () => {
     assert.equal(parseTimezoneUpdateMessage("I'm in Dubai"), "Asia/Dubai");
     assert.equal(resolveTimezoneInput("Asia/Kolkata"), "Asia/Kolkata");
     assert.equal(parseTimezoneUpdateMessage("timezone London"), "Europe/London");
+    assert.equal(parseTimezoneUpdateMessage("I am in India"), "Asia/Kolkata");
+    assert.equal(parseTimezoneUpdateMessage("in LA"), "America/Los_Angeles");
+  });
+
+  it("does not treat mail lookbacks as timezones", () => {
+    assert.equal(parseTimezoneUpdateMessage("In last 2 weeks"), null);
+    assert.equal(parseTimezoneUpdateMessage("in the last 14 days"), null);
+    assert.equal(resolveTimezoneInput("last 2 weeks"), null);
+    assert.equal(resolveTimezoneInput("last"), null);
   });
 
   it("fires brief window after target", () => {

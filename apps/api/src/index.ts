@@ -39,7 +39,6 @@ import {
   cancelWatchesByHint,
   deleteContextNodeByLabel,
   deleteGoogleAccount,
-  ensureKnownContacts,
   findMessageByWaId,
   forgetContextAttr as forgetContextAttrRepo,
   getOpenPendingAction,
@@ -74,6 +73,8 @@ import {
   summarizeContextGraph,
   summarizeOpenCommitments,
   summarizeRecentMail,
+  searchMailEvents,
+  scrubSeededKnownContacts,
   upsertPlace,
   touchWhatsAppInbound,
   updatePendingPayload,
@@ -102,6 +103,7 @@ import {
   fetchEmail,
   listCalendarRange,
   MapsClient,
+  searchGmail,
   type GoogleOAuthConfig,
 } from "@amilo/google";
 import { googleConfigured, loadSettings, resolveBrainLabel } from "./config.js";
@@ -294,10 +296,7 @@ function orchestratorDeps(): OrchestratorDeps {
     setPaused: async (id, p) => {
       await setUserStatus(db, id, p ? "paused" : "active");
     },
-    getContextGraphSummary: async (id) => {
-      await ensureKnownContacts(db, id);
-      return summarizeContextGraph(db, id);
-    },
+    getContextGraphSummary: async (id) => summarizeContextGraph(db, id),
     getAboutMeSummary: (id) => summarizeAboutMe(db, id),
     getAboutPersonSummary: (id, name) => summarizeAboutPerson(db, id, name),
     forgetContextLabel: (userId, label) => deleteContextNodeByLabel(db, userId, label),
@@ -441,10 +440,22 @@ function orchestratorDeps(): OrchestratorDeps {
       return rows.map((r) => ({ label: r.label, email: r.email }));
     },
     disconnectGoogle: async (userId, label) => {
-      if (label === "all") return deleteGoogleAccount(db, userId);
-      return deleteGoogleAccount(db, userId, label);
+      const r =
+        label === "all"
+          ? await deleteGoogleAccount(db, userId)
+          : await deleteGoogleAccount(db, userId, label);
+      console.log(
+        JSON.stringify({
+          event: "google_disconnected",
+          userId,
+          label,
+          deleted: r.deleted,
+          labels: r.labels,
+        }),
+      );
+      return r;
     },
-    syncGoogle: async (userId) => {
+    syncGoogle: async (userId, opts) => {
       if (!googleCfg) throw new Error("Google OAuth not configured");
       const u = await getUserById(db, userId);
       const prefs = await getUserPrefs(db, userId);
@@ -454,7 +465,66 @@ function orchestratorDeps(): OrchestratorDeps {
         userId,
         u?.timezone ?? "Asia/Kolkata",
         prefs.mutedPatterns,
+        opts?.label,
       );
+    },
+    searchMail: async (userId, opts) => {
+      const accounts = await listGoogleAccounts(db, userId);
+      if (!accounts.length) {
+        return { hits: [], searchedLive: false, connected: false };
+      }
+      const prefs = await getUserPrefs(db, userId);
+      const local = await searchMailEvents(db, userId, {
+        query: opts.query,
+        lookbackDays: opts.lookbackDays,
+        mutedPatterns: prefs.mutedPatterns,
+      });
+      if (local.length) {
+        return {
+          hits: local.map((h) => ({
+            from: h.from,
+            subject: h.subject,
+            snippet: h.snippet,
+          })),
+          searchedLive: false,
+          connected: true,
+        };
+      }
+      if (!googleCfg) {
+        return { hits: [], searchedLive: false, connected: true };
+      }
+      const tokens = opts.query
+        .split(/[^\p{L}\p{N}]+/u)
+        .map((t) => t.trim())
+        .filter((t) => t.length >= 3)
+        .slice(0, 6);
+      const qParts = tokens.map((t) => `(from:${t} OR subject:${t})`);
+      const q = `${qParts.join(" OR ") || opts.query} newer_than:${Math.max(1, opts.lookbackDays)}d`.trim();
+      const hits: Array<{ from: string; subject: string; snippet: string }> = [];
+      for (const account of accounts) {
+        try {
+          const { accessToken } = await ensureAccessToken(db, googleCfg, account);
+          const found = await searchGmail(accessToken, q, 6);
+          for (const m of found) {
+            hits.push({
+              from: m.from.slice(0, 120),
+              subject: m.subject.slice(0, 160),
+              snippet: m.snippet.replace(/\s+/g, " ").trim().slice(0, 180),
+            });
+          }
+        } catch (err) {
+          console.error(
+            JSON.stringify({
+              event: "gmail_search_failed",
+              userId,
+              label: account.label,
+              error: err instanceof Error ? err.message : String(err),
+            }),
+          );
+        }
+        if (hits.length >= 8) break;
+      }
+      return { hits: hits.slice(0, 8), searchedLive: true, connected: true };
     },
     isGoogleConnected: async (userId) => {
       const rows = await listGoogleAccounts(db, userId);
@@ -1321,3 +1391,18 @@ startBriefWorker({
   languageCode: "en",
   intervalMs: 60_000,
 });
+
+void scrubSeededKnownContacts(db, settings.allowedPhones)
+  .then((n) => {
+    if (n) {
+      console.log(JSON.stringify({ event: "scrubbed_seeded_contacts", removed: n }));
+    }
+  })
+  .catch((err) => {
+    console.error(
+      JSON.stringify({
+        event: "scrub_seeded_contacts_failed",
+        error: err instanceof Error ? err.message : String(err),
+      }),
+    );
+  });
