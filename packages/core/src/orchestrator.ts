@@ -17,6 +17,8 @@ import {
   isHelpCommand,
   isHowItWorksCommand,
   isStatusCommand,
+  isCompletedListCommand,
+  isHandledListCommand,
   parseAboutPersonCommand,
   parseCancelWatchCommand,
   parseCommitmentCloseCommand,
@@ -459,6 +461,8 @@ export interface OrchestratorDeps {
     }>;
     more: string | null;
   }>;
+  listCompleted?: (userId: string) => Promise<string[]>;
+  listHandled?: (userId: string) => Promise<string[]>;
   closeBriefPriority?: (
     userId: string,
     opts: {
@@ -604,6 +608,8 @@ export function looksLikeNewActionIntent(
   if (
     isHelpCommand(t) ||
     isStatusCommand(t) ||
+    isCompletedListCommand(t) ||
+    isHandledListCommand(t) ||
     isAboutMeCommand(t) ||
     Boolean(parseAboutPersonCommand(t)) ||
     Boolean(parseWaitingOnCommand(t)) ||
@@ -1161,8 +1167,38 @@ export async function handleInbound(
     if (deps.getTimezoneState) {
       lines.push("", `Timezone: ${timezoneFriendlyLabel(tzState.timezone)}`);
     }
+    if (deps.listCompleted) {
+      const done = await deps.listCompleted(msg.userId);
+      if (done.length) {
+        lines.push("", "COMPLETED", ...done.slice(0, 5).map((d) => `• ${d}`));
+      }
+    }
     lines.push("", "Send help for all commands.");
     return [{ text: lines.join("\n") }];
+  }
+
+  if (isCompletedListCommand(text)) {
+    if (!deps.listCompleted) return [{ text: "Completed list isn't wired yet." }];
+    const done = await deps.listCompleted(msg.userId);
+    return [
+      {
+        text: done.length
+          ? ["COMPLETED", ...done.map((d) => `• ${d}`)].join("\n")
+          : "Nothing marked done yet. After a brief, say done 1.",
+      },
+    ];
+  }
+
+  if (isHandledListCommand(text)) {
+    if (!deps.listHandled) return [{ text: "Handled list isn't wired yet." }];
+    const rows = await deps.listHandled(msg.userId);
+    return [
+      {
+        text: rows.length
+          ? ["HANDLED yesterday", ...rows.map((d) => `• ${d}`)].join("\n")
+          : "No quieter mail stored for yesterday.",
+      },
+    ];
   }
 
   const scheduleDay = parseScheduleDayQuery(text);

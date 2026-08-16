@@ -1,6 +1,20 @@
 import { and, asc, desc, eq, gte, isNull, lt, lte, ne, or, sql } from "drizzle-orm";
 import type { GraphUpdate } from "@amilo/brain-contract";
-import { formatLocalDayShort, formatLocalHm, guessTimezoneFromPhone, localDayBoundsUtc, cleanCalendarDisplayTitle, formatLeaveByBriefLine, detectTravelConflictsFromCoords, describeTravelConflict, mailHayMatchesQuery, mailSearchTokens, mailTokenInHay, type MailWorkingSet } from "@amilo/core";
+import { formatLocalDayShort, formatLocalHm, guessTimezoneFromPhone, localDayBoundsUtc, cleanCalendarDisplayTitle, formatLeaveByBriefLine, detectTravelConflictsFromCoords, describeTravelConflict, mailHayMatchesQuery, mailSearchTokens, mailTokenInHay, scheduleAppliesOnDay, parseScheduleAttrs, type MailWorkingSet } from "@amilo/core";
+import {
+  isAutomatedSender,
+  mailBriefOrgKey,
+  markCompleted,
+  markDoneShown,
+  markShown,
+  parseAttentionState,
+  reopenIfReminded,
+  shouldShowInFocus,
+  trimAttentionState,
+  unshownCompleted,
+  userIsOnTo,
+  type AttentionState,
+} from "./attention.js";
 import type { Db } from "./index.js";
 import {
   calendarLocationFromEvent,
@@ -1461,6 +1475,9 @@ export type UserPrefs = {
    * Holds the same ask across new threads (e.g. daily KYC nags) for 14 days.
    */
   closedMailFingerprints: Record<string, string>;
+  attentionState: AttentionState;
+  lastHandledDay: string | null;
+  lastHandledLines: string[];
   /** Last mail find for CoS follow-ups (action points / reply / schedule). */
   mailWorkingSet: MailWorkingSet | null;
 };
@@ -1480,6 +1497,9 @@ const DEFAULT_PREFS: UserPrefs = {
   lastBriefMore: null,
   closedMailThreads: {},
   closedMailFingerprints: {},
+  attentionState: {},
+  lastHandledDay: null,
+  lastHandledLines: [],
   mailWorkingSet: null,
 };
 
@@ -1527,6 +1547,14 @@ export function parseUserPrefs(raw: Record<string, unknown> | null | undefined):
         : null,
     closedMailThreads,
     closedMailFingerprints,
+    attentionState: parseAttentionState(raw?.attentionState),
+    lastHandledDay:
+      typeof raw?.lastHandledDay === "string" && raw.lastHandledDay.trim()
+        ? raw.lastHandledDay.trim().slice(0, 16)
+        : null,
+    lastHandledLines: Array.isArray(raw?.lastHandledLines)
+      ? raw!.lastHandledLines.map(String).map((s) => s.trim()).filter(Boolean).slice(0, 20)
+      : [],
     mailWorkingSet: parseMailWorkingSet(raw?.mailWorkingSet),
   };
 }
@@ -1630,6 +1658,9 @@ export function prefsToJson(prefs: UserPrefs): Record<string, unknown> {
     lastBriefMore: prefs.lastBriefMore,
     closedMailThreads: prefs.closedMailThreads,
     closedMailFingerprints: prefs.closedMailFingerprints,
+    attentionState: prefs.attentionState,
+    lastHandledDay: prefs.lastHandledDay,
+    lastHandledLines: prefs.lastHandledLines,
     mailWorkingSet: prefs.mailWorkingSet,
   };
 }
@@ -1910,8 +1941,7 @@ export const MAIL_BRIEF_LOOKBACK_DAYS = 7;
 
 /** Stable key so a daily KYC nag on a new thread stays closed. */
 export function mailBriefFingerprint(actor: string, title: string): string {
-  const email = (actor.match(/[\w.+-]+@[\w.-]+/)?.[0] ?? actor).toLowerCase();
-  const domain = email.includes("@") ? (email.split("@")[1] ?? email) : email.replace(/\s+/g, " ").trim();
+  const domain = mailBriefOrgKey(actor);
   let subject = title.toLowerCase().replace(/\s+/g, " ").trim();
   for (let i = 0; i < 3; i += 1) {
     const next = subject.replace(/^(re|fwd|fw|important|reminder|urgent|action required):\s*/i, "");
@@ -1966,6 +1996,13 @@ export async function closeBriefPriorityItem(
     if (opts.commitmentId) {
       const title = String(opts.label ?? "commitment").slice(0, 200);
       await finalizeCommitment(db, opts.commitmentId, title, status);
+      const prefs = await getUserPrefs(db, userId);
+      await patchUserPrefs(db, userId, {
+        attentionState: markCompleted(prefs.attentionState, `commitment:${opts.commitmentId}`, {
+          now: new Date(),
+          label: title,
+        }),
+      });
       return {
         ok: true,
         message: `${status === "dropped" ? "Dropped" : "Done"}: ${title.slice(0, 80)}`,
@@ -2049,9 +2086,14 @@ export async function closeBriefPriorityItem(
           .sort((a, b) => Date.parse(b[1]) - Date.parse(a[1]))
           .slice(0, 80),
       );
+    const attentionId = fingerprint || threadId || "mail";
     await patchUserPrefs(db, userId, {
       closedMailThreads: trimMap(closedMailThreads),
       closedMailFingerprints: trimMap(closedMailFingerprints),
+      attentionState: markCompleted(prefs.attentionState, attentionId, {
+        now: new Date(closedAt),
+        label: String(opts.label ?? "mail item").slice(0, 120),
+      }),
     });
     return {
       ok: true,
@@ -2160,15 +2202,8 @@ export function isActionDemandingMail(hay: string): boolean {
     /\b(charges? levied|imps charges?|unauthorised|unauthorized|dispute (the )?charge)\b/.test(
       h,
     ) ||
-    /\b(e-?vote|cast your vote|vote now)\b/.test(h)
-  );
-}
-
-function isAutomatedSender(actor: string): boolean {
-  const a = actor.toLowerCase();
-  return (
-    /no-?reply|do-?not-?reply|donotreply|mailer-daemon|newsletter/.test(a) ||
-    /\b(alerts?|notify|notification|updates|noreply)@/.test(a)
+    /\b(e-?vote|cast your vote|vote now)\b/.test(h) ||
+    /\b(certificate|ssl|cert)\b/.test(h) && /\b(expir\w*|renew(?:al)?|key rotation)\b/.test(h)
   );
 }
 
@@ -2302,17 +2337,6 @@ export function mailPriorityScore(
     if (/\b(amount due|minimum due|payment due)\b/.test(hay.toLowerCase())) score += 15;
   }
   if (/\b(interview (invite|invitation|scheduled)|offer letter)\b/.test(t)) score += 55;
-  // A real person (not alerts@) with substance — morning only (evening still wants 70).
-  if (
-    score === 0 &&
-    !isAutomatedSender(actor) &&
-    snippet.replace(/\s+/g, " ").trim().length >= 40 &&
-    /\b(please|need|request|confirm|review|share|send|pending|charges?|invoice|ssl|action)\b/.test(
-      hay.toLowerCase(),
-    )
-  ) {
-    score += 50;
-  }
   // VIP boosts only already-actionable mail — never surfaces FYI alone.
   if (score > 0 && isVipMail(hay, vipList)) score += 40;
 
@@ -2522,6 +2546,11 @@ export async function buildPriorityBriefPayload(
     now?: Date;
     closedMailThreads?: Record<string, string>;
     closedMailFingerprints?: Record<string, string>;
+    attentionState?: AttentionState;
+    userEmails?: string[];
+    classifyBorderline?: (
+      items: Array<{ id: string; from: string; subject: string; snippet: string }>,
+    ) => Promise<Array<{ id: string; bucket: "action" | "fyi"; deadline?: string | null }>>;
   },
 ): Promise<{
   digestFlat: string;
@@ -2531,11 +2560,16 @@ export async function buildPriorityBriefPayload(
   moreText: string | null;
   calendarCount: number;
   commitmentCount: number;
+  attentionState: AttentionState;
+  lastHandledDay: string | null;
+  lastHandledLines: string[];
 }> {
   const kind = opts?.kind ?? "am";
   const now = opts?.now ?? new Date();
   const closedMailThreads = opts?.closedMailThreads ?? {};
   const closedMailFingerprints = opts?.closedMailFingerprints ?? {};
+  let attentionState = opts?.attentionState ?? {};
+  const userEmails = opts?.userEmails ?? [];
   const todayBounds = localDayBoundsUtc(timezone, now);
   // Evening looks ahead to tomorrow; morning is today.
   const focusBounds =
@@ -2553,6 +2587,14 @@ export async function buildPriorityBriefPayload(
     threadId?: string;
     commitmentId?: string;
     fingerprint?: string;
+    attentionId: string;
+    deadline?: Date;
+    moneyOrKyc?: boolean;
+    newMailOnThread?: boolean;
+    from?: string;
+    subject?: string;
+    snippet?: string;
+    briefClass?: "action" | "fyi";
   };
   const cands: Cand[] = [];
 
@@ -2588,7 +2630,29 @@ export async function buildPriorityBriefPayload(
       label: (due ? `${due} ${c.title}` : c.title).slice(0, 80),
       detail: [`Reminder: ${c.title}`, due ? `Due: ${due}` : "No due time set"].join("\n"),
       commitmentId: c.id,
+      attentionId: `commitment:${c.id}`,
+      ...(c.dueAt ? { deadline: c.dueAt } : {}),
     });
+  }
+
+  try {
+    const { listOpenWatches } = await import("./watchRepos.js");
+    const openWatches = await listOpenWatches(db, userId);
+    const todayStart = todayBounds.timeMin;
+    for (const w of openWatches.slice(0, 6)) {
+      const firedToday = Boolean(w.alertSentAt && w.alertSentAt >= todayStart);
+      if (firedToday) continue;
+      cands.push({
+        score: 80,
+        kind: "commitment",
+        label: (w.personLabel ? `Waiting on ${w.personLabel} — ${w.title}` : w.title).slice(0, 80),
+        detail: `Watch: ${w.title}`,
+        attentionId: `watch:${w.id}`,
+        ...(w.dueAt ? { deadline: w.dueAt } : {}),
+      });
+    }
+  } catch {
+    /* watches optional */
   }
 
   const mailSince = new Date(now.getTime() - MAIL_BRIEF_LOOKBACK_DAYS * 86_400_000);
@@ -2627,6 +2691,9 @@ export async function buildPriorityBriefPayload(
       Boolean(threadId && closedAtRaw) &&
       newestInThread.getTime() > Date.parse(closedAtRaw ?? "");
     const fingerprint = mailBriefFingerprint(e.actor ?? "", fullTitle);
+    if (newMailOnClosedThread) {
+      attentionState = reopenIfReminded(attentionState, fingerprint);
+    }
     if (
       !newMailOnClosedThread &&
       isClosedMailThreadSuppressed(
@@ -2649,24 +2716,111 @@ export async function buildPriorityBriefPayload(
     ) {
       continue;
     }
+    const toHeader = String((e.meta as { to?: unknown } | null)?.to ?? "").trim();
+    const onTo = userIsOnTo(toHeader, userEmails);
+    const hay = `${e.actor ?? ""} ${fullTitle} ${snippet}`;
+    const hardKeep = isActionDemandingMail(hay) && mailPriorityScore(fullTitle, e.actor ?? "", vipList, snippet, { timezone, now }) >= 70;
+    if (onTo === false && !hardKeep) continue;
+    if (isAutomatedSender(e.actor ?? "") && !hardKeep) continue;
     const score = mailPriorityScore(fullTitle, e.actor ?? "", vipList, snippet, {
       timezone,
       now,
     });
-    // Evening bar: action-demanding only (drop soft FYI that barely clears 0).
-    if (score <= 0) continue;
-    if (kind === "pm" && score < 70) continue;
+    // Morning leftovers (score < 70) go to Stage B. Evening only keeps already-actionable.
+    if (kind === "pm" && score < 70 && !hardKeep) continue;
+    const cachedClass =
+      (e.meta as { briefClass?: unknown } | null)?.briefClass === "action" ||
+      (e.meta as { briefClass?: unknown } | null)?.briefClass === "fyi"
+        ? ((e.meta as { briefClass: "action" | "fyi" }).briefClass)
+        : undefined;
+    const moneyOrKyc = /\b(kyc|bill|payment|overdue|card block)\b/i.test(hay);
     cands.push({
-      score,
+      score: cachedClass === "action" ? Math.max(hardKeep ? Math.max(score, 70) : score, 70) : hardKeep ? Math.max(score, 70) : score,
       kind: "mail",
       label: `${subject} — ${from}`.slice(0, 90),
       detail: [`From: ${from}`, `Subject: ${subject}`, snippet ? `Preview: ${snippet}` : null]
         .filter(Boolean)
         .join("\n"),
       eventId: e.id,
+      attentionId: fingerprint,
       ...(threadId ? { threadId } : {}),
       fingerprint,
+      moneyOrKyc,
+      newMailOnThread: newMailOnClosedThread,
+      from,
+      subject,
+      snippet,
+      ...(cachedClass ? { briefClass: cachedClass } : {}),
     });
+  }
+
+  if (opts?.classifyBorderline) {
+    const leftover = cands.filter(
+      (c) => c.kind === "mail" && c.score < 70 && c.eventId && !c.briefClass,
+    );
+    for (let i = cands.length - 1; i >= 0; i -= 1) {
+      const c = cands[i]!;
+      if (c.kind === "mail" && c.briefClass === "fyi" && c.score < 70) cands.splice(i, 1);
+    }
+    if (leftover.length) {
+      try {
+        const batch = leftover.slice(0, 8);
+        const verdicts = await opts.classifyBorderline(
+          batch.map((c) => ({
+            id: c.eventId!,
+            from: c.from ?? c.label,
+            subject: c.subject ?? c.label,
+            snippet: c.snippet ?? c.detail,
+          })),
+        );
+        const byId = new Map(verdicts.map((v) => [v.id, v]));
+        for (const c of batch) {
+          const v = byId.get(c.eventId!);
+          const bucket = v?.bucket === "action" ? "action" : "fyi";
+          try {
+            const row = await db.query.events.findFirst({ where: eq(events.id, c.eventId!) });
+            if (row) {
+              await db
+                .update(events)
+                .set({
+                  meta: {
+                    ...(row.meta as Record<string, unknown> | null),
+                    briefClass: bucket,
+                    ...(v?.deadline ? { briefDeadline: v.deadline } : {}),
+                  },
+                })
+                .where(eq(events.id, c.eventId!));
+            }
+          } catch {
+            /* cache is best-effort */
+          }
+        }
+        for (let i = cands.length - 1; i >= 0; i -= 1) {
+          const c = cands[i]!;
+          if (c.kind !== "mail" || c.score >= 70 || !c.eventId) continue;
+          const v = byId.get(c.eventId);
+          if (!v || v.bucket !== "action") {
+            cands.splice(i, 1);
+            continue;
+          }
+          c.score = 70;
+          if (v.deadline) {
+            const d = new Date(v.deadline);
+            if (!Number.isNaN(d.getTime())) c.deadline = d;
+          }
+        }
+      } catch {
+        for (let i = cands.length - 1; i >= 0; i -= 1) {
+          const c = cands[i]!;
+          if (c.kind === "mail" && c.score < 70) cands.splice(i, 1);
+        }
+      }
+    }
+  } else {
+    for (let i = cands.length - 1; i >= 0; i -= 1) {
+      const c = cands[i]!;
+      if (c.kind === "mail" && c.score < 70) cands.splice(i, 1);
+    }
   }
 
   cands.sort((a, b) => b.score - a.score);
@@ -2676,15 +2830,58 @@ export async function buildPriorityBriefPayload(
     if (c.score <= 0) continue;
     const key = c.label.toLowerCase().replace(/\s+/g, " ").slice(0, 80);
     if (seenLabels.has(key)) continue;
+    if (
+      !shouldShowInFocus(attentionState[c.attentionId], {
+        now,
+        kind,
+        deadline: c.deadline ?? null,
+        ...(c.moneyOrKyc ? { moneyOrKyc: true } : {}),
+        ...(c.newMailOnThread ? { newMailOnThread: true } : {}),
+      })
+    ) {
+      continue;
+    }
     seenLabels.add(key);
     ranked.push(c);
   }
   const top = ranked.slice(0, 3);
-  const rest = ranked.slice(3, 8);
-  const quieterCount = Math.max(0, ranked.length - top.length);
+  for (const c of top) {
+    attentionState = markShown(attentionState, c.attentionId, {
+      now,
+      label: c.label,
+      deadline: c.deadline ?? null,
+    });
+  }
+  const yesterday = localDayBoundsUtc(
+    timezone,
+    new Date(todayBounds.timeMin.getTime() - 60_000),
+  );
+  const handledRows =
+    kind === "am"
+      ? await listMailCandidates(db, userId, [], 40, {
+          excludePassive: false,
+          since: yesterday.timeMin,
+        })
+      : [];
+  const handledLines: string[] = [];
+  for (const e of handledRows) {
+    if (e.createdAt < yesterday.timeMin || e.createdAt >= yesterday.timeMax) continue;
+    const hay = `${e.actor ?? ""} ${e.title ?? ""} ${e.snippet ?? ""}`;
+    const score = mailPriorityScore(e.title ?? "", e.actor ?? "", vipList, e.snippet ?? "", {
+      timezone,
+      now,
+    });
+    if (score >= 70) continue;
+    handledLines.push(`${cleanSubject(e.title)} — ${shortActor(e.actor)}`.slice(0, 90));
+    if (handledLines.length >= 16) break;
+  }
+  const quieterCount = handledLines.length;
   const items: BriefPriorityItem[] = top.map((c, i) => ({
     index: i + 1,
-    label: c.label,
+    label: (/overdue/i.test(c.label) || (c.deadline && c.deadline < now)
+      ? `Overdue: ${c.label}`
+      : c.label
+    ).slice(0, 90),
     detail: c.detail,
     kind: c.kind,
     ...(c.eventId ? { eventId: c.eventId } : {}),
@@ -2692,8 +2889,8 @@ export async function buildPriorityBriefPayload(
     ...(c.commitmentId ? { commitmentId: c.commitmentId } : {}),
     ...(c.fingerprint ? { fingerprint: c.fingerprint } : {}),
   }));
-  const moreText = rest.length
-    ? rest.map((c, i) => `${i + 4}) ${c.label}`).join("\n")
+  const moreText = handledLines.length
+    ? handledLines.map((l, i) => `${i + 1}) ${l}`).join("\n")
     : null;
 
   const apptSorted = [...apptByKey.values()].sort((a, b) =>
@@ -2708,6 +2905,38 @@ export async function buildPriorityBriefPayload(
     }),
     ...apptSorted.map((a) => a.label),
   ];
+
+  try {
+    const schedNodes = await listScheduleNodes(db, userId);
+    const extra = await db.query.contextNodes.findMany({
+      where: and(eq(contextNodes.userId, userId), eq(contextNodes.kind, "constraint")),
+      limit: 20,
+    });
+    const focusDay = focusBounds.day;
+    for (const n of [
+      ...schedNodes,
+      ...extra.map((r) => ({ id: r.id, label: r.label, attrs: (r.attrs ?? {}) as Record<string, unknown> })),
+    ]) {
+      let attrs = parseScheduleAttrs(n.attrs);
+      if (!attrs) {
+        const time = String(n.attrs.time ?? "");
+        const pair = time.match(/(\d{1,2}:\d{2})\s*[-–]\s*(\d{1,2}:\d{2})/);
+        const rec = String(n.attrs.recurrence ?? n.attrs.days ?? "daily");
+        if (pair) {
+          attrs = parseScheduleAttrs({
+            startHm: pair[1]!.length === 4 ? `0${pair[1]}` : pair[1],
+            endHm: pair[2]!.length === 4 ? `0${pair[2]}` : pair[2],
+            days: rec,
+          });
+        }
+      }
+      if (!attrs) continue;
+      if (!scheduleAppliesOnDay(attrs.days, focusDay, timezone)) continue;
+      calBits.push(`${attrs.startHm}–${attrs.endHm} ${n.label}`);
+    }
+  } catch {
+    /* schedule memory optional */
+  }
 
   // Leave-by from nearest upcoming travel plan (no Routes call).
   const upcomingPlan = await getNearestUpcomingTravelPlan(db, userId, now);
@@ -2771,34 +3000,49 @@ export async function buildPriorityBriefPayload(
     calUnique.push(bit);
   }
 
-  const calHeading = kind === "pm" ? "TOMORROW" : "CALENDAR";
-  const openHeading = kind === "pm" ? "STILL OPEN" : "PRIORITIES";
+  const calHeading = kind === "pm" ? "TOMORROW" : "TODAY";
+  const openHeading = kind === "pm" ? "STILL OPEN" : "FOCUS";
   const calEmpty = kind === "pm" ? "• none yet" : "• none today";
   const calLine =
     calUnique.length === 0
       ? `${calHeading}\n${calEmpty}`
       : `${calHeading}\n${calUnique.map((b) => `• ${b}`).join("\n")}`;
 
-  const priorityLines = items.map((it) => `${it.index}) ${it.label}`);
-  const quietBit =
-    quieterCount > 0 ? ` +${quieterCount} quieter.` : items.length ? "" : " Inbox clear.";
+  const doneRows = unshownCompleted(attentionState).slice(0, 3);
+  const doneExtra = Math.max(0, unshownCompleted(attentionState).length - doneRows.length);
+  if (doneRows.length) {
+    attentionState = markDoneShown(
+      attentionState,
+      doneRows.map((d) => d.id),
+      now,
+    );
+  }
 
-  // WABA template params cannot contain newlines — keep readable separators.
+  const handledExample = handledLines[0]?.split(" — ")[1] ?? handledLines[0] ?? "";
+  const handledBit =
+    kind === "am" && quieterCount > 0
+      ? `${quieterCount} quieter yesterday${handledExample ? ` (${handledExample.split(" ")[0]})` : ""}.`
+      : "";
+
+  const priorityLines = items.map((it) => `${it.index}) ${it.label}`);
   const digestFlat = [
     calUnique.length === 0
       ? kind === "pm"
         ? "Tomorrow: none yet."
-        : "Calendar: none today."
-      : `${kind === "pm" ? "Tomorrow" : "Calendar"}: ${calUnique
+        : "Today: none."
+      : `${kind === "pm" ? "Tomorrow" : "Today"}: ${calUnique
           .slice(0, 4)
           .map((b) => `• ${b}`)
           .join(" ")}${calUnique.length > 4 ? ` (+${calUnique.length - 4})` : ""}.`,
     items.length
-      ? `${kind === "pm" ? "Still open" : "Top"} ${items.length}: ${priorityLines.join(" · ")}.`
+      ? `Focus ${items.length}: ${priorityLines.join(" · ")}.`
       : kind === "pm"
         ? "Nothing still open."
-        : "No priorities flagged.",
-    quietBit.trim(),
+        : "No focus items.",
+    doneRows.length
+      ? `Done: ${doneRows.map((d) => d.label).join(" · ")}${doneExtra ? ` +${doneExtra}` : ""}.`
+      : "",
+    handledBit,
   ]
     .filter(Boolean)
     .join(" ")
@@ -2810,10 +3054,16 @@ export async function buildPriorityBriefPayload(
     "",
     openHeading,
     ...(items.length ? items.map((it) => `${it.index}) ${it.label}`) : ["• none needing you"]),
-    quieterCount > 0 ? "" : null,
-    quieterCount > 0
-      ? `+${quieterCount} quieter. Reply 1–3 for detail, M for more.`
-      : "Reply 1–3 for detail.",
+    doneRows.length ? "" : null,
+    doneRows.length
+      ? `DONE\n${doneRows.map((d) => `• ${d.label}`).join("\n")}${doneExtra ? `\n+${doneExtra}` : ""}`
+      : null,
+    kind === "am" && quieterCount > 0 ? "" : null,
+    kind === "am" && quieterCount > 0
+      ? `HANDLED\n${quieterCount} quieter yesterday. Reply M for that list.`
+      : items.length
+        ? "Reply 1–3 for detail."
+        : null,
   ]
     .filter((l) => l != null)
     .join("\n")
@@ -2829,6 +3079,9 @@ export async function buildPriorityBriefPayload(
     commitmentCount: commits.filter(
       (c) => c.dueAt && c.dueAt >= timeMin && c.dueAt <= timeMax,
     ).length,
+    attentionState: trimAttentionState(attentionState),
+    lastHandledDay: kind === "am" ? yesterday.day : null,
+    lastHandledLines: kind === "am" ? handledLines : [],
   };
 }
 

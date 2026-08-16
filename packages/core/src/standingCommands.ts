@@ -25,6 +25,28 @@ export function isHowItWorksCommand(text: string): boolean {
   );
 }
 
+export function isCompletedListCommand(text: string): boolean {
+  const t = normalizeCommandText(text);
+  return (
+    t === "completed" ||
+    t === "done list" ||
+    t === "what's done" ||
+    t === "whats done" ||
+    t === "what is done"
+  );
+}
+
+export function isHandledListCommand(text: string): boolean {
+  const t = normalizeCommandText(text);
+  return (
+    t === "handled" ||
+    t === "what's handled" ||
+    t === "whats handled" ||
+    t === "what was handled" ||
+    t === "what is handled"
+  );
+}
+
 export function isStatusCommand(text: string): boolean {
   const t = normalizeCommandText(text);
   return (
@@ -549,6 +571,8 @@ export const STANDING_HELP = [
   "• how it works — what Amilo does",
   "• pause / resume — stop or restart",
   "• status / pending / open — waiting proposal + open items",
+  "• completed — items you marked done",
+  "• handled — quieter mail from yesterday",
   "• about me / memory — what I've stored (only when you ask)",
   "• about <name> — what I know about one person",
   "",

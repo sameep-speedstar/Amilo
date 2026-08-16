@@ -56,6 +56,8 @@ export {
   isHelpCommand,
   isHowItWorksCommand,
   isStatusCommand,
+  isCompletedListCommand,
+  isHandledListCommand,
   normalizeCommandText,
   parseAboutPersonCommand,
   parseCancelWatchCommand,

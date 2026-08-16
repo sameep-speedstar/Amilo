@@ -314,3 +314,50 @@ export function createGrokBrain(cfg: GrokBrainConfig): BrainPort {
     },
   };
 }
+
+export type BorderlineMail = {
+  id: string;
+  from: string;
+  subject: string;
+  snippet: string;
+};
+
+export type BorderlineVerdict = {
+  id: string;
+  bucket: "action" | "fyi";
+  deadline?: string | null;
+};
+
+/** Stage B: leftovers only. Unsure → fyi. Never invent a deadline. */
+export async function classifyBorderlineMail(
+  cfg: GrokBrainConfig,
+  items: BorderlineMail[],
+): Promise<BorderlineVerdict[]> {
+  if (!items.length) return [];
+  const api = {
+    apiKey: cfg.apiKey,
+    model: cfg.model ?? "grok-4-1-fast-non-reasoning",
+    baseUrl: cfg.baseUrl ?? "https://api.x.ai/v1",
+  };
+  const system = [
+    "You classify leftover email for an executive morning brief.",
+    "Return ONLY JSON array: [{id, bucket:\"action\"|\"fyi\", deadline: ISO or null}].",
+    "action = user must do or decide something today/soon (pay, register, reply, vote, renew).",
+    "fyi = statements, receipts, promo, admissions marketing, FYI circulars.",
+    "If unsure → fyi. Never invent a deadline. Max one line of reasoning is not required.",
+  ].join(" ");
+  const text = await chatCompletion(api, system, JSON.stringify(items.slice(0, 8)));
+  const raw = extractJson<unknown>(text);
+  if (!Array.isArray(raw)) return items.map((i) => ({ id: i.id, bucket: "fyi" as const }));
+  const out: BorderlineVerdict[] = [];
+  for (const row of raw) {
+    if (!row || typeof row !== "object") continue;
+    const o = row as Record<string, unknown>;
+    const id = String(o.id ?? "").trim();
+    if (!id) continue;
+    const bucket = o.bucket === "action" ? "action" : "fyi";
+    const deadline = typeof o.deadline === "string" && o.deadline.trim() ? o.deadline.trim() : "";
+    out.push(deadline ? { id, bucket, deadline } : { id, bucket });
+  }
+  return out.length ? out : items.map((i) => ({ id: i.id, bucket: "fyi" as const }));
+}

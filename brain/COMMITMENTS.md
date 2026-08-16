@@ -12,16 +12,15 @@ A commitment is something the user owes the world or the world owes the user tha
 
 ## Lifecycle
 
-`open` → `done` | `dropped` | `snoozed`
+`open` → `done` | `dropped` | `snoozed` | (system) `parked`
 
-Evening/morning follow-through: at most **two touches**, then park. Never nag.
+Evening/morning follow-through: at most **two touches**, then park. Never nag. Watcher alerts count as a touch. See `WATCHERS.md`. Closing `done` / `drop` cancels linked open watches.
 
-Watcher alerts (reply detected / stall) count as a touch. See `WATCHERS.md`. Closing `done` / `drop` cancels linked open watches.
+User `done` → **completed** (not parked). Completed stays off FOCUS until a reminder on the same identity (thread reply or `remind me about …`). Duplicate nags on a new thread do not reopen. Each completed item is printed on a brief **once**, then only via `completed` / `status`.
 
 ## Agent rules
 
 - When triaging, open commitments are silent context that raise the bar for competing noise.
 - When the user says something is done, close it — do not resurface as urgent next cycle.
-- Brief **mail** priorities closed with `done 1` / `done <label>` stay suppressed until **new mail arrives on the same Gmail thread**.
 - Prefer linking a commitment to a source event when one exists.
 - `waiting_on` edges on the context graph mark open waits for the future Mind Map.

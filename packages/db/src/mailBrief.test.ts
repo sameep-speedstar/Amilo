@@ -189,8 +189,52 @@ describe("brief mail action filter", () => {
         "Juhi Badle <juhi@example.com>",
         [],
         "Please review the IMPS charges levied on the SSL ESAAS invoice and confirm.",
-      ) >= 50,
+      ) >= 70,
     );
+  });
+
+  it("does not leak FYI via a soft human+please score", () => {
+    assert.equal(
+      mailPriorityScore(
+        "Yes Bank account statement",
+        "alerts@yesbank.in",
+        [],
+        "Please find your monthly statement attached.",
+      ),
+      0,
+    );
+    assert.equal(
+      mailPriorityScore(
+        "Admissions are open for 2026-27",
+        "Valiants Academy <valiantsacademy@gmail.com>",
+        [],
+        "Please visit our campus to know more.",
+      ),
+      0,
+    );
+  });
+
+  it("keeps certificate / SSL expiry as actionable", () => {
+    assert.ok(
+      mailPriorityScore(
+        "Your SSL certificate expires in 7 days",
+        "Mallikarjun <ops@example.com>",
+      ) >= 70,
+    );
+  });
+
+  it("fingerprints free-mailbox senders by display name", () => {
+    const a = mailBriefFingerprint(
+      "Valiants Academy <valiantsacademy@gmail.com>",
+      "Registration for Independence Day Celebrations - Reminder",
+    );
+    const b = mailBriefFingerprint(
+      "Valiants Academy <other@gmail.com>",
+      "Registration for Independence Day Celebrations - Reminder",
+    );
+    assert.equal(a, b);
+    assert.ok(a.startsWith("valiants academy|"));
+    assert.ok(!a.startsWith("gmail.com|"));
   });
 });
 

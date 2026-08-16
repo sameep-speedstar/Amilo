@@ -12,12 +12,15 @@ import {
   getUserPrefs,
   getWhatsAppAddress,
   getWhatsAppLastInbound,
+  listGoogleAccounts,
   listUsersForScheduledBriefs,
   logEvalEvent,
   logMessage,
   patchUserPrefs,
   type Db,
+  type UserPrefs,
 } from "@amilo/db";
+import { classifyBorderlineMail } from "@amilo/brain-grok";
 import type { GoogleOAuthConfig } from "@amilo/google";
 import { syncGoogleForUser } from "./googleSync.js";
 
@@ -34,11 +37,38 @@ export function startBriefWorker(opts: {
   languageCode?: string;
   intervalMs?: number;
   fireWindowMinutes?: number;
+  grok?: { apiKey: string; model: string } | null;
 }): { stop: () => void } {
   const intervalMs = opts.intervalMs ?? 60_000;
   const fireWindow = opts.fireWindowMinutes ?? 5;
   const lang = opts.languageCode ?? "en";
   let running = false;
+
+  const briefClassify = opts.grok
+    ? (items: Array<{ id: string; from: string; subject: string; snippet: string }>) =>
+        classifyBorderlineMail(opts.grok!, items)
+    : undefined;
+
+  const persistBriefPrefs = async (
+    userId: string,
+    kind: "am" | "pm",
+    prefs: Awaited<ReturnType<typeof getUserPrefs>>,
+    brief: Awaited<ReturnType<typeof buildPriorityBriefPayload>>,
+    extra: Partial<UserPrefs>,
+  ) => {
+    await patchUserPrefs(opts.db, userId, {
+      lastBriefItems: brief.items,
+      lastBriefMore: kind === "am" ? brief.moreText : prefs.lastBriefMore,
+      attentionState: brief.attentionState,
+      ...(kind === "am"
+        ? {
+            lastHandledDay: brief.lastHandledDay,
+            lastHandledLines: brief.lastHandledLines,
+          }
+        : {}),
+      ...extra,
+    });
+  };
 
   const tick = async () => {
     if (running) return;
@@ -86,6 +116,17 @@ export function startBriefWorker(opts: {
         const waAddr = await getWhatsAppAddress(opts.db, u.id);
         const lastIn = waAddr ? await getWhatsAppLastInbound(opts.db, waAddr) : null;
         const canFreeForm = isInside24hWindow(lastIn, now);
+        const accounts = await listGoogleAccounts(opts.db, u.id);
+        const userEmails = accounts.flatMap((a) => (a.email ? [a.email] : []));
+        const briefOpts = (kind: "am" | "pm") => ({
+          kind,
+          now,
+          closedMailThreads: prefs.closedMailThreads,
+          closedMailFingerprints: prefs.closedMailFingerprints,
+          attentionState: prefs.attentionState,
+          userEmails,
+          ...(briefClassify ? { classifyBorderline: briefClassify } : {}),
+        });
 
         if (dueMorning) {
           const brief = await buildPriorityBriefPayload(
@@ -94,12 +135,7 @@ export function startBriefWorker(opts: {
             tz,
             prefs.mutedPatterns,
             prefs.vipList,
-            {
-              kind: "am",
-              now,
-              closedMailThreads: prefs.closedMailThreads,
-              closedMailFingerprints: prefs.closedMailFingerprints,
-            },
+            briefOpts("am"),
           );
           try {
             let waMessageId: string | void;
@@ -122,10 +158,8 @@ export function startBriefWorker(opts: {
               });
               bodyRef = `Morning brief · ${bodyFlat}`;
             }
-            await patchUserPrefs(opts.db, u.id, {
+            await persistBriefPrefs(u.id, "am", prefs, brief, {
               lastMorningBriefDay: day,
-              lastBriefItems: brief.items,
-              lastBriefMore: brief.moreText,
             });
             await logMessage(opts.db, {
               userId: u.id,
@@ -177,12 +211,7 @@ export function startBriefWorker(opts: {
             tz,
             prefs.mutedPatterns,
             prefs.vipList,
-            {
-              kind: "pm",
-              now,
-              closedMailThreads: prefs.closedMailThreads,
-              closedMailFingerprints: prefs.closedMailFingerprints,
-            },
+            briefOpts("pm"),
           );
           try {
             let waMessageId: string | void;
@@ -200,10 +229,8 @@ export function startBriefWorker(opts: {
               });
               bodyRef = `Evening wrap · ${bodyFlat}`;
             }
-            await patchUserPrefs(opts.db, u.id, {
+            await persistBriefPrefs(u.id, "pm", prefs, brief, {
               lastEveningBriefDay: day,
-              lastBriefItems: brief.items,
-              lastBriefMore: brief.moreText,
             });
             await logMessage(opts.db, {
               userId: u.id,

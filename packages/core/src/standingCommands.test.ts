@@ -6,6 +6,8 @@ import {
   isDeletePendingCommand,
   isHelpCommand,
   isHowItWorksCommand,
+  isCompletedListCommand,
+  isHandledListCommand,
   isStatusCommand,
   parseAboutPersonCommand,
   parseCancelWatchCommand,
@@ -39,6 +41,17 @@ describe("standing commands", () => {
     assert.equal(isHelpCommand("Commands"), true);
     assert.equal(isHelpCommand("menu?"), true);
     assert.equal(isHelpCommand("help me book"), false);
+  });
+
+  it("recognizes completed / handled lists", () => {
+    for (const t of ["completed", "done list", "what's done"]) {
+      assert.equal(isCompletedListCommand(t), true, t);
+    }
+    for (const t of ["handled", "what's handled", "what was handled"]) {
+      assert.equal(isHandledListCommand(t), true, t);
+    }
+    assert.equal(isCompletedListCommand("done 1"), false);
+    assert.equal(isHandledListCommand("handle this"), false);
   });
 
   it("recognizes status / pending / open", () => {
@@ -188,6 +201,8 @@ describe("standing commands", () => {
     assert.match(STANDING_HELP, /about me/i);
     assert.match(STANDING_HELP, /waiting on/i);
     assert.match(STANDING_HELP, /delete pending/i);
+    assert.match(STANDING_HELP, /completed/i);
+    assert.match(STANDING_HELP, /handled/i);
   });
 });
 

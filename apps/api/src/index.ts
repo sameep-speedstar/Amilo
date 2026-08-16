@@ -4,7 +4,7 @@ import { serve } from "@hono/node-server";
 import { Hono } from "hono";
 import { sql } from "drizzle-orm";
 import { createCursorBrain, createStubBrain } from "@amilo/brain-cursor";
-import { createGrokBrain } from "@amilo/brain-grok";
+import { classifyBorderlineMail, createGrokBrain } from "@amilo/brain-grok";
 import type { BrainPort } from "@amilo/brain-contract";
 import {
   createWhatsAppChannel,
@@ -75,6 +75,7 @@ import {
   summarizeOpenCommitments,
   summarizeRecentMail,
   searchMailEvents,
+  recentCompleted,
   scrubSeededKnownContacts,
   upsertPlace,
   touchWhatsAppInbound,
@@ -565,6 +566,7 @@ function orchestratorDeps(): OrchestratorDeps {
       const u = await getUserById(db, userId);
       const prefs = await getUserPrefs(db, userId);
       const timezone = u?.timezone ?? "Asia/Kolkata";
+      const accounts = await listGoogleAccounts(db, userId);
       const brief = await buildPriorityBriefPayload(
         db,
         userId,
@@ -575,11 +577,31 @@ function orchestratorDeps(): OrchestratorDeps {
           kind,
           closedMailThreads: prefs.closedMailThreads,
           closedMailFingerprints: prefs.closedMailFingerprints,
+          attentionState: prefs.attentionState,
+          userEmails: accounts.flatMap((a) => (a.email ? [a.email] : [])),
+          ...(settings.xaiApiKey
+            ? {
+                classifyBorderline: (
+                  items: Array<{ id: string; from: string; subject: string; snippet: string }>,
+                ) =>
+                  classifyBorderlineMail(
+                    { apiKey: settings.xaiApiKey, model: settings.grokModel },
+                    items,
+                  ),
+              }
+            : {}),
         },
       );
       await patchUserPrefs(db, userId, {
         lastBriefItems: brief.items,
-        lastBriefMore: brief.moreText,
+        lastBriefMore: kind === "am" ? brief.moreText : prefs.lastBriefMore,
+        attentionState: brief.attentionState,
+        ...(kind === "am"
+          ? {
+              lastHandledDay: brief.lastHandledDay,
+              lastHandledLines: brief.lastHandledLines,
+            }
+          : {}),
       });
       return {
         digestText: brief.digestText,
@@ -591,6 +613,14 @@ function orchestratorDeps(): OrchestratorDeps {
     getLastBriefItems: async (userId) => {
       const prefs = await getUserPrefs(db, userId);
       return { items: prefs.lastBriefItems, more: prefs.lastBriefMore };
+    },
+    listCompleted: async (userId) => {
+      const prefs = await getUserPrefs(db, userId);
+      return recentCompleted(prefs.attentionState).map((r) => r.label);
+    },
+    listHandled: async (userId) => {
+      const prefs = await getUserPrefs(db, userId);
+      return prefs.lastHandledLines;
     },
     closeBriefPriority: async (userId, opts) => {
       return closeBriefPriorityItem(db, userId, {
@@ -1412,6 +1442,9 @@ startBriefWorker({
   eveningTemplate: settings.wabaTemplateEvening,
   languageCode: "en",
   intervalMs: 60_000,
+  grok: settings.xaiApiKey
+    ? { apiKey: settings.xaiApiKey, model: settings.grokModel }
+    : null,
 });
 
 void scrubSeededKnownContacts(db, settings.allowedPhones)
