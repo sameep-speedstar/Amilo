@@ -81,6 +81,7 @@ import {
   updatePendingPayload,
   isPhoneAllowlisted,
   checkUsageCaps,
+  isUsageCapExemptPhone,
   recordUsage,
   USAGE_COST_MICROS,
   claimInvite,
@@ -570,7 +571,11 @@ function orchestratorDeps(): OrchestratorDeps {
         timezone,
         prefs.mutedPatterns,
         prefs.vipList,
-        { kind, closedMailThreads: prefs.closedMailThreads },
+        {
+          kind,
+          closedMailThreads: prefs.closedMailThreads,
+          closedMailFingerprints: prefs.closedMailFingerprints,
+        },
       );
       await patchUserPrefs(db, userId, {
         lastBriefItems: brief.items,
@@ -599,6 +604,7 @@ function orchestratorDeps(): OrchestratorDeps {
         threadId: opts.threadId ?? null,
         commitmentId: opts.commitmentId ?? null,
         label: opts.label ?? null,
+        fingerprint: opts.fingerprint ?? null,
         status: opts.status ?? "done",
       });
     },
@@ -859,13 +865,22 @@ async function processInbound(rawJson: unknown): Promise<void> {
     });
     await touchWhatsAppInbound(db, parsed.waId, parsed.timestamp);
 
-    const caps = await checkUsageCaps(db, user.id, {
-      day: settings.usageDayCap,
-      week: settings.usageWeekCap,
-    });
-    if (!caps.ok) {
-      await sendAndLogOutbound(user.id, { text: caps.message });
-      continue;
+    if (
+      !isUsageCapExemptPhone(parsed.phoneE164, settings.usageCapExemptPhones)
+    ) {
+      const caps = await checkUsageCaps(
+        db,
+        user.id,
+        {
+          day: settings.usageDayCap,
+          week: settings.usageWeekCap,
+        },
+        { timeZone: user.timezone || "Asia/Kolkata" },
+      );
+      if (!caps.ok) {
+        await sendAndLogOutbound(user.id, { text: caps.message });
+        continue;
+      }
     }
 
     let replyToContent: string | undefined;

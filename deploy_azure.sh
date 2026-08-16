@@ -113,6 +113,8 @@ az webapp config appsettings set --name "$APP_NAME" --resource-group "$RESOURCE_
     WABA_DISPLAY_PHONE="${WABA_DISPLAY_PHONE:-}" \
     USAGE_DAY_CAP="${USAGE_DAY_CAP:-40}" \
     USAGE_WEEK_CAP="${USAGE_WEEK_CAP:-150}" \
+    HOST_PHONE="${HOST_PHONE:-}" \
+    USAGE_CAP_EXEMPT_PHONES="${USAGE_CAP_EXEMPT_PHONES:-}" \
     DOCKER_ENABLE_CI=true \
     WEBSITE_PULL_IMAGE_OVER_VNET=false \
   >/dev/null

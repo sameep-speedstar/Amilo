@@ -3,8 +3,10 @@ import { describe, it } from "node:test";
 import {
   formatUsdFromMicros,
   inviteIsOpen,
+  isUsageCapExemptPhone,
   normalizePhoneE164,
   phoneDigits,
+  usageDayStartUtc,
   waMeUrl,
   type InviteRow,
 } from "./onboardRepos.js";
@@ -29,6 +31,28 @@ describe("onboard phone helpers", () => {
 
   it("formats micros as USD", () => {
     assert.equal(formatUsdFromMicros(800), "$0.0008");
+  });
+});
+
+describe("usage caps", () => {
+  it("exempts the host number", () => {
+    assert.equal(
+      isUsageCapExemptPhone("+918108506999", ["+918108506999"]),
+      true,
+    );
+    assert.equal(isUsageCapExemptPhone("918108506999", ["+91 81085 06999"]), true);
+    assert.equal(isUsageCapExemptPhone("+919779840201", ["+918108506999"]), false);
+  });
+
+  it("starts the day at local midnight, not a rolling 24h", () => {
+    // 16 Aug 2026 07:52 IST = 16 Aug 02:22 UTC
+    const morning = new Date("2026-08-16T02:22:00.000Z");
+    const start = usageDayStartUtc("Asia/Kolkata", morning);
+    assert.equal(start.toISOString(), "2026-08-15T18:30:00.000Z");
+    // Yesterday 11pm IST should be a different local day
+    const late = new Date("2026-08-15T17:30:00.000Z"); // 16 Aug 2026 00:00 IST is 15 Aug 18:30Z
+    const lateStart = usageDayStartUtc("Asia/Kolkata", late);
+    assert.equal(lateStart.toISOString(), "2026-08-14T18:30:00.000Z");
   });
 });
 

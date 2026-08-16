@@ -17,8 +17,10 @@ Env `ALLOWED_PHONES` still works alongside the DB allowlist.
 
 Each brain turn (and STT) is metered in `usage_events`. Defaults:
 
-- `USAGE_DAY_CAP=40`
-- `USAGE_WEEK_CAP=150`
+- `USAGE_DAY_CAP=40` — resets at **local midnight** (user timezone, default IST)
+- `USAGE_WEEK_CAP=150` — rolling 7 days
+
+Host / operator phones are never capped: `ALLOWED_PHONES`, `HOST_PHONE`, `USAGE_CAP_EXEMPT_PHONES`, plus the product host number.
 
 Over-cap users get a short WhatsApp message instead of a brain reply. Weekly cost rollup is on the admin page.
 

@@ -173,7 +173,10 @@ export function isClearMemoryConfirmCommand(text: string): boolean {
 export function parseCommitmentCloseCommand(
   text: string,
 ): { status: "done" | "dropped" | "snoozed"; titleHint: string; snoozeRaw?: string } | null {
-  const t = text.trim();
+  const t = text.trim().replace(/[.!]+$/, "").trim();
+  if (/^(?:that'?s\s+)?(?:done|mark(?:ed)?(?:\s+as)?\s+done)$/i.test(t)) {
+    return { status: "done", titleHint: "" };
+  }
   const done = t.match(/^(?:done|mark done|finish(?:ed)?|complete(?:d)?)\s+(.+)$/i);
   if (done?.[1]) {
     return {
@@ -584,7 +587,7 @@ export const STANDING_HELP = [
   "",
   "Commitments",
   "• done <title> / drop <title> — close an open item",
-  "• done 1 / done 2 / done 3 — close a brief priority (until new mail)",
+  "• done / done 1 / done 2 — close a brief priority (same ask stays off)",
   "• snooze <title> to tomorrow — push due date",
   "",
   "Voice notes work like text. Everything else: just talk.",

@@ -30,6 +30,8 @@ export interface Settings {
   wabaDisplayPhone: string;
   usageDayCap: number;
   usageWeekCap: number;
+  /** Host / operator phones — never hit the beta usage cap. */
+  usageCapExemptPhones: string[];
 }
 
 function req(name: string, fallback?: string): string {
@@ -43,6 +45,14 @@ export function loadSettings(): Settings {
     .split(",")
     .map((p) => p.trim())
     .filter(Boolean);
+  const extraExempt = [
+    ...req("USAGE_CAP_EXEMPT_PHONES").split(","),
+    ...req("HOST_PHONE").split(","),
+    "+918108506999",
+  ]
+    .map((p) => p.trim())
+    .filter(Boolean);
+  const usageCapExemptPhones = [...new Set([...phones, ...extraExempt])];
 
   const publicBaseUrl = req("PUBLIC_BASE_URL", "http://localhost:8080").replace(/\/$/, "");
   const googleRedirectUri = req(
@@ -81,6 +91,7 @@ export function loadSettings(): Settings {
     wabaDisplayPhone: req("WABA_DISPLAY_PHONE"),
     usageDayCap: Number(req("USAGE_DAY_CAP", "40")) || 40,
     usageWeekCap: Number(req("USAGE_WEEK_CAP", "150")) || 150,
+    usageCapExemptPhones,
   };
 }
 

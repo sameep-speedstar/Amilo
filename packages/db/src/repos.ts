@@ -1433,6 +1433,8 @@ export type BriefPriorityItem = {
   /** Gmail thread id — close suppresses until newer mail on this thread. */
   threadId?: string | null;
   commitmentId?: string | null;
+  /** sender-domain|subject — holds the same ask across new threads. */
+  fingerprint?: string | null;
 };
 
 export type UserPrefs = {
@@ -1454,6 +1456,11 @@ export type UserPrefs = {
    * Suppressed in briefs until a newer message lands on the thread.
    */
   closedMailThreads: Record<string, string>;
+  /**
+   * sender-domain|normalized-subject → ISO close time.
+   * Holds the same ask across new threads (e.g. daily KYC nags) for 14 days.
+   */
+  closedMailFingerprints: Record<string, string>;
   /** Last mail find for CoS follow-ups (action points / reply / schedule). */
   mailWorkingSet: MailWorkingSet | null;
 };
@@ -1472,6 +1479,7 @@ const DEFAULT_PREFS: UserPrefs = {
   lastBriefItems: [],
   lastBriefMore: null,
   closedMailThreads: {},
+  closedMailFingerprints: {},
   mailWorkingSet: null,
 };
 
@@ -1494,6 +1502,7 @@ export function parseUserPrefs(raw: Record<string, unknown> | null | undefined):
     : [];
   const lastBriefItems = parseBriefItems(raw?.lastBriefItems);
   const closedMailThreads = parseClosedMailThreads(raw?.closedMailThreads);
+  const closedMailFingerprints = parseClosedMailThreads(raw?.closedMailFingerprints);
   return {
     mutedPatterns: muted,
     vipList: vip,
@@ -1517,6 +1526,7 @@ export function parseUserPrefs(raw: Record<string, unknown> | null | undefined):
         ? raw.lastBriefMore.trim().slice(0, 1500)
         : null,
     closedMailThreads,
+    closedMailFingerprints,
     mailWorkingSet: parseMailWorkingSet(raw?.mailWorkingSet),
   };
 }
@@ -1596,6 +1606,9 @@ function parseBriefItems(raw: unknown): BriefPriorityItem[] {
       ...(typeof o.commitmentId === "string" && o.commitmentId.trim()
         ? { commitmentId: o.commitmentId.trim() }
         : {}),
+      ...(typeof o.fingerprint === "string" && o.fingerprint.trim()
+        ? { fingerprint: o.fingerprint.trim() }
+        : {}),
     });
   }
   return out.slice(0, 8);
@@ -1616,6 +1629,7 @@ export function prefsToJson(prefs: UserPrefs): Record<string, unknown> {
     lastBriefItems: prefs.lastBriefItems,
     lastBriefMore: prefs.lastBriefMore,
     closedMailThreads: prefs.closedMailThreads,
+    closedMailFingerprints: prefs.closedMailFingerprints,
     mailWorkingSet: prefs.mailWorkingSet,
   };
 }
@@ -1753,6 +1767,7 @@ export async function summarizeRecentMail(
 ): Promise<string> {
   const rows = await listMailCandidates(db, userId, mutedPatterns, 20, {
     excludePassive: true,
+    since: new Date(Date.now() - MAIL_BRIEF_LOOKBACK_DAYS * 86_400_000),
   });
   const scored = rows
     .map((e) => {
@@ -1816,7 +1831,7 @@ async function listMailCandidates(
   userId: string,
   mutedPatterns: string[],
   limit: number,
-  opts?: { excludePassive?: boolean },
+  opts?: { excludePassive?: boolean; since?: Date },
 ) {
   const rows = await db.query.events.findMany({
     where: and(
@@ -1825,9 +1840,10 @@ async function listMailCandidates(
       ne(events.kind, "promo"),
       ne(events.kind, "social"),
       ne(events.kind, "muted"),
+      ...(opts?.since ? [gte(events.createdAt, opts.since)] : []),
     ),
     orderBy: [desc(events.createdAt)],
-    limit: 50,
+    limit: 80,
   });
   return rows
     .filter((e) => {
@@ -1889,6 +1905,45 @@ export function isClosedMailThreadSuppressed(
   return true;
 }
 
+export const CLOSED_MAIL_FINGERPRINT_HOLD_MS = 14 * 86_400_000;
+export const MAIL_BRIEF_LOOKBACK_DAYS = 7;
+
+/** Stable key so a daily KYC nag on a new thread stays closed. */
+export function mailBriefFingerprint(actor: string, title: string): string {
+  const email = (actor.match(/[\w.+-]+@[\w.-]+/)?.[0] ?? actor).toLowerCase();
+  const domain = email.includes("@") ? (email.split("@")[1] ?? email) : email.replace(/\s+/g, " ").trim();
+  let subject = title.toLowerCase().replace(/\s+/g, " ").trim();
+  for (let i = 0; i < 3; i += 1) {
+    const next = subject.replace(/^(re|fwd|fw|important|reminder|urgent|action required):\s*/i, "");
+    if (next === subject) break;
+    subject = next;
+  }
+  subject = subject.replace(/[^a-z0-9]+/g, " ").trim().slice(0, 80);
+  return `${domain}|${subject}`;
+}
+
+export function isClosedMailFingerprintSuppressed(
+  fingerprint: string | null | undefined,
+  closedFingerprints: Record<string, string>,
+  now: Date = new Date(),
+  holdMs = CLOSED_MAIL_FINGERPRINT_HOLD_MS,
+): boolean {
+  if (!fingerprint) return false;
+  const closedAtRaw = closedFingerprints[fingerprint];
+  if (!closedAtRaw) return false;
+  const closedAt = Date.parse(closedAtRaw);
+  if (Number.isNaN(closedAt)) return false;
+  return now.getTime() - closedAt < holdMs;
+}
+
+function eventBriefClosedAt(meta: unknown): number | null {
+  if (!meta || typeof meta !== "object") return null;
+  const raw = String((meta as { briefClosedAt?: unknown }).briefClosedAt ?? "").trim();
+  if (!raw) return null;
+  const ts = Date.parse(raw);
+  return Number.isNaN(ts) ? null : ts;
+}
+
 /**
  * Mark a brief priority closed. Mail: suppress thread until newer mail.
  * Commitment: resolve as done/dropped when commitmentId present.
@@ -1902,6 +1957,7 @@ export async function closeBriefPriorityItem(
     threadId?: string | null;
     commitmentId?: string | null;
     label?: string | null;
+    fingerprint?: string | null;
     status?: "done" | "dropped";
   },
 ): Promise<{ ok: boolean; message: string }> {
@@ -1928,22 +1984,26 @@ export async function closeBriefPriorityItem(
 
   let threadId = (opts.threadId ?? "").trim() || null;
   const eventId = (opts.eventId ?? "").trim() || null;
+  let fingerprint = (opts.fingerprint ?? "").trim() || null;
+  const closedAt = new Date().toISOString();
 
-  if (!threadId && eventId) {
+  if (eventId) {
     const row = await db.query.events.findFirst({
       where: and(eq(events.id, eventId), eq(events.userId, userId)),
     });
-    threadId = gmailThreadIdFromMeta(row?.meta) ?? null;
     if (row) {
+      threadId = threadId ?? gmailThreadIdFromMeta(row.meta);
+      fingerprint =
+        fingerprint ?? mailBriefFingerprint(row.actor ?? "", row.title ?? "");
       const meta = {
         ...((row.meta ?? {}) as Record<string, unknown>),
-        briefClosedAt: new Date().toISOString(),
+        briefClosedAt: closedAt,
       };
       await db.update(events).set({ meta }).where(eq(events.id, row.id));
     }
   }
 
-  if (!threadId && opts.label) {
+  if ((!threadId || !fingerprint) && opts.label) {
     const prefs = await getUserPrefs(db, userId);
     const mailRows = await listMailCandidates(db, userId, prefs.mutedPatterns, 40, {
       excludePassive: true,
@@ -1960,30 +2020,42 @@ export async function closeBriefPriorityItem(
       );
     });
     if (hit) {
-      threadId = gmailThreadIdFromMeta(hit.meta);
+      threadId = threadId ?? gmailThreadIdFromMeta(hit.meta);
+      fingerprint =
+        fingerprint ?? mailBriefFingerprint(hit.actor ?? "", hit.title ?? "");
       const meta = {
         ...((hit.meta ?? {}) as Record<string, unknown>),
-        briefClosedAt: new Date().toISOString(),
+        briefClosedAt: closedAt,
       };
       await db.update(events).set({ meta }).where(eq(events.id, hit.id));
     }
   }
 
-  if (threadId) {
+  if (!fingerprint && opts.label) {
+    fingerprint = mailBriefFingerprint("", opts.label);
+  }
+
+  if (threadId || fingerprint) {
     const prefs = await getUserPrefs(db, userId);
-    const closedMailThreads = {
-      ...prefs.closedMailThreads,
-      [threadId]: new Date().toISOString(),
-    };
-    // Cap map size
-    const entries = Object.entries(closedMailThreads).sort(
-      (a, b) => Date.parse(b[1]) - Date.parse(a[1]),
-    );
-    const trimmed = Object.fromEntries(entries.slice(0, 80));
-    await patchUserPrefs(db, userId, { closedMailThreads: trimmed });
+    const closedMailThreads = threadId
+      ? { ...prefs.closedMailThreads, [threadId]: closedAt }
+      : prefs.closedMailThreads;
+    const closedMailFingerprints = fingerprint
+      ? { ...prefs.closedMailFingerprints, [fingerprint]: closedAt }
+      : prefs.closedMailFingerprints;
+    const trimMap = (m: Record<string, string>) =>
+      Object.fromEntries(
+        Object.entries(m)
+          .sort((a, b) => Date.parse(b[1]) - Date.parse(a[1]))
+          .slice(0, 80),
+      );
+    await patchUserPrefs(db, userId, {
+      closedMailThreads: trimMap(closedMailThreads),
+      closedMailFingerprints: trimMap(closedMailFingerprints),
+    });
     return {
       ok: true,
-      message: `${status === "dropped" ? "Dropped" : "Done"}: ${String(opts.label ?? "mail item").slice(0, 80)}. Won't resurface unless there's new mail on that thread.`,
+      message: `${status === "dropped" ? "Dropped" : "Done"}: ${String(opts.label ?? "mail item").slice(0, 80)}. I'll keep that ask off the brief unless a new reply lands.`,
     };
   }
 
@@ -2074,7 +2146,29 @@ export function isActionDemandingMail(hay: string): boolean {
     /\b(interview (invite|invitation|scheduled)|offer letter)\b/.test(h) ||
     /\bschedule (a|an) (interview|call)\b/.test(h) ||
     (/\byour application\b/.test(h) &&
-      /\b(incomplete|complete|deadline|submit|action|review|next step)\b/.test(h))
+      /\b(incomplete|complete|deadline|submit|action|review|next step)\b/.test(h)) ||
+    /\b(registration|register now|please register|rsvp|enrol+ment)\b/.test(h) ||
+    (/\breminder\b/.test(h) &&
+      /\b(register|registration|rsvp|submit|confirm|complete|kyc|deadline|last date|parents?)\b/.test(
+        h,
+      )) ||
+    /\b(last date|deadline|submit by|due by|pending your (action|approval|response|confirmation))\b/.test(
+      h,
+    ) ||
+    /\b(please (register|sign|send|share|review|approve|confirm|respond|reply))\b/.test(h) ||
+    /\b(for parents|parent[s']? (action|note|circular|reminder))\b/.test(h) ||
+    /\b(charges? levied|imps charges?|unauthorised|unauthorized|dispute (the )?charge)\b/.test(
+      h,
+    ) ||
+    /\b(e-?vote|cast your vote|vote now)\b/.test(h)
+  );
+}
+
+function isAutomatedSender(actor: string): boolean {
+  const a = actor.toLowerCase();
+  return (
+    /no-?reply|do-?not-?reply|donotreply|mailer-daemon|newsletter/.test(a) ||
+    /\b(alerts?|notify|notification|updates|noreply)@/.test(a)
   );
 }
 
@@ -2208,6 +2302,17 @@ export function mailPriorityScore(
     if (/\b(amount due|minimum due|payment due)\b/.test(hay.toLowerCase())) score += 15;
   }
   if (/\b(interview (invite|invitation|scheduled)|offer letter)\b/.test(t)) score += 55;
+  // A real person (not alerts@) with substance — morning only (evening still wants 70).
+  if (
+    score === 0 &&
+    !isAutomatedSender(actor) &&
+    snippet.replace(/\s+/g, " ").trim().length >= 40 &&
+    /\b(please|need|request|confirm|review|share|send|pending|charges?|invoice|ssl|action)\b/.test(
+      hay.toLowerCase(),
+    )
+  ) {
+    score += 50;
+  }
   // VIP boosts only already-actionable mail — never surfaces FYI alone.
   if (score > 0 && isVipMail(hay, vipList)) score += 40;
 
@@ -2416,6 +2521,7 @@ export async function buildPriorityBriefPayload(
     kind?: "am" | "pm";
     now?: Date;
     closedMailThreads?: Record<string, string>;
+    closedMailFingerprints?: Record<string, string>;
   },
 ): Promise<{
   digestFlat: string;
@@ -2429,6 +2535,7 @@ export async function buildPriorityBriefPayload(
   const kind = opts?.kind ?? "am";
   const now = opts?.now ?? new Date();
   const closedMailThreads = opts?.closedMailThreads ?? {};
+  const closedMailFingerprints = opts?.closedMailFingerprints ?? {};
   const todayBounds = localDayBoundsUtc(timezone, now);
   // Evening looks ahead to tomorrow; morning is today.
   const focusBounds =
@@ -2445,6 +2552,7 @@ export async function buildPriorityBriefPayload(
     eventId?: string;
     threadId?: string;
     commitmentId?: string;
+    fingerprint?: string;
   };
   const cands: Cand[] = [];
 
@@ -2483,8 +2591,10 @@ export async function buildPriorityBriefPayload(
     });
   }
 
+  const mailSince = new Date(now.getTime() - MAIL_BRIEF_LOOKBACK_DAYS * 86_400_000);
   const mailRows = await listMailCandidates(db, userId, mutedPatterns, 30, {
     excludePassive: true,
+    since: mailSince,
   });
   const newestByThread = newestMailCreatedByThread(mailRows);
   const apptByKey = new Map<string, { label: string; detail: string; clockSort: string }>();
@@ -2509,13 +2619,33 @@ export async function buildPriorityBriefPayload(
       }
       continue;
     }
+    const newestInThread = threadId
+      ? newestByThread.get(threadId) ?? e.createdAt
+      : e.createdAt;
+    const closedAtRaw = threadId ? closedMailThreads[threadId] : undefined;
+    const newMailOnClosedThread =
+      Boolean(threadId && closedAtRaw) &&
+      newestInThread.getTime() > Date.parse(closedAtRaw ?? "");
+    const fingerprint = mailBriefFingerprint(e.actor ?? "", fullTitle);
     if (
+      !newMailOnClosedThread &&
       isClosedMailThreadSuppressed(
         threadId,
         e.createdAt,
         closedMailThreads,
-        threadId ? newestByThread.get(threadId) ?? e.createdAt : e.createdAt,
+        newestInThread,
       )
+    ) {
+      continue;
+    }
+    if (!newMailOnClosedThread && isClosedMailFingerprintSuppressed(fingerprint, closedMailFingerprints, now)) {
+      continue;
+    }
+    const eventClosedAt = eventBriefClosedAt(e.meta);
+    if (
+      !newMailOnClosedThread &&
+      eventClosedAt != null &&
+      now.getTime() - eventClosedAt < CLOSED_MAIL_FINGERPRINT_HOLD_MS
     ) {
       continue;
     }
@@ -2535,6 +2665,7 @@ export async function buildPriorityBriefPayload(
         .join("\n"),
       eventId: e.id,
       ...(threadId ? { threadId } : {}),
+      fingerprint,
     });
   }
 
@@ -2559,6 +2690,7 @@ export async function buildPriorityBriefPayload(
     ...(c.eventId ? { eventId: c.eventId } : {}),
     ...(c.threadId ? { threadId: c.threadId } : {}),
     ...(c.commitmentId ? { commitmentId: c.commitmentId } : {}),
+    ...(c.fingerprint ? { fingerprint: c.fingerprint } : {}),
   }));
   const moreText = rest.length
     ? rest.map((c, i) => `${i + 4}) ${c.label}`).join("\n")

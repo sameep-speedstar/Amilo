@@ -1,3 +1,4 @@
+import { localDayBoundsUtc } from "@amilo/core";
 import { and, desc, eq, gte, sql, sum } from "drizzle-orm";
 import { randomBytes } from "node:crypto";
 import { allowedPhones, invites, usageEvents, users } from "./schema.js";
@@ -244,19 +245,38 @@ export type UsageCaps = { day: number; week: number };
 
 export const DEFAULT_USAGE_CAPS: UsageCaps = { day: 40, week: 150 };
 
+/** Product host — never metered. Extra numbers via HOST_PHONE / USAGE_CAP_EXEMPT_PHONES. */
+export const DEFAULT_HOST_PHONES = ["+918108506999"];
+
+export function isUsageCapExemptPhone(
+  phone: string,
+  exemptPhones: string[],
+): boolean {
+  const key = phoneDigits(phone);
+  if (!key) return false;
+  return exemptPhones.some((p) => phoneDigits(p) === key);
+}
+
+/** Local calendar-day start (00:00 in the user's timezone). */
+export function usageDayStartUtc(timeZone: string, now = new Date()): Date {
+  return localDayBoundsUtc(timeZone, now).timeMin;
+}
+
 export async function checkUsageCaps(
   db: Db,
   userId: string,
   caps: UsageCaps = DEFAULT_USAGE_CAPS,
-  now = new Date(),
+  opts?: { now?: Date; timeZone?: string },
 ): Promise<{ ok: true } | { ok: false; message: string }> {
-  const dayAgo = new Date(now.getTime() - 24 * 3600_000);
+  const now = opts?.now ?? new Date();
+  const timeZone = opts?.timeZone ?? "Asia/Kolkata";
+  const dayStart = usageDayStartUtc(timeZone, now);
   const weekAgo = new Date(now.getTime() - 7 * 24 * 3600_000);
-  const day = await summarizeUserUsage(db, userId, dayAgo);
+  const day = await summarizeUserUsage(db, userId, dayStart);
   if (day.interactions >= caps.day) {
     return {
       ok: false,
-      message: `Daily Amilo cap reached (${caps.day} interactions). Try again tomorrow — or ask the host to raise your limit.`,
+      message: `Daily Amilo cap reached (${caps.day} interactions). Resets at midnight — or ask the host to raise your limit.`,
     };
   }
   const week = await summarizeUserUsage(db, userId, weekAgo);

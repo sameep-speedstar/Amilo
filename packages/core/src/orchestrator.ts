@@ -455,6 +455,7 @@ export interface OrchestratorDeps {
       eventId?: string | null;
       threadId?: string | null;
       commitmentId?: string | null;
+      fingerprint?: string | null;
     }>;
     more: string | null;
   }>;
@@ -466,6 +467,7 @@ export interface OrchestratorDeps {
       threadId?: string | null;
       commitmentId?: string | null;
       label?: string | null;
+      fingerprint?: string | null;
       status?: "done" | "dropped";
     },
   ) => Promise<{ ok: boolean; message: string }>;
@@ -1418,6 +1420,54 @@ export async function handleInbound(
 
   const closeCmd = parseCommitmentCloseCommand(text);
   if (closeCmd) {
+    const closeItem = async (item: {
+      kind?: string;
+      eventId?: string | null;
+      threadId?: string | null;
+      commitmentId?: string | null;
+      fingerprint?: string | null;
+      label: string;
+    }) => {
+      if (!deps.closeBriefPriority) return { ok: false, message: "Close isn't wired." };
+      return deps.closeBriefPriority(msg.userId, {
+        kind: item.kind ?? null,
+        eventId: item.eventId ?? null,
+        threadId: item.threadId ?? null,
+        commitmentId: item.commitmentId ?? null,
+        fingerprint: item.fingerprint ?? null,
+        label: item.label,
+        status: closeCmd.status === "snoozed" ? "done" : closeCmd.status,
+      });
+    };
+
+    // done / that's done → close the only brief priority, or ask which
+    if (!closeCmd.titleHint) {
+      if (deps.getLastBriefItems && deps.closeBriefPriority) {
+        const stored = await deps.getLastBriefItems(msg.userId);
+        if (stored.items.length === 1 && stored.items[0]) {
+          const r = await closeItem(stored.items[0]);
+          return [{ text: r.message }];
+        }
+        if (stored.items.length > 1) {
+          return [
+            {
+              text: [
+                "Which one?",
+                ...stored.items.map((i) => `${i.index}) ${i.label}`),
+                "",
+                "Reply done 1 / done 2 / done 3.",
+              ].join("\n"),
+            },
+          ];
+        }
+      }
+      return [
+        {
+          text: "Nothing on the last brief to mark done. Say done 1 after a brief, or done <title>.",
+        },
+      ];
+    }
+
     // done 1 / done 2 / done 3 → close last brief priority by index
     const idxMatch = closeCmd.titleHint.match(/^([123])$/);
     if (idxMatch && deps.closeBriefPriority && deps.getLastBriefItems) {
@@ -1434,15 +1484,8 @@ export async function handleInbound(
           },
         ];
       }
-      const r = await deps.closeBriefPriority(msg.userId, {
-        kind: item.kind ?? null,
-        eventId: item.eventId ?? null,
-        threadId: item.threadId ?? null,
-        commitmentId: item.commitmentId ?? null,
-        label: item.label,
-        status: closeCmd.status === "snoozed" ? "done" : closeCmd.status,
-      });
-      return [{ text: r.ok ? r.message : r.message }];
+      const r = await closeItem(item);
+      return [{ text: r.message }];
     }
 
     if (deps.resolveCommitment) {
@@ -1495,14 +1538,7 @@ export async function handleInbound(
             needle.includes(i.label.toLowerCase().slice(0, 24)),
         );
         if (item) {
-          const r = await deps.closeBriefPriority(msg.userId, {
-            kind: item.kind ?? null,
-            eventId: item.eventId ?? null,
-            threadId: item.threadId ?? null,
-            commitmentId: item.commitmentId ?? null,
-            label: item.label,
-            status: closeCmd.status,
-          });
+          const r = await closeItem(item);
           if (r.ok) return [{ text: r.message }];
         }
       }

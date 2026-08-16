@@ -76,5 +76,17 @@ describe("commitment close commands", () => {
       parseCommitmentCloseCommand("snooze bill pay to tomorrow")?.status,
       "snoozed",
     );
+    assert.deepEqual(parseCommitmentCloseCommand("done"), {
+      status: "done",
+      titleHint: "",
+    });
+    assert.deepEqual(parseCommitmentCloseCommand("that's done"), {
+      status: "done",
+      titleHint: "",
+    });
+    assert.deepEqual(parseCommitmentCloseCommand("marked as done"), {
+      status: "done",
+      titleHint: "",
+    });
   });
 });

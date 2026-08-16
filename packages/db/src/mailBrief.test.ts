@@ -2,9 +2,11 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
   isActionDemandingMail,
+  isClosedMailFingerprintSuppressed,
   isClosedMailThreadSuppressed,
   isFyiRecruitingMail,
   isPassiveTransactionalMail,
+  mailBriefFingerprint,
   mailPriorityScore,
   parseAppointmentReminder,
 } from "./repos.js";
@@ -173,6 +175,23 @@ describe("brief mail action filter", () => {
       0,
     );
   });
+
+  it("surfaces school registration reminders and person+charges mail", () => {
+    assert.ok(
+      mailPriorityScore(
+        "Registration for Independence Day Celebrations - Reminder",
+        "Valiants Academy <info@valiants.edu>",
+      ) >= 70,
+    );
+    assert.ok(
+      mailPriorityScore(
+        "SSL ESAAS — IMPS charges",
+        "Juhi Badle <juhi@example.com>",
+        [],
+        "Please review the IMPS charges levied on the SSL ESAAS invoice and confirm.",
+      ) >= 50,
+    );
+  });
 });
 
 describe("closed brief mail suppress", () => {
@@ -191,6 +210,28 @@ describe("closed brief mail suppress", () => {
     );
     assert.equal(
       isClosedMailThreadSuppressed("other", older, closed, older),
+      false,
+    );
+  });
+
+  it("holds the same KYC ask across a new thread for 14 days", () => {
+    const a = mailBriefFingerprint(
+      "Team OneCard <notify@getonecard.app>",
+      "Important: Update your KYC to avoid card block",
+    );
+    const b = mailBriefFingerprint(
+      "notify@getonecard.app",
+      "Reminder: Update your KYC to avoid card block",
+    );
+    assert.equal(a, b);
+    const closedAt = "2026-08-13T14:00:00.000Z";
+    const closed = { [a]: closedAt };
+    assert.equal(
+      isClosedMailFingerprintSuppressed(b, closed, new Date("2026-08-16T02:00:00.000Z")),
+      true,
+    );
+    assert.equal(
+      isClosedMailFingerprintSuppressed(b, closed, new Date("2026-08-28T02:00:00.000Z")),
       false,
     );
   });
