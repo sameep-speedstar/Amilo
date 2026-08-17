@@ -1952,6 +1952,25 @@ export function mailBriefFingerprint(actor: string, title: string): string {
   return `${domain}|${subject}`;
 }
 
+/** Collapse dual-inbox / same-thread quieter mail into one HANDLED line. */
+export function dedupeHandledMailLines(
+  rows: Array<{ line: string; fingerprint: string; threadId?: string | null }>,
+  cap = 16,
+): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const row of rows) {
+    const labelKey = row.line.toLowerCase().replace(/\s+/g, " ").slice(0, 80);
+    const keys = [row.fingerprint, labelKey];
+    if (row.threadId) keys.push(`thread:${row.threadId}`);
+    if (keys.some((k) => seen.has(k))) continue;
+    for (const k of keys) seen.add(k);
+    out.push(row.line);
+    if (out.length >= cap) break;
+  }
+  return out;
+}
+
 export function isClosedMailFingerprintSuppressed(
   fingerprint: string | null | undefined,
   closedFingerprints: Record<string, string>,
@@ -2863,18 +2882,22 @@ export async function buildPriorityBriefPayload(
           since: yesterday.timeMin,
         })
       : [];
-  const handledLines: string[] = [];
+  const handledRaw: Array<{ line: string; fingerprint: string; threadId?: string | null }> = [];
   for (const e of handledRows) {
     if (e.createdAt < yesterday.timeMin || e.createdAt >= yesterday.timeMax) continue;
-    const hay = `${e.actor ?? ""} ${e.title ?? ""} ${e.snippet ?? ""}`;
     const score = mailPriorityScore(e.title ?? "", e.actor ?? "", vipList, e.snippet ?? "", {
       timezone,
       now,
     });
     if (score >= 70) continue;
-    handledLines.push(`${cleanSubject(e.title)} — ${shortActor(e.actor)}`.slice(0, 90));
-    if (handledLines.length >= 16) break;
+    const threadId = gmailThreadIdFromMeta(e.meta);
+    handledRaw.push({
+      line: `${cleanSubject(e.title)} — ${shortActor(e.actor)}`.slice(0, 90),
+      fingerprint: mailBriefFingerprint(e.actor ?? "", e.title ?? ""),
+      ...(threadId ? { threadId } : {}),
+    });
   }
+  const handledLines = dedupeHandledMailLines(handledRaw, 16);
   const quieterCount = handledLines.length;
   const items: BriefPriorityItem[] = top.map((c, i) => ({
     index: i + 1,

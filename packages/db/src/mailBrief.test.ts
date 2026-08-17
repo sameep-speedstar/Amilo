@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
+  dedupeHandledMailLines,
   isActionDemandingMail,
   isClosedMailFingerprintSuppressed,
   isClosedMailThreadSuppressed,
@@ -278,5 +279,29 @@ describe("closed brief mail suppress", () => {
       isClosedMailFingerprintSuppressed(b, closed, new Date("2026-08-28T02:00:00.000Z")),
       false,
     );
+  });
+});
+
+describe("handled list dedupe", () => {
+  it("collapses dual-inbox copies of the same quieter mail", () => {
+    const onecard = mailBriefFingerprint(
+      "Team OneCard <notify@getonecard.app>",
+      "🇮🇳 NOW LIVE: Feel the Freedom Sale: Edition 8.0!",
+    );
+    const mcx = mailBriefFingerprint("Mcxindia <alerts@mcxindia.com>", "Trade Mail - MCX");
+    const lines = dedupeHandledMailLines([
+      { line: "NOW LIVE: Feel the Freedom Sale: Edition 8.0! — Team OneCard", fingerprint: onecard, threadId: "a1" },
+      { line: "NOW LIVE: Feel the Freedom Sale: Edition 8.0! — Team OneCard", fingerprint: onecard, threadId: "b1" },
+      { line: "Trade Mail - MCX — Mcxindia", fingerprint: mcx, threadId: "m1" },
+      { line: "Trade Mail - MCX — Mcxindia", fingerprint: mcx, threadId: "m1" },
+      { line: "Trade Mail - MCX — Mcxindia", fingerprint: mcx, threadId: "m2" },
+      { line: "UPI Debit Alert — Yes Bank", fingerprint: "yesbank.in|upi debit alert", threadId: "u1" },
+      { line: "UPI Debit Alert — Yes Bank", fingerprint: "yesbank.in|upi debit alert", threadId: "u2" },
+    ]);
+    assert.deepEqual(lines, [
+      "NOW LIVE: Feel the Freedom Sale: Edition 8.0! — Team OneCard",
+      "Trade Mail - MCX — Mcxindia",
+      "UPI Debit Alert — Yes Bank",
+    ]);
   });
 });
