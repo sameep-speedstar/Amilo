@@ -25,6 +25,7 @@ import {
   type OrchestratorDeps,
 } from "@amilo/core";
 import { processVoiceNote } from "./voice/pipeline.js";
+import { writeReminderCalendarNudge } from "./calendarNudge.js";
 import {
   addMutedPattern,
   applyGraphUpdates,
@@ -661,10 +662,72 @@ function orchestratorDeps(): OrchestratorDeps {
       await setTimezoneConfirmed(db, userId, true);
     },
     createReminders: async (userId, items) => {
-      const out: Array<{ title: string; dueAt: Date }> = [];
+      const u = await getUserById(db, userId);
+      const timezone = u?.timezone ?? "Asia/Kolkata";
+      const prefs = await getUserPrefs(db, userId);
+      const today = localDayBoundsUtc(timezone).day;
+      const nudge = async (title: string, at: Date): Promise<boolean> => {
+        if (at.getTime() <= Date.now() - 60_000) return false;
+        try {
+          return await writeReminderCalendarNudge({
+            db,
+            googleCfg,
+            userId,
+            timezone,
+            title,
+            dueAt: at,
+          });
+        } catch (err) {
+          console.error(
+            JSON.stringify({
+              event: "reminder_calendar_nudge_failed",
+              userId,
+              error: err instanceof Error ? err.message : String(err),
+            }),
+          );
+          return false;
+        }
+      };
+      const out: Array<{
+        title: string;
+        dueAt: Date;
+        kind: "timed" | "post_brief";
+        calendarOk?: boolean;
+        fire?: "calendar" | "after_brief" | "soon";
+      }> = [];
       for (const item of items) {
-        await createReminder(db, { userId, title: item.title, dueAt: item.dueAt });
-        out.push(item);
+        const kind = item.kind ?? "timed";
+        if (kind === "post_brief") {
+          const dueDay = localDayBoundsUtc(timezone, item.dueAt).day;
+          const nineAm = item.dueAt;
+          const calendarOk = await nudge(item.title, nineAm);
+          if (dueDay === today && prefs.lastMorningBriefDay === today) {
+            await createReminder(db, {
+              userId,
+              title: item.title,
+              dueAt: new Date(),
+              reason: "reminder",
+            });
+            out.push({ ...item, kind: "post_brief", fire: "soon", calendarOk });
+            continue;
+          }
+          await createReminder(db, {
+            userId,
+            title: item.title,
+            dueAt: nineAm,
+            reason: "reminder_post_brief",
+          });
+          out.push({ ...item, kind: "post_brief", fire: "after_brief", calendarOk });
+          continue;
+        }
+        await createReminder(db, {
+          userId,
+          title: item.title,
+          dueAt: item.dueAt,
+          reason: "reminder",
+        });
+        const calendarOk = await nudge(item.title, item.dueAt);
+        out.push({ ...item, kind: "timed", fire: "calendar", calendarOk });
       }
       return out;
     },

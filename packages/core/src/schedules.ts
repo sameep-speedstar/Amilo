@@ -289,6 +289,30 @@ export function isAutoDeclineHoldActive(
   return until.getTime() > now.getTime();
 }
 
+function holdStillActive(attrs: ScheduleAttrs, now: Date): Date | null {
+  if (!attrs.holdUntilIso) return null;
+  const until = new Date(attrs.holdUntilIso);
+  if (Number.isNaN(until.getTime()) || until.getTime() <= now.getTime()) return null;
+  return until;
+}
+
+/**
+ * Standing pickup/gym windows stay off TODAY — they are silent memory for
+ * conflict checks. Print only an active hold (one-off extension).
+ */
+export function briefScheduleWindowLine(
+  label: string,
+  attrs: ScheduleAttrs,
+  opts: { timeZone: string; now: Date; focusDay: string },
+): string | null {
+  const until = holdStillActive(attrs, opts.now);
+  if (!until) return null;
+  const { day: untilDay } = localDayBoundsUtc(opts.timeZone, until);
+  if (untilDay !== opts.focusDay) return null;
+  const endHm = formatLocalHm(until, opts.timeZone);
+  return `${attrs.startHm}–${endHm} ${label} (hold)`;
+}
+
 /**
  * Expand schedule nodes into timed busy blocks over [from, to] (usually a few days).
  * Active hold extends end to holdUntil when later than standing endHm.

@@ -12,6 +12,7 @@ import {
   parseCalendarCreateHint,
   parseClockToken,
   parseReminderMessage,
+  isReminderAsk,
   parseTimezoneUpdateMessage,
   relativeDayLabel,
   resolveTimezoneInput,
@@ -64,9 +65,43 @@ describe("timezone helpers", () => {
       now,
     );
     assert.equal(specs.length, 2);
+    assert.equal(specs[0]!.kind, "timed");
     assert.equal(formatLocalHm(specs[0]!.dueAt, "Asia/Kolkata"), "12:30");
     assert.equal(formatLocalHm(specs[1]!.dueAt, "Asia/Kolkata"), "20:00");
     assert.match(specs[0]!.title, /call/i);
+  });
+
+  it("parses date+time onto the named day", () => {
+    const now = new Date("2026-08-20T10:00:00.000Z"); // 15:30 IST Thu
+    const specs = parseReminderMessage(
+      "remind me on 22 Aug at 4:30pm to call the bank",
+      "Asia/Kolkata",
+      now,
+    );
+    assert.equal(specs.length, 1);
+    assert.equal(specs[0]!.kind, "timed");
+    assert.equal(formatLocalWhenFriendly(specs[0]!.dueAt, "Asia/Kolkata"), "Saturday 22 August · 4:30 pm");
+    assert.match(specs[0]!.title, /bank/i);
+  });
+
+  it("date-only reminders wait for the morning brief", () => {
+    const now = new Date("2026-08-20T10:00:00.000Z");
+    const specs = parseReminderMessage(
+      "remind me Friday to submit KYC",
+      "Asia/Kolkata",
+      now,
+    );
+    assert.equal(specs.length, 1);
+    assert.equal(specs[0]!.kind, "post_brief");
+    assert.equal(localDayBoundsUtc("Asia/Kolkata", specs[0]!.dueAt).day, "2026-08-21");
+    assert.equal(formatLocalHm(specs[0]!.dueAt, "Asia/Kolkata"), "09:00");
+    assert.match(specs[0]!.title, /kyc/i);
+  });
+
+  it("asks for a when if remind has no time or date", () => {
+    assert.equal(parseReminderMessage("remind me to call Raj", "Asia/Kolkata").length, 0);
+    assert.equal(isReminderAsk("remind me to call Raj"), true);
+    assert.equal(isReminderAsk("don't remind me"), false);
   });
 
   it("resolves travel updates", () => {

@@ -13,9 +13,11 @@ import {
   getWhatsAppAddress,
   getWhatsAppLastInbound,
   listGoogleAccounts,
+  listPostBriefReminders,
   listUsersForScheduledBriefs,
   logEvalEvent,
   logMessage,
+  markReminderNotified,
   patchUserPrefs,
   type Db,
   type UserPrefs,
@@ -176,6 +178,39 @@ export function startBriefWorker(opts: {
                 ...(waMessageId ? { waMessageId } : {}),
               },
             });
+            const extras = await listPostBriefReminders(
+              opts.db,
+              u.id,
+              localDayBoundsUtc(tz, now),
+            );
+            for (const rem of extras) {
+              const ping = `Reminder: ${rem.title}`;
+              try {
+                const remWaId = await opts.channel.send(u.id, { text: ping });
+                await markReminderNotified(opts.db, rem.id);
+                await logMessage(opts.db, {
+                  userId: u.id,
+                  channel: "whatsapp",
+                  direction: "out",
+                  kind: "text",
+                  bodyRef: ping.slice(0, 500),
+                  meta: {
+                    reminderId: rem.id,
+                    afterBrief: true,
+                    ...(remWaId ? { waMessageId: remWaId } : {}),
+                  },
+                });
+              } catch (remErr) {
+                console.error(
+                  JSON.stringify({
+                    event: "post_brief_reminder_send_error",
+                    userId: u.id,
+                    id: rem.id,
+                    error: remErr instanceof Error ? remErr.message : String(remErr),
+                  }),
+                );
+              }
+            }
             console.log(
               JSON.stringify({
                 event: "scheduled_brief_sent",

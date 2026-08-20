@@ -25,6 +25,8 @@ export interface CalendarWriteInput {
   description?: string | null;
   /** Guest emails — Google sends invites when sendUpdates=all. */
   attendees?: string[] | null;
+  /** Popup at event start (Amilo 1-min reminder nudge). */
+  popupAtStart?: boolean;
 }
 
 const BASE = "https://www.googleapis.com/calendar/v3/calendars/primary/events";
@@ -79,6 +81,12 @@ export async function createCalendarEvent(
     end: { dateTime: input.endIso, timeZone: tz },
   };
   if (attendees.length) body.attendees = attendees;
+  if (input.popupAtStart) {
+    body.reminders = {
+      useDefault: false,
+      overrides: [{ method: "popup", minutes: 0 }],
+    };
+  }
 
   const url = attendees.length ? `${BASE}?sendUpdates=all` : BASE;
   const res = await fetch(url, {

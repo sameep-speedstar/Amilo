@@ -1,6 +1,8 @@
-import { formatLocalHm, type ChannelPort } from "@amilo/core";
+import { formatLocalHm, localDayBoundsUtc, type ChannelPort } from "@amilo/core";
 import {
   listDueReminders,
+  listPostBriefReminders,
+  listUsersForScheduledBriefs,
   logMessage,
   markReminderNotified,
   type Db,
@@ -88,6 +90,42 @@ export function startReminderWorker(opts: {
             title: r.title,
           }),
         );
+      }
+
+      const users = await listUsersForScheduledBriefs(opts.db);
+      const now = new Date();
+      for (const u of users) {
+        const tz = u.timezone || "Asia/Kolkata";
+        const bounds = localDayBoundsUtc(tz, now);
+        if (u.prefs.lastMorningBriefDay !== bounds.day) continue;
+        const extras = await listPostBriefReminders(opts.db, u.id, bounds);
+        for (const rem of extras) {
+          const body = `Reminder: ${rem.title}`;
+          try {
+            const waMessageId = await opts.channel.send(u.id, { text: body });
+            await logMessage(opts.db, {
+              userId: u.id,
+              channel: "whatsapp",
+              direction: "out",
+              kind: "text",
+              bodyRef: body.slice(0, 500),
+              meta: {
+                reminderId: rem.id,
+                afterBrief: true,
+                ...(waMessageId ? { waMessageId } : {}),
+              },
+            });
+            await markReminderNotified(opts.db, rem.id);
+          } catch (err) {
+            console.error(
+              JSON.stringify({
+                event: "post_brief_reminder_retry_error",
+                id: rem.id,
+                error: err instanceof Error ? err.message : String(err),
+              }),
+            );
+          }
+        }
       }
     } catch (err) {
       console.error(

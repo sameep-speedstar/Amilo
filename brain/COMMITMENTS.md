@@ -18,6 +18,11 @@ Evening/morning follow-through: at most **two touches**, then park. Never nag. W
 
 User `done` → **completed** (not parked). Completed stays off FOCUS until a reminder on the same identity (thread reply or `remind me about …`). Duplicate nags on a new thread do not reopen. Each completed item is printed on a brief **once**, then only via `completed` / `status`.
 
+**Remind me (user-asked):**
+- Time (and optional date) → 1-minute Google Calendar nudge at that instant, even if a meeting already occupies the slot. WhatsApp ping at due time. Not a FOCUS item.
+- Date only (no clock) → 1-minute Google Calendar nudge at **09:00** that day (overlaps meetings), plus a separate WhatsApp after that morning's brief.
+- No when → ask for a time or a day.
+
 ## Agent rules
 
 - When triaging, open commitments are silent context that raise the bar for competing noise.

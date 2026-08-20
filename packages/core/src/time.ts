@@ -555,51 +555,154 @@ export function parseClockToken(raw: string): ParsedClock | null {
   return null;
 }
 
+export type ReminderKind = "timed" | "post_brief";
+
 export interface ReminderSpec {
   title: string;
   dueAt: Date;
+  kind: ReminderKind;
 }
 
-/**
- * Parse "remind me … at 12:30 and 8pm" style messages into due times in `timeZone`.
- * Returns [] if not a reminder-shaped message.
- */
-export function parseReminderMessage(
+const MONTH_INDEX: Record<string, number> = {
+  jan: 0, january: 0, feb: 1, february: 1, mar: 2, march: 2,
+  apr: 3, april: 3, may: 4, jun: 5, june: 5, jul: 6, july: 6,
+  aug: 7, august: 7, sep: 8, sept: 8, september: 8,
+  oct: 9, october: 9, nov: 10, november: 10, dec: 11, december: 11,
+};
+
+const WEEKDAY_MON1: Record<string, number> = {
+  monday: 1, tuesday: 2, wednesday: 3, thursday: 4, friday: 5, saturday: 6, sunday: 7,
+};
+
+function localWeekdayMon1(dayYmd: string, timeZone: string): number {
+  const noon = zonedLocalDateTime(timeZone, dayYmd, 12, 0);
+  const wd = new Intl.DateTimeFormat("en-US", { timeZone, weekday: "short" }).format(noon);
+  const map: Record<string, number> = { Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6, Sun: 7 };
+  return map[wd] ?? 1;
+}
+
+function ymdFromParts(year: number, monthIndex: number, dayNum: number): string | null {
+  if (monthIndex < 0 || monthIndex > 11 || dayNum < 1 || dayNum > 31) return null;
+  const dt = new Date(Date.UTC(year, monthIndex, dayNum));
+  if (dt.getUTCMonth() !== monthIndex || dt.getUTCDate() !== dayNum) return null;
+  return dt.toISOString().slice(0, 10);
+}
+
+/** Resolve today/tomorrow/weekday/on 25 Aug into a local YMD. */
+export function parseReminderDay(
   message: string,
   timeZone: string,
   now: Date = new Date(),
-): ReminderSpec[] {
-  const text = message.trim();
-  if (!/remind/i.test(text)) return [];
-
+): { day: string; dateMentioned: boolean } {
   const { day: today } = localDayBoundsUtc(timeZone, now);
-  let day = today;
-  const lower = text.toLowerCase();
+  const lower = message.toLowerCase();
+
   if (/\btomorr?ow\b/.test(lower) || /\btommorow\b/.test(lower)) {
-    day = addCalendarDays(today, 1);
-  } else {
-    const inDays = lower.match(/\bin\s+(\d+)\s+days?\b/);
-    if (inDays) day = addCalendarDays(today, Number(inDays[1]));
+    return { day: addCalendarDays(today, 1), dateMentioned: true };
+  }
+  if (/\btoday\b/.test(lower)) {
+    return { day: today, dateMentioned: true };
+  }
+  const inDays = lower.match(/\bin\s+(\d+)\s+days?\b/);
+  if (inDays) {
+    return { day: addCalendarDays(today, Number(inDays[1])), dateMentioned: true };
   }
 
-  // Collect clock tokens (with optional am/pm attached or following).
-  const clocks: ParsedClock[] = [];
-  const re =
-    /\b(\d{1,2}:\d{2}\s*(?:am|pm)?|\d{1,2}\s*(?:am|pm)|(?:at|@)\s*\d{1,2}(?::\d{2})?(?:\s*(?:am|pm))?)\b/gi;
-  let match: RegExpExecArray | null;
-  const raw = text;
-  while ((match = re.exec(raw)) !== null) {
-    let token = match[1]!.replace(/^(?:at|@)\s*/i, "").replace(/\s+/g, "");
-    const clock = parseClockToken(token);
-    if (clock) clocks.push(clock);
+  const wd = lower.match(
+    /\b(?:on\s+)?(?:(this|next)\s+)?(monday|tuesday|wednesday|thursday|friday|saturday|sunday)s?\b/,
+  );
+  if (wd?.[2]) {
+    const wantNext = wd[1] === "next";
+    const target = WEEKDAY_MON1[wd[2]] ?? 1;
+    const todayMon1 = localWeekdayMon1(today, timeZone);
+    let delta = (target - todayMon1 + 7) % 7;
+    if (wantNext) delta = delta === 0 ? 7 : delta;
+    return { day: addCalendarDays(today, delta), dateMentioned: true };
   }
 
-  if (!clocks.length) return [];
+  const onNth = lower.match(
+    /\bon\s+(?:the\s+)?(\d{1,2})(?:st|nd|rd|th)?(?:\s+(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?))?(?:\s+(\d{4}))?\b/,
+  );
+  if (onNth?.[1] && onNth[2]) {
+    const dayNum = Number(onNth[1]);
+    const mi = MONTH_INDEX[onNth[2]];
+    const [ty] = today.split("-").map(Number) as [number];
+    const year = onNth[3] ? Number(onNth[3]) : ty;
+    if (mi != null) {
+      let candidate = ymdFromParts(year, mi, dayNum);
+      if (candidate && !onNth[3] && candidate < today) {
+        candidate = ymdFromParts(year + 1, mi, dayNum);
+      }
+      if (candidate) return { day: candidate, dateMentioned: true };
+    }
+  }
+  if (onNth?.[1] && !onNth[2]) {
+    const dayNum = Number(onNth[1]);
+    const [ty, tm] = today.split("-").map(Number) as [number, number];
+    let candidate = ymdFromParts(ty, tm - 1, dayNum);
+    if (candidate && candidate < today) {
+      const nextMi = tm === 12 ? 0 : tm;
+      const year = tm === 12 ? ty + 1 : ty;
+      candidate = ymdFromParts(year, nextMi, dayNum);
+    }
+    if (candidate) return { day: candidate, dateMentioned: true };
+  }
 
-  // Title: strip remind boilerplate and time phrases.
+  const monFirst = lower.match(
+    /\bon\s+(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+(\d{1,2})(?:st|nd|rd|th)?(?:\s*,?\s*(\d{4}))?\b/,
+  );
+  if (monFirst?.[1] && monFirst[2]) {
+    const mi = MONTH_INDEX[monFirst[1]];
+    const dayNum = Number(monFirst[2]);
+    const [ty] = today.split("-").map(Number) as [number];
+    const year = monFirst[3] ? Number(monFirst[3]) : ty;
+    if (mi != null) {
+      let candidate = ymdFromParts(year, mi, dayNum);
+      if (candidate && !monFirst[3] && candidate < today) {
+        candidate = ymdFromParts(year + 1, mi, dayNum);
+      }
+      if (candidate) return { day: candidate, dateMentioned: true };
+    }
+  }
+
+  const dmy = lower.match(/\bon\s+(\d{1,2})[/\-.](\d{1,2})(?:[/\-.](\d{2,4}))?\b/);
+  if (dmy) {
+    const dayNum = Number(dmy[1]);
+    const monthIndex = Number(dmy[2]) - 1;
+    const [ty] = today.split("-").map(Number) as [number];
+    let year = dmy[3] ? Number(dmy[3]) : ty;
+    if (year < 100) year += 2000;
+    if (monthIndex >= 0 && monthIndex <= 11) {
+      let candidate = ymdFromParts(year, monthIndex, dayNum);
+      if (candidate && !dmy[3] && candidate < today) {
+        candidate = ymdFromParts(year + 1, monthIndex, dayNum);
+      }
+      if (candidate) return { day: candidate, dateMentioned: true };
+    }
+  }
+
+  return { day: today, dateMentioned: false };
+}
+
+export function isReminderAsk(message: string): boolean {
+  const t = message.trim();
+  if (/\b(don['’]?t|do not)\s+remind\b/i.test(t)) return false;
+  return /\bremind\s+me\b/i.test(t) || /^remind\b/i.test(t);
+}
+
+function stripReminderTitle(text: string): string {
   let title = text
     .replace(/^(?:please\s+)?remind\s+me\s+(?:to\s+|about\s+|for\s+|of\s+)?/i, "")
-    .replace(/\b(?:today|tomorrow|in\s+\d+\s+days?)\b/gi, "")
+    .replace(/\b(?:today|tomorrow|tomorow|tommorow|in\s+\d+\s+days?)\b/gi, "")
+    .replace(
+      /\b(?:on\s+)?(?:this|next)?\s*(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)s?\b/gi,
+      "",
+    )
+    .replace(
+      /\bon\s+(?:the\s+)?\d{1,2}(?:st|nd|rd|th)?(?:\s+\w+)?(?:\s+\d{4})?\b/gi, "",
+    )
+    .replace(/\bon\s+\w+\s+\d{1,2}(?:st|nd|rd|th)?(?:\s*,?\s*\d{4})?\b/gi, "")
+    .replace(/\bon\s+\d{1,2}[/\-.]\d{1,2}(?:[/\-.]\d{2,4})?\b/gi, "")
     .replace(
       /\b(?:at|@)\s*\d{1,2}(?::\d{2})?\s*(?:am|pm)?(?:\s*(?:and|,|&)\s*(?:at\s*)?\d{1,2}(?::\d{2})?\s*(?:am|pm)?)*\b/gi,
       "",
@@ -612,19 +715,54 @@ export function parseReminderMessage(
   if (!title || /^(a |the )?(call|meeting|it)?$/i.test(title)) {
     title = title && !/^(a |the )?$/i.test(title) ? title : "Reminder";
   }
-  // Prefer "call" if that was the only content word.
   if (/^call$/i.test(title)) title = "Call";
+  return title;
+}
 
-  const specs: ReminderSpec[] = [];
-  for (const c of clocks) {
-    let due = zonedLocalDateTime(timeZone, day, c.hour, c.minute);
-    // If time already passed today (and not tomorrow), roll to tomorrow.
-    if (!/\btomorrow\b/i.test(text) && due.getTime() <= now.getTime() - 60_000) {
-      due = zonedLocalDateTime(timeZone, addCalendarDays(day, 1), c.hour, c.minute);
-    }
-    specs.push({ title, dueAt: due });
+/**
+ * Parse "remind me … at 12:30" / "remind me Friday to call Raj".
+ * Timed specs get a 1-minute calendar nudge; date-only waits for the morning brief.
+ */
+export function parseReminderMessage(
+  message: string,
+  timeZone: string,
+  now: Date = new Date(),
+): ReminderSpec[] {
+  const text = message.trim();
+  if (!isReminderAsk(text)) return [];
+
+  const { day, dateMentioned } = parseReminderDay(text, timeZone, now);
+
+  const clocks: ParsedClock[] = [];
+  const re =
+    /\b(\d{1,2}:\d{2}\s*(?:am|pm)?|\d{1,2}\s*(?:am|pm)|(?:at|@)\s*\d{1,2}(?::\d{2})?(?:\s*(?:am|pm))?)\b/gi;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(text)) !== null) {
+    const token = match[1]!.replace(/^(?:at|@)\s*/i, "").replace(/\s+/g, "");
+    const clock = parseClockToken(token);
+    if (clock) clocks.push(clock);
   }
-  return specs;
+
+  const title = stripReminderTitle(text);
+
+  if (clocks.length) {
+    const specs: ReminderSpec[] = [];
+    for (const c of clocks) {
+      let due = zonedLocalDateTime(timeZone, day, c.hour, c.minute);
+      if (!dateMentioned && due.getTime() <= now.getTime() - 60_000) {
+        due = zonedLocalDateTime(timeZone, addCalendarDays(day, 1), c.hour, c.minute);
+      }
+      specs.push({ title, dueAt: due, kind: "timed" });
+    }
+    return specs;
+  }
+
+  if (dateMentioned) {
+    const dueAt = zonedLocalDateTime(timeZone, day, 9, 0);
+    return [{ title, dueAt, kind: "post_brief" }];
+  }
+
+  return [];
 }
 
 /** Extract travel / timezone update from NL. */

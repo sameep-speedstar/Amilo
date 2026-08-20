@@ -12,7 +12,7 @@ Amilo watches **workday obligations**, not the whole internet. Background alerts
 
 ## Schedule memory (not Google)
 
-Personal protected windows (school pickup, gym, golf) live as context-graph `schedule` nodes — not calendar events unless the user asks. They count as busy for create-time conflict checks and inbound invite scans.
+Personal protected windows (school pickup, gym, golf) live as context-graph `schedule` nodes — not calendar events unless the user asks. They count as busy for create-time conflict checks and inbound invite scans. They do **not** print on the daily TODAY/TOMORROW brief; only an **active hold** (extend till 5) appears there.
 
 **Hold:** voice/text like “extend school pickup till 5, don’t book any meetings” sets `holdUntilIso` + `autoDecline` on that schedule. While the hold is active, overlapping inbound invites are **auto-declined** (RSVP) with a short WhatsApp FYI — no yes/decline pending. Say `cancel hold` to lift.
 

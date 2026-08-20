@@ -85,4 +85,22 @@ describe("calendar conflict", () => {
     assert.equal(result.clear, true);
     assert.equal(formatConflictProposalNote(result, tz), null);
   });
+
+  it("ignores 1-minute reminder nudges when checking meetings", () => {
+    const tz = "Asia/Kolkata";
+    const nudgeStart = zonedLocalDateTime(tz, "2026-08-08", 10, 15);
+    const result = checkSlotConflicts(
+      [
+        {
+          title: "Reminder: Call",
+          start: nudgeStart,
+          end: new Date(nudgeStart.getTime() + 60_000),
+        },
+      ],
+      zonedLocalDateTime(tz, "2026-08-08", 10, 0),
+      zonedLocalDateTime(tz, "2026-08-08", 11, 0),
+      tz,
+    );
+    assert.equal(result.clear, true);
+  });
 });

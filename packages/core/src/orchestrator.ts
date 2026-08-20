@@ -51,7 +51,9 @@ import {
   formatLocalHm,
   formatLocalIsoWall,
   formatLocalWhenFriendly,
+  formatLocalDateLong,
   isTimezoneAffirmative,
+  isReminderAsk,
   parseCalendarCreateHint,
   parseHmInput,
   parseIsoDate,
@@ -59,6 +61,8 @@ import {
   parseTimezoneUpdateMessage,
   formatCalendarProposalSummary,
   timezoneFriendlyLabel,
+  type ReminderKind,
+  type ReminderSpec,
 } from "./time.js";
 import {
   formatScheduleAck,
@@ -497,8 +501,16 @@ export interface OrchestratorDeps {
   confirmTimezone?: (userId: string) => Promise<void>;
   createReminders?: (
     userId: string,
-    items: Array<{ title: string; dueAt: Date }>,
-  ) => Promise<Array<{ title: string; dueAt: Date }>>;
+    items: ReminderSpec[],
+  ) => Promise<
+    Array<{
+      title: string;
+      dueAt: Date;
+      kind: ReminderKind;
+      calendarOk?: boolean;
+      fire?: "calendar" | "after_brief" | "soon";
+    }>
+  >;
   getBriefSchedule?: (userId: string) => Promise<{
     enabled: boolean;
     morningHm: string;
@@ -628,6 +640,7 @@ export function looksLikeNewActionIntent(
   if (parseForwardToCalendar(t, timeZone, now)) return true;
   if (isCalendarInviteIntent(t)) return true;
   if (parseReminderMessage(t, timeZone, now).length > 0) return true;
+  if (isReminderAsk(t)) return true;
   if (/\b(send|draft)\b/i.test(t) && /\b(email|mail|invite)\b/i.test(t)) return true;
   if (/\bcalendar invite\b/i.test(t)) return true;
   if (/\binvite\b/i.test(t) && /@|\bspeedstar\b|\brajeev\b|\brajiv\b/i.test(t)) return true;
@@ -851,25 +864,51 @@ function tzConfirmPrompt(timezone: string): string {
 async function scheduleRemindersReply(
   userId: string,
   timezone: string,
-  items: Array<{ title: string; dueAt: Date }>,
+  items: ReminderSpec[],
   deps: OrchestratorDeps,
 ): Promise<OutboundMessage[]> {
   if (!deps.createReminders) {
     return [{ text: "Reminders aren't wired yet." }];
   }
   const saved = await deps.createReminders(userId, items);
-  const lines = saved.map(
-    (r) => `• ${formatLocalHm(r.dueAt, timezone)} — ${r.title}`,
-  );
-  return [
-    {
-      text: [
-        saved.length === 1 ? "Reminder set:" : `${saved.length} reminders set:`,
-        ...lines,
-        `(${timezoneFriendlyLabel(timezone)})`,
-      ].join("\n"),
-    },
-  ];
+  const postBrief = saved.filter((r) => r.kind === "post_brief" && r.fire !== "soon");
+  const soon = saved.filter((r) => r.fire === "soon");
+  const timed = saved.filter((r) => r.kind === "timed");
+  const lines: string[] = [];
+  if (timed.length) {
+    lines.push(timed.length === 1 ? "Reminder set:" : `${timed.length} reminders set:`);
+    for (const r of timed) {
+      const when = formatLocalWhenFriendly(r.dueAt, timezone);
+      lines.push(
+        r.calendarOk
+          ? `• ${when} — ${r.title} (1 min on calendar)`
+          : `• ${when} — ${r.title} (WhatsApp ping)`,
+      );
+    }
+  }
+  if (postBrief.length) {
+    const day = formatLocalDateLong(postBrief[0]!.dueAt, timezone);
+    lines.push(`I'll remind you after the morning brief on ${day}:`);
+    for (const r of postBrief) {
+      lines.push(
+        r.calendarOk
+          ? `• ${r.title} (1 min on calendar at 09:00)`
+          : `• ${r.title}`,
+      );
+    }
+  }
+  if (soon.length) {
+    lines.push("Morning brief already went — I'll ping you now:");
+    for (const r of soon) {
+      lines.push(
+        r.calendarOk
+          ? `• ${r.title} (1 min on calendar at 09:00)`
+          : `• ${r.title}`,
+      );
+    }
+  }
+  lines.push(`(${timezoneFriendlyLabel(timezone)})`);
+  return [{ text: lines.join("\n") }];
 }
 
 /**
@@ -1780,6 +1819,13 @@ export async function handleInbound(
     }
     return scheduleRemindersReply(msg.userId, tzState.timezone, reminderSpecs, deps);
   }
+  if (isReminderAsk(text) && deps.createReminders && !reminderSpecs.length) {
+    return [
+      {
+        text: "When should I remind you — a time (1 min on calendar, even over a meeting), or just a day (I'll ping after that morning brief)?",
+      },
+    ];
+  }
 
   if (isGoogleListCommand(text)) {
     return replyGoogleList(msg.userId, deps);
@@ -2224,10 +2270,14 @@ export async function handleInbound(
         return scheduleRemindersReply(msg.userId, briefCtx.timezone, fromText, deps);
       }
     } else {
+      const fromText = parseReminderMessage(text, briefCtx.timezone);
+      if (fromText.length) {
+        return scheduleRemindersReply(msg.userId, briefCtx.timezone, fromText, deps);
+      }
       return scheduleRemindersReply(
         msg.userId,
         briefCtx.timezone,
-        [{ title, dueAt }],
+        [{ title, dueAt, kind: "timed" }],
         deps,
       );
     }

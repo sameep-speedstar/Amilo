@@ -1,6 +1,6 @@
 import { and, asc, desc, eq, gte, isNull, lt, lte, ne, or, sql } from "drizzle-orm";
 import type { GraphUpdate } from "@amilo/brain-contract";
-import { formatLocalDayShort, formatLocalHm, guessTimezoneFromPhone, localDayBoundsUtc, cleanCalendarDisplayTitle, formatLeaveByBriefLine, detectTravelConflictsFromCoords, describeTravelConflict, mailHayMatchesQuery, mailSearchTokens, mailTokenInHay, scheduleAppliesOnDay, parseScheduleAttrs, type MailWorkingSet } from "@amilo/core";
+import { formatLocalDayShort, formatLocalHm, guessTimezoneFromPhone, localDayBoundsUtc, cleanCalendarDisplayTitle, formatLeaveByBriefLine, detectTravelConflictsFromCoords, describeTravelConflict, mailHayMatchesQuery, mailSearchTokens, mailTokenInHay, parseScheduleAttrs, briefScheduleWindowLine, type MailWorkingSet } from "@amilo/core";
 import {
   isAutomatedSender,
   mailBriefOrgKey,
@@ -2137,8 +2137,8 @@ function looksLikePromoMail(hay: string): boolean {
   );
 }
 
-/** Recruiting status FYI (e.g. Greenhouse “we hired for the role”) — no action. */
-export function isFyiRecruitingMail(hay: string): boolean {
+/** Recruiting FYI — interview/offer headlines never earn FOCUS, person or not. */
+export function isFyiRecruitingMail(hay: string, _actor = ""): boolean {
   const h = hay.toLowerCase();
   return (
     /\b(recently )?hired for\b/.test(h) ||
@@ -2148,14 +2148,16 @@ export function isFyiRecruitingMail(hay: string): boolean {
     /\bnot moving forward (with )?your (application|candidacy)\b/.test(h) ||
     /\bpursue other candidates\b/.test(h) ||
     /\bapplication was unsuccessful\b/.test(h) ||
-    /\bother candidates\b/.test(h) && /\b(moving forward|selected|chosen)\b/.test(h)
+    (/\bother candidates\b/.test(h) && /\b(moving forward|selected|chosen)\b/.test(h)) ||
+    /\b(interview (invite|invitation|scheduled)|offer letter)\b/.test(h) ||
+    /\bschedule (a|an) (interview|call)\b/.test(h)
   );
 }
 
 /** FYI bank/broker/app/recruiting noise — no user action needed. */
 export function isPassiveTransactionalMail(hay: string): boolean {
   const h = hay.toLowerCase();
-  if (isFyiRecruitingMail(h)) return true;
+  if (isFyiRecruitingMail(h, hay)) return true;
   if (isActionDemandingMail(h)) return false;
   return (
     /\bupi\s+debit\b/.test(h) ||
@@ -2183,9 +2185,9 @@ export function isPassiveTransactionalMail(hay: string): boolean {
 }
 
 /** Needs the user to do something (pay, fix, reply, complete, show up). */
-export function isActionDemandingMail(hay: string): boolean {
+export function isActionDemandingMail(hay: string, actor = ""): boolean {
   const h = hay.toLowerCase();
-  if (isFyiRecruitingMail(h)) return false;
+  if (isFyiRecruitingMail(h, actor)) return false;
   // Appointment reminders are calendar items — not priority mail (scored separately).
   if (/\bappointment reminder\b/.test(h)) return false;
   return (
@@ -2204,8 +2206,6 @@ export function isActionDemandingMail(hay: string): boolean {
     (/\b(invoice|payment)\b/.test(h) && /\b(due|pay now|outstanding|unpaid)\b/.test(h)) ||
     (/\b(credit )?card bill\b/.test(h) && /\b(due|pay|outstanding)\b/.test(h)) ||
     (/\b(credit )?card statement\b/.test(h) && /\b(due|pay|outstanding)\b/.test(h)) ||
-    /\b(interview (invite|invitation|scheduled)|offer letter)\b/.test(h) ||
-    /\bschedule (a|an) (interview|call)\b/.test(h) ||
     (/\byour application\b/.test(h) &&
       /\b(incomplete|complete|deadline|submit|action|review|next step)\b/.test(h)) ||
     /\b(registration|register now|please register|rsvp|enrol+ment)\b/.test(h) ||
@@ -2346,16 +2346,15 @@ export function mailPriorityScore(
     return appt ? appt.score : 0;
   }
 
-  if (isFyiRecruitingMail(hay)) return 0;
+  if (isFyiRecruitingMail(hay, actor)) return 0;
 
   let score = 0;
-  if (isActionDemandingMail(hay)) {
+  if (isActionDemandingMail(hay, actor)) {
     score += 70;
     if (/\b(failed|insufficient|overdue|due today)\b/.test(t)) score += 20;
     if (/\bbill\b/.test(t) && /\bdue\b/.test(t)) score += 15;
     if (/\b(amount due|minimum due|payment due)\b/.test(hay.toLowerCase())) score += 15;
   }
-  if (/\b(interview (invite|invitation|scheduled)|offer letter)\b/.test(t)) score += 55;
   // VIP boosts only already-actionable mail — never surfaces FYI alone.
   if (score > 0 && isVipMail(hay, vipList)) score += 40;
 
@@ -2384,8 +2383,9 @@ export async function summarizeOpenCommitments(
 
 export async function createReminder(
   db: Db,
-  opts: { userId: string; title: string; dueAt: Date },
+  opts: { userId: string; title: string; dueAt: Date; reason?: string },
 ): Promise<{ id: string }> {
+  const reason = opts.reason ?? "reminder";
   const [row] = await db
     .insert(commitments)
     .values({
@@ -2393,18 +2393,10 @@ export async function createReminder(
       title: opts.title.slice(0, 500),
       status: "open",
       dueAt: opts.dueAt,
-      reason: "reminder",
+      reason,
     })
     .returning({ id: commitments.id });
   if (!row) throw new Error("failed to create reminder");
-  const { createWatch } = await import("./watchRepos.js");
-  await createWatch(db, {
-    userId: opts.userId,
-    kind: "commitment_stall",
-    title: opts.title.slice(0, 500),
-    commitmentId: row.id,
-    dueAt: opts.dueAt,
-  });
   return row;
 }
 
@@ -2484,6 +2476,29 @@ export async function markReminderNotified(db: Db, id: string): Promise<void> {
       resolvedAt: now,
     })
     .where(eq(commitments.id, id));
+}
+
+/** Date-only reminders waiting to fire after that local day's morning brief. */
+export async function listPostBriefReminders(
+  db: Db,
+  userId: string,
+  bounds: { timeMin: Date; timeMax: Date },
+): Promise<Array<{ id: string; title: string; dueAt: Date }>> {
+  const rows = await db.query.commitments.findMany({
+    where: and(
+      eq(commitments.userId, userId),
+      eq(commitments.status, "open"),
+      eq(commitments.reason, "reminder_post_brief"),
+      isNull(commitments.notifiedAt),
+      gte(commitments.dueAt, bounds.timeMin),
+      lt(commitments.dueAt, bounds.timeMax),
+    ),
+    orderBy: [asc(commitments.dueAt)],
+    limit: 10,
+  });
+  return rows
+    .filter((r): r is typeof r & { dueAt: Date } => r.dueAt != null)
+    .map((r) => ({ id: r.id, title: r.title, dueAt: r.dueAt }));
 }
 
 export type ScheduledBriefUser = {
@@ -2634,6 +2649,7 @@ export async function buildPriorityBriefPayload(
     limit: 8,
   });
   for (const c of commits) {
+    if (c.reason === "reminder" || c.reason === "reminder_post_brief") continue;
     const due =
       c.dueAt && c.dueAt >= timeMin && c.dueAt <= timeMax
         ? formatLocalHm(c.dueAt, timezone)
@@ -2738,7 +2754,7 @@ export async function buildPriorityBriefPayload(
     const toHeader = String((e.meta as { to?: unknown } | null)?.to ?? "").trim();
     const onTo = userIsOnTo(toHeader, userEmails);
     const hay = `${e.actor ?? ""} ${fullTitle} ${snippet}`;
-    const hardKeep = isActionDemandingMail(hay) && mailPriorityScore(fullTitle, e.actor ?? "", vipList, snippet, { timezone, now }) >= 70;
+    const hardKeep = isActionDemandingMail(hay, e.actor ?? "") && mailPriorityScore(fullTitle, e.actor ?? "", vipList, snippet, { timezone, now }) >= 70;
     if (onTo === false && !hardKeep) continue;
     if (isAutomatedSender(e.actor ?? "") && !hardKeep) continue;
     const score = mailPriorityScore(fullTitle, e.actor ?? "", vipList, snippet, {
@@ -2954,8 +2970,12 @@ export async function buildPriorityBriefPayload(
         }
       }
       if (!attrs) continue;
-      if (!scheduleAppliesOnDay(attrs.days, focusDay, timezone)) continue;
-      calBits.push(`${attrs.startHm}–${attrs.endHm} ${n.label}`);
+      const holdLine = briefScheduleWindowLine(n.label, attrs, {
+        timeZone: timezone,
+        now,
+        focusDay,
+      });
+      if (holdLine) calBits.push(holdLine);
     }
   } catch {
     /* schedule memory optional */
@@ -3025,10 +3045,9 @@ export async function buildPriorityBriefPayload(
 
   const calHeading = kind === "pm" ? "TOMORROW" : "TODAY";
   const openHeading = kind === "pm" ? "STILL OPEN" : "FOCUS";
-  const calEmpty = kind === "pm" ? "• none yet" : "• none today";
   const calLine =
     calUnique.length === 0
-      ? `${calHeading}\n${calEmpty}`
+      ? null
       : `${calHeading}\n${calUnique.map((b) => `• ${b}`).join("\n")}`;
 
   const doneRows = unshownCompleted(attentionState).slice(0, 3);
@@ -3050,9 +3069,7 @@ export async function buildPriorityBriefPayload(
   const priorityLines = items.map((it) => `${it.index}) ${it.label}`);
   const digestFlat = [
     calUnique.length === 0
-      ? kind === "pm"
-        ? "Tomorrow: none yet."
-        : "Today: none."
+      ? ""
       : `${kind === "pm" ? "Tomorrow" : "Today"}: ${calUnique
           .slice(0, 4)
           .map((b) => `• ${b}`)
@@ -3074,7 +3091,7 @@ export async function buildPriorityBriefPayload(
 
   const digestText = [
     calLine,
-    "",
+    calLine ? "" : null,
     openHeading,
     ...(items.length ? items.map((it) => `${it.index}) ${it.label}`) : ["• none needing you"]),
     doneRows.length ? "" : null,

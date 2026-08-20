@@ -33,7 +33,10 @@ export function findOverlappingBlocks(
   end: Date,
 ): CalendarBlock[] {
   return blocks.filter(
-    (b) => !b.allDay && intervalsOverlap(start, end, b.start, b.end),
+    (b) =>
+      !b.allDay &&
+      b.end.getTime() - b.start.getTime() > 2 * 60_000 &&
+      intervalsOverlap(start, end, b.start, b.end),
   );
 }
 

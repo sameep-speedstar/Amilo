@@ -32,7 +32,7 @@ Two touches then park (watcher fire counts). New mail on the **same thread** res
 
 ## Morning brief shape
 
-TODAY (calendar + schedule windows) → FOCUS (≤3) → DONE (once) → HANDLED (yesterday count). Empty blocks omitted.
+TODAY (Google calendar + leave-by). Standing schedule memory (school pickup, gym) stays silent except an active hold. Then FOCUS (≤3) → DONE (once) → HANDLED (yesterday count). Empty blocks omitted.
 
 Evening: TOMORROW + STILL OPEN + DONE today (if not already shown). No HANDLED at night.
 

@@ -7,6 +7,7 @@ import {
   isAutoDeclineHoldActive,
   matchScheduleLabel,
   parseScheduleIntent,
+  briefScheduleWindowLine,
   scheduleAppliesOnDay,
   scheduleBlocksForRange,
 } from "./schedules.js";
@@ -172,5 +173,34 @@ describe("schedule memory", () => {
     });
     assert.match(hold, /held till/i);
     assert.match(hold, /decline/i);
+  });
+
+  it("keeps standing pickup off the daily brief", () => {
+    const tz = "Asia/Kolkata";
+    const now = zonedLocalDateTime(tz, "2026-08-20", 10, 0);
+    const standing = briefScheduleWindowLine(
+      "school pickup",
+      { days: "daily", startHm: "16:00", endHm: "16:30" },
+      { timeZone: tz, now, focusDay: "2026-08-20" },
+    );
+    assert.equal(standing, null);
+  });
+
+  it("prints an active hold on the focus day only", () => {
+    const tz = "Asia/Kolkata";
+    const now = zonedLocalDateTime(tz, "2026-08-20", 10, 0);
+    const holdUntil = zonedLocalDateTime(tz, "2026-08-20", 17, 0).toISOString();
+    const line = briefScheduleWindowLine(
+      "school pickup",
+      { days: "daily", startHm: "16:00", endHm: "16:30", holdUntilIso: holdUntil },
+      { timeZone: tz, now, focusDay: "2026-08-20" },
+    );
+    assert.equal(line, "16:00–17:00 school pickup (hold)");
+    const tomorrow = briefScheduleWindowLine(
+      "school pickup",
+      { days: "daily", startHm: "16:00", endHm: "16:30", holdUntilIso: holdUntil },
+      { timeZone: tz, now, focusDay: "2026-08-21" },
+    );
+    assert.equal(tomorrow, null);
   });
 });

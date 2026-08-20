@@ -140,11 +140,23 @@ describe("brief mail action filter", () => {
     );
   });
 
-  it("keeps interview invite / offer letter as actionable", () => {
-    assert.ok(
-      mailPriorityScore("Interview invitation — Tuesday 2pm", "recruiter@acme.com") >= 70,
+  it("drops interview/offer headlines even from a named person", () => {
+    assert.equal(
+      mailPriorityScore("Interview invitation — Tuesday 2pm", "recruiter@acme.com"),
+      0,
     );
-    assert.ok(mailPriorityScore("Your offer letter from Acme", "hr@acme.com") >= 70);
+    assert.equal(mailPriorityScore("Your offer letter from Acme", "hr@acme.com"), 0);
+    assert.equal(
+      mailPriorityScore(
+        "Interview invitation — Tuesday 2pm",
+        "Priya Sharma <priya@acme.com>",
+      ),
+      0,
+    );
+    assert.equal(
+      mailPriorityScore("Your offer letter from Acme", "Amit Kumar <amit@acme.com>"),
+      0,
+    );
   });
 
   it("keeps credit card bill due phrasing and drops spend alerts", () => {

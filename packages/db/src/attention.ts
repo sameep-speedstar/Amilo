@@ -93,6 +93,38 @@ export function isAutomatedSender(actor: string): boolean {
   );
 }
 
+const MASS_ESP =
+  /\b(mailchimp|sendgrid|amazonses|ses\.amazonaws|klaviyo|hubspot|intercom|greenhouse|ashbyhq|workday|linkedin|indeed|naukri|constantcontact)\b/;
+
+const MASS_LOCAL =
+  /\b(careers|jobs|talent|recruiting|recruiter|hr|marketing|newsletter|campaigns|promo|bounces?|notifications?|noreply|no-reply)@/;
+
+/** ESP / recruiting mailbox / alerts — a mass shooter, not a person. */
+export function isMassMailSender(actor: string): boolean {
+  if (isAutomatedSender(actor)) return true;
+  const a = actor.toLowerCase();
+  return MASS_ESP.test(a) || MASS_LOCAL.test(a);
+}
+
+/**
+ * A real person on From: (e.g. "Juhi Badle <juhi@…>").
+ * Team / Alerts / Recruiter mailboxes are not people.
+ */
+export function isPersonLikeSender(actor: string): boolean {
+  if (!actor.trim() || isMassMailSender(actor)) return false;
+  const named = actor.match(/^"?([^"<]+?)"?\s*</);
+  const name = (named?.[1] ?? "").trim();
+  if (!name) return false;
+  if (
+    /^(team|the team|alerts?|notify|notification|no-?reply|mailer|newsletter|info|hello|support|careers|jobs|recruiting|recruiter|hr|admin)\b/i.test(
+      name,
+    )
+  ) {
+    return false;
+  }
+  return /[\p{L}]{2,}/u.test(name);
+}
+
 export type CadenceOpts = {
   now: Date;
   kind: "am" | "pm";

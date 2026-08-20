@@ -15,13 +15,13 @@ The same `context_nodes` / `context_edges` (plus linked commitments, watches, an
 | place | Mumbai office |
 | topic | ICICI margin, Series A |
 | preference | mornings for deep work, WhatsApp over email |
-| schedule | School pickup weekdays 16:00–16:30, Gym, Golf — personal protected windows **not** on Google Calendar |
+| schedule | School pickup weekdays 16:00–16:30, Gym, Golf — personal protected windows **not** on Google Calendar or the daily TODAY brief |
 | constraint | no meetings before 10 (non-timed / soft rules) |
 | goal | close Q3 budget, ship Amilo WA |
 
 Prefer typed **edges** over stuffing relations into attrs. Important CoS edge: `waiting_on` (user → person) when the user arms a watch.
 
-For timed recurring “don’t book me” windows, use **`schedule`** (attrs: `days`, `startHm`, `endHm`; optional hold: `holdUntilIso`, `autoDecline`). Do not invent Google Calendar events for gym/pickup/golf unless the user asks to put them on the calendar.
+For timed recurring “don’t book me” windows, use **`schedule`** (attrs: `days`, `startHm`, `endHm`; optional hold: `holdUntilIso`, `autoDecline`). Do not invent Google Calendar events for gym/pickup/golf unless the user asks to put them on the calendar. Standing windows stay off the daily brief; an active hold may appear once on TODAY.
 
 ## Edge relations (examples)
 

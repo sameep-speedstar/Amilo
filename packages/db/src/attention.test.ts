@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
+  isMassMailSender,
+  isPersonLikeSender,
   mailBriefOrgKey,
   markCompleted,
   markDoneShown,
@@ -30,6 +32,22 @@ describe("mailBriefOrgKey", () => {
 
   it("uses domain for org mailboxes", () => {
     assert.equal(mailBriefOrgKey("Team OneCard <notify@getonecard.app>"), "getonecard.app");
+  });
+});
+
+describe("person vs mass sender", () => {
+  it("treats recruiter/hr/alerts mailboxes as mass", () => {
+    assert.equal(isMassMailSender("recruiter@acme.com"), true);
+    assert.equal(isMassMailSender("hr@acme.com"), true);
+    assert.equal(isMassMailSender("alerts@axis.bank.in"), true);
+    assert.equal(isPersonLikeSender("recruiter@acme.com"), false);
+    assert.equal(isPersonLikeSender("HR <hr@acme.com>"), false);
+  });
+
+  it("treats a named person as a person", () => {
+    assert.equal(isPersonLikeSender("Priya Sharma <priya@acme.com>"), true);
+    assert.equal(isPersonLikeSender("Juhi Badle <juhi@example.com>"), true);
+    assert.equal(isMassMailSender("Juhi Badle <juhi@example.com>"), false);
   });
 });
 
