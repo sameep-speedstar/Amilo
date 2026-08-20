@@ -1,6 +1,17 @@
 import type { BrainPort, GraphUpdate } from "@amilo/brain-contract";
 import type { ChannelPort, InboundMessage, OutboundMessage } from "./channel.js";
 import {
+  composeEmailDraft,
+  emailDraftIntro,
+  formatEmailDraftCopy,
+  isDraftOnlyPayload,
+  isSendDraftAsk,
+  isShowDraftAsk,
+  parseBareEmail,
+  parseEmailComposeAsk,
+  type EmailComposeAsk,
+} from "./emailDraft.js";
+import {
   extractInviteeNames,
   isCalendarInviteIntent,
   parseForwardToCalendar,
@@ -775,6 +786,62 @@ async function proposeCalendarCreatePending(
   ];
 }
 
+function emailDraftMode(payload: Record<string, unknown>, fallback: EmailComposeAsk | null): "draft" | "send" {
+  if (isDraftOnlyPayload(payload)) return "draft";
+  if (fallback?.mode === "draft") return "draft";
+  return "send";
+}
+
+function emailDraftMessages(payload: Record<string, unknown>, mode: "draft" | "send"): OutboundMessage[] {
+  return [
+    {
+      text: emailDraftIntro({
+        mode,
+        to: String(payload.to ?? ""),
+        recipientLabel: String(payload.recipientLabel ?? ""),
+      }),
+    },
+    { text: formatEmailDraftCopy(payload) },
+  ];
+}
+
+async function proposeEmailComposePending(
+  msg: InboundMessage,
+  deps: OrchestratorDeps,
+  ask: EmailComposeAsk,
+  extras?: { to?: string; subject?: string; body?: string; userName?: string },
+): Promise<OutboundMessage[]> {
+  let to = extras?.to?.trim() || (ask.toHint?.includes("@") ? ask.toHint : "");
+  if (!to && ask.toHint && deps.resolveContactEmail) {
+    const hit = await deps.resolveContactEmail(msg.userId, ask.toHint);
+    if (hit?.email) to = hit.email;
+  }
+  const composed = composeEmailDraft(ask, extras?.userName);
+  const subject = extras?.subject?.trim() || composed.subject;
+  const body = extras?.body?.trim() || composed.body;
+  const payload: Record<string, unknown> = {
+    accountLabel: "personal",
+    to,
+    subject,
+    body,
+    draftOnly: ask.mode === "draft",
+    ...(ask.toHint ? { recipientLabel: ask.toHint } : {}),
+  };
+  if (!deps.createPending) {
+    return emailDraftMessages(payload, ask.mode);
+  }
+  await deps.createPending({
+    userId: msg.userId,
+    kind: "email_draft",
+    summary: `Email draft to ${to || ask.toHint || "?"}: ${subject}`,
+    payload,
+  });
+  if (to && deps.rememberContactEmail && ask.toHint && !ask.toHint.includes("@")) {
+    await deps.rememberContactEmail(msg.userId, { label: ask.toHint, email: to });
+  }
+  return emailDraftMessages(payload, ask.mode);
+}
+
 /** Apply "edit …" patches to a pending payload (email to/subject, calendar title). */
 export function applyPendingEditPatch(
   kind: string,
@@ -982,9 +1049,41 @@ export async function handleInbound(
     ? await deps.getOpenPending(msg.userId)
     : null;
 
+  if (isShowDraftAsk(text)) {
+    if (openPending?.kind === "email_draft") {
+      return emailDraftMessages(
+        openPending.payload,
+        emailDraftMode(openPending.payload, null),
+      );
+    }
+    return [{ text: "No email draft pending. Ask me to draft one — it stays here until you say send." }];
+  }
+
   if (openPending && deps.confirmPending && deps.rejectPending) {
     const isCancelKind = openPending.kind === "calendar_cancel";
     const isConflictKind = openPending.kind === "calendar_conflict";
+    if (openPending.kind === "email_draft") {
+      const bareTo = parseBareEmail(text);
+      if (bareTo && deps.editPending) {
+        const to = normalizeAttendeeEmail(bareTo);
+        const nextPayload: Record<string, unknown> = { ...openPending.payload, to };
+        const summary = `Email draft to ${to}: ${String(nextPayload.subject ?? "draft")}`;
+        await deps.editPending(msg.userId, nextPayload, summary);
+        const label = String(nextPayload.recipientLabel ?? "").trim();
+        if (label && deps.rememberContactEmail) {
+          await deps.rememberContactEmail(msg.userId, { label, email: to });
+        }
+        return emailDraftMessages(nextPayload, emailDraftMode(nextPayload, null));
+      }
+      if (isSendDraftAsk(text)) {
+        if (!String(openPending.payload.to ?? "").includes("@")) {
+          const who = String(openPending.payload.recipientLabel ?? "the recipient");
+          return [{ text: `Need ${who}'s email before I can send.` }];
+        }
+        const r = await deps.confirmPending(msg.userId);
+        return [{ text: r.ok ? r.message : `Couldn't complete: ${r.message}` }];
+      }
+    }
     const affirm = isCancelKind
       ? /^(yes|y|yeah|yep|ok|okay|confirm|do it|go ahead|approved?|cancel( it| this| now)?)$/i.test(
           lower,
@@ -999,6 +1098,14 @@ export async function handleInbound(
         : /^(cancel|no|nope|reject|don't|dont|never ?mind|abort)$/i.test(lower);
 
     if (affirm) {
+      if (openPending.kind === "email_draft" && isDraftOnlyPayload(openPending.payload)) {
+        return [
+          {
+            text: "Not sent. Say send to deliver via Gmail, edit <change>, or cancel.",
+          },
+          { text: formatEmailDraftCopy(openPending.payload) },
+        ];
+      }
       const r = await deps.confirmPending(msg.userId);
       return [{ text: r.ok ? r.message : `Couldn't complete: ${r.message}` }];
     }
@@ -1119,8 +1226,11 @@ export async function handleInbound(
     const editMatch = text.match(/^edit\s+(.+)$/i);
     if (editMatch?.[1] && deps.editPending) {
       const patchRaw = editMatch[1].trim();
-      const applied = applyPendingEditPatch(openPending.kind, {}, patchRaw);
+      const applied = applyPendingEditPatch(openPending.kind, openPending.payload, patchRaw);
       const r = await deps.editPending(msg.userId, applied.payload, applied.summaryHint);
+      if (openPending.kind === "email_draft" && r.ok) {
+        return emailDraftMessages(applied.payload, emailDraftMode(applied.payload, null));
+      }
       return [
         {
           text: r.ok
@@ -1137,6 +1247,7 @@ export async function handleInbound(
     // Status / memory / delete commands inspect state without dropping the proposal.
     const inspectOnly =
       isStatusCommand(text) ||
+      isShowDraftAsk(text) ||
       isAboutMeCommand(text) ||
       Boolean(parseAboutPersonCommand(text)) ||
       Boolean(parseWaitingOnCommand(text)) ||
@@ -1157,6 +1268,12 @@ export async function handleInbound(
       await deps.rejectPending(msg.userId);
       // fall through to normal routing
     } else {
+      if (openPending.kind === "email_draft") {
+        return [
+          { text: `Pending: ${openPending.summary}` },
+          ...emailDraftMessages(openPending.payload, emailDraftMode(openPending.payload, null)),
+        ];
+      }
       return [
         {
           text: [
@@ -2340,21 +2457,39 @@ export async function handleInbound(
 
       // Normalize known contact / ASR typos on email drafts.
       if (kind === "email_draft") {
+        const composeAsk = !isCalendarInviteIntent(text) ? parseEmailComposeAsk(text) : null;
         const toRaw = strPayload(payload.to);
         if (toRaw) {
           payload.to = normalizeAttendeeEmail(toRaw);
         } else if (deps.resolveContactEmail) {
-          const names = extractInviteeNames(text);
+          const names = [
+            ...(composeAsk?.toHint && !composeAsk.toHint.includes("@") ? [composeAsk.toHint] : []),
+            ...extractInviteeNames(text),
+          ];
           for (const n of names) {
             const hit = await deps.resolveContactEmail(msg.userId, n);
             if (hit?.email) {
               payload.to = hit.email;
+              payload.recipientLabel = n;
               break;
             }
           }
         }
+        if (composeAsk?.toHint && !strPayload(payload.recipientLabel)) {
+          payload.recipientLabel = composeAsk.toHint;
+        }
+        if (composeAsk?.mode === "draft") payload.draftOnly = true;
+        const bodyNow = strPayload(payload.body) || strPayload(payload.body_draft);
+        if (!bodyNow && composeAsk) {
+          const filled = composeEmailDraft(composeAsk, name);
+          if (!strPayload(payload.subject)) payload.subject = filled.subject;
+          payload.body = filled.body;
+        }
         if (strPayload(payload.to) && deps.rememberContactEmail) {
-          const names = extractInviteeNames(text);
+          const names = [
+            ...(composeAsk?.toHint && !composeAsk.toHint.includes("@") ? [composeAsk.toHint] : []),
+            ...extractInviteeNames(text),
+          ];
           await deps.rememberContactEmail(msg.userId, {
             label: names[0] ?? "Contact",
             email: strPayload(payload.to),
@@ -2542,21 +2677,7 @@ export async function handleInbound(
       });
 
       if (kind === "email_draft") {
-        const body = String(action.body ?? action.body_draft ?? "").trim();
-        const draftLines = [
-          action.to ? `To: ${String(action.to)}` : null,
-          action.subject ? `Subject: ${String(action.subject)}` : null,
-          body || "(empty body)",
-        ].filter(Boolean);
-        return [
-          {
-            text: [
-              "Email ready to send.",
-              "Reply yes to send via Gmail, cancel to drop, or edit <change>.",
-            ].join("\n"),
-          },
-          { text: draftLines.join("\n") },
-        ];
+        return emailDraftMessages(payload, emailDraftMode(payload, parseEmailComposeAsk(text)));
       }
 
       if (kind === "calendar_cancel") {
@@ -2622,6 +2743,10 @@ export async function handleInbound(
 
   switch (result.intent.type) {
     case "reply_text": {
+      const composeAsk = !isCalendarInviteIntent(text) ? parseEmailComposeAsk(text) : null;
+      if (composeAsk && deps.createPending) {
+        return proposeEmailComposePending(msg, deps, composeAsk, { userName: name });
+      }
       const reply = result.intent.text.trim();
       if (reply) return [{ text: reply }];
       return [

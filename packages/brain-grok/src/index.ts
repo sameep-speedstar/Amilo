@@ -181,7 +181,7 @@ async function chatCompletion(
     body: JSON.stringify({
       model: cfg.model,
       temperature: 0.3,
-      max_tokens: 800,
+      max_tokens: 2000,
       messages: [
         { role: "system", content: system },
         { role: "user", content: user },
@@ -221,7 +221,7 @@ function buildSystemPrompt(docs: string): string {
     "When the user asks to add/change/cancel a calendar event, return propose_action with action {\"type\":\"calendar_create\"|\"calendar_update\"|\"calendar_cancel\",\"accountLabel\":\"personal\",\"title\":\"clean event title only\",\"start\":\"ISO-8601 with correct year from Now line\",\"end\":\"ISO-8601\",\"eventId\":\"from Calendar today [id:…] if present\",\"attendees\":[\"email@…\"]}. Do NOT claim it was written — orchestrator will ask for yes/cancel. Prefer ISO with offset for the user timezone. For cancel/update always include eventId from Calendar today when available, and title matching the event.",
     "Strip acknowledgements and instruction verbs from calendar titles: ignore Cool/Ok/Sure/Thanks; book/add/schedule are instructions not title words; 'book 1 hour with Rajeev at 1pm' → title like 'Meeting with Rajeev', start 1pm, end +1h.",
     "When the user asks to send a calendar invite / invite someone to a meeting, use calendar_create with attendees (emails). If Silent context graph has person email=…, use that — do not ask them to restate the email. Never use email_draft for calendar invites.",
-    "When the user asks to send/email someone (not a calendar invite), return propose_action with action {\"type\":\"email_draft\",\"to\":\"...\",\"subject\":\"...\",\"body\":\"full draft in user voice\"}. Orchestrator confirms with yes, then sends via Gmail. Resolve to= from context graph person email when only a name is given.",
+    "When the user asks to send/email someone (not a calendar invite), return propose_action with action {\"type\":\"email_draft\",\"to\":\"...\",\"subject\":\"...\",\"body\":\"full draft in user voice\"}. Orchestrator shows the draft. If they said send, yes sends via Gmail; if they only asked to draft, they must say send. Resolve to= from context graph person email when only a name is given. If the address is unknown, still fill subject+body and put the name in to (do not invent an @ address). Never say \"draft ready\" or \"email ready to send\" in reply_text — that hides the body.",
     "When the user states a recurring personal window they do NOT want on Google Calendar (school pickup, gym, golf), upsert graph kind schedule with attrs days/startHm/endHm — not calendar_create. Prefer schedule over constraint for timed windows.",
     "When the user extends a schedule or says don't book (e.g. pickup till 5), the orchestrator handles holds; still ack briefly if you reply.",
     "All times the user mentions are in their timezone (see User line). Never assume UTC.",

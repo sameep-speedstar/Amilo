@@ -41,6 +41,15 @@ export {
 export { handleInbound, normalizeGoogleLabel, isBriefRequest, type OrchestratorDeps } from "./orchestrator.js";
 export { looksLikeNewActionIntent, applyPendingEditPatch } from "./orchestrator.js";
 export {
+  composeEmailDraft,
+  emailDraftIntro,
+  formatEmailDraftCopy,
+  isSendDraftAsk,
+  isShowDraftAsk,
+  parseBareEmail,
+  parseEmailComposeAsk,
+} from "./emailDraft.js";
+export {
   cleanCalendarDisplayTitle,
   extractInviteeNames,
   isCalendarInviteIntent,

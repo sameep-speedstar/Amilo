@@ -22,6 +22,8 @@ describe("pending intent routing", () => {
       looksLikeNewActionIntent("Send calendar invite to Rajiv at speedstar.ai", "Asia/Kolkata"),
       true,
     );
+    assert.equal(looksLikeNewActionIntent("show draft", "Asia/Kolkata"), false);
+    assert.equal(looksLikeNewActionIntent("send", "Asia/Kolkata"), false);
   });
 
   it("does not treat chatter or yes/cancel as new intents", () => {
