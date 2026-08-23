@@ -22,6 +22,12 @@ import { commitments } from "@amilo/db";
 import { eq } from "drizzle-orm";
 import type { GoogleOAuthConfig } from "@amilo/google";
 import { scanInboundConflictsForAllUsers } from "./calendarConflictScan.js";
+import {
+  markWorkerTickError,
+  markWorkerTickOk,
+  markWorkerTickStart,
+  registerWorker,
+} from "./workerStatus.js";
 
 const WATCHER_INTERVAL_MS = 120_000;
 
@@ -39,6 +45,7 @@ export function startWatchWorker(opts: {
 }): { stop: () => void } {
   const intervalMs = opts.intervalMs ?? WATCHER_INTERVAL_MS;
   let running = false;
+  registerWorker("watch", intervalMs);
 
   const sendAlert = async (
     userId: string,
@@ -96,6 +103,7 @@ export function startWatchWorker(opts: {
   const tick = async () => {
     if (running) return;
     running = true;
+    markWorkerTickStart("watch");
     try {
       // Inbound invite overlaps (live Google) — before armed watches.
       await scanInboundConflictsForAllUsers({
@@ -179,7 +187,9 @@ export function startWatchWorker(opts: {
           }),
         );
       }
+      markWorkerTickOk("watch");
     } catch (err) {
+      markWorkerTickError("watch", err instanceof Error ? err.message : String(err));
       console.error(
         JSON.stringify({
           event: "watch_tick_error",

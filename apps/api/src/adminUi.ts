@@ -3,19 +3,29 @@ import type { Db } from "@amilo/db";
 import {
   addAllowedPhone,
   claimInvite,
+  countInvitesSummary,
   createInvite,
   deactivateAllowedPhone,
   formatUsdFromMicros,
+  getBriefQualityStats,
   getInviteByToken,
+  getInviteFunnelByDay,
   getOnboardingStats,
+  getUserInspect,
+  getWatcherQualityStats,
   inviteIsOpen,
   listAccessRequests,
   listAllowedPhones,
   listInvites,
+  listUsageByKindDay,
   listUsageByUser,
+  listUsersForAdmin,
   waMeUrl,
   type AccessRequestRow,
+  type AdminUserInspect,
+  type AdminUserRow,
 } from "@amilo/db";
+import type { WorkerHeartbeat } from "./workerStatus.js";
 
 function escapeHtml(s: string): string {
   return s
@@ -35,7 +45,6 @@ export function parseCookie(raw: string): Record<string, string> {
   return out;
 }
 
-/** Legacy token auth (emergency). Prefer session cookie from email login. */
 export function adminAuthOk(c: Context, adminToken: string): boolean {
   if (!adminToken) return false;
   const hdr = c.req.header("x-admin-token") ?? "";
@@ -63,11 +72,12 @@ export function clearAdminSessionCookie(): string {
 }
 
 const CSS = `
-:root { color-scheme: light; --ink:#1a1a1a; --muted:#666; --line:#e5e5e5; --accent:#0b6e4f; --bg:#f7f6f2; }
+:root { color-scheme: light; --ink:#1a1a1a; --muted:#666; --line:#e5e5e5; --accent:#0b6e4f; --bg:#f7f6f2; --warn:#b45309; }
 body { font-family: ui-sans-serif, system-ui, sans-serif; margin: 0; background: var(--bg); color: var(--ink); }
-main { max-width: 980px; margin: 0 auto; padding: 28px 20px 64px; }
+main { max-width: 1100px; margin: 0 auto; padding: 28px 20px 64px; }
 h1 { font-size: 1.5rem; margin: 0 0 4px; }
 h2 { font-size: 1.1rem; margin: 0 0 10px; }
+h3 { font-size: 0.95rem; margin: 16px 0 8px; color: var(--muted); }
 p, td, th, label { font-size: 0.95rem; }
 .sub { color: var(--muted); margin: 0 0 20px; }
 .ok { background: #e6f4ef; border: 1px solid #b7d9c9; padding: 10px 12px; border-radius: 8px; }
@@ -80,6 +90,7 @@ input, button, select, textarea { font: inherit; padding: 8px 10px; border-radiu
 button { background: var(--accent); color: #fff; border-color: var(--accent); cursor: pointer; }
 button.ghost { background: #fff; color: var(--ink); border-color: #ccc; }
 button.danger { background: #991b1b; border-color: #991b1b; }
+button.sm { padding: 4px 8px; font-size: 0.8rem; }
 .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: end; }
 .row label { display: flex; flex-direction: column; gap: 4px; }
 code { font-size: 0.85em; }
@@ -87,7 +98,7 @@ code { font-size: 0.85em; }
 .nav a { text-decoration: none; color: var(--ink); padding: 6px 12px; border-radius: 999px; border: 1px solid var(--line); background: #fff; font-size: 0.9rem; }
 .nav a.on { background: var(--accent); color: #fff; border-color: var(--accent); }
 .nav .spacer { flex: 1; }
-.kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; margin-bottom: 8px; }
+.kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; margin-bottom: 8px; }
 .kpi { background: #fff; border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; }
 .kpi .n { font-size: 1.6rem; font-weight: 650; letter-spacing: -0.02em; }
 .kpi .l { color: var(--muted); font-size: 0.8rem; margin-top: 2px; }
@@ -95,10 +106,48 @@ code { font-size: 0.85em; }
 .badge.new { background: #fef3c7; }
 .badge.invited { background: #dbeafe; }
 .badge.active { background: #d1fae5; }
-.badge.declined, .badge.spam { background: #fee2e2; }
+.badge.paused { background: #fde68a; }
+.badge.declined, .badge.spam, .badge.deleted { background: #fee2e2; }
+.badge.ok { background: #d1fae5; }
+.badge.warn { background: #fef3c7; color: #92400e; }
+.badge.off { background: #f3f4f6; color: #6b7280; }
 .actions form { display: inline; margin-right: 4px; }
 .muted { color: var(--muted); font-size: 0.85rem; }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+@media (max-width: 720px) { .grid2 { grid-template-columns: 1fr; } }
+.drawer { border: 2px solid var(--accent); border-radius: 12px; padding: 16px; margin-bottom: 16px; background: #f0fdf4; }
+.drawer-head { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin-bottom: 12px; }
+.drawer-head h2 { margin: 0; flex: 1; }
+.chat { max-height: 320px; overflow-y: auto; background: #fafaf9; border: 1px solid var(--line); border-radius: 8px; padding: 10px; font-size: 0.85rem; }
+.chat .line { margin: 4px 0; }
+.chat .in { color: #1e40af; }
+.chat .out { color: #065f46; }
+.bar-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; font-size: 0.8rem; }
+.bar-row .lbl { width: 72px; color: var(--muted); }
+.bar-row .bar { flex: 1; height: 8px; background: #eee; border-radius: 4px; overflow: hidden; }
+.bar-row .fill { height: 100%; background: var(--accent); border-radius: 4px; }
+.bar-row .num { width: 36px; text-align: right; }
 `;
+
+function fmtWhen(d: Date | null | undefined): string {
+  if (!d) return "—";
+  return d.toISOString().slice(0, 16).replace("T", " ");
+}
+
+function relWhen(d: Date | null | undefined): string {
+  if (!d) return "never";
+  const ms = Date.now() - d.getTime();
+  if (ms < 3600_000) return `${Math.round(ms / 60_000)}m ago`;
+  if (ms < 86_400_000) return `${Math.round(ms / 3600_000)}h ago`;
+  return `${Math.round(ms / 86_400_000)}d ago`;
+}
+
+function capBadge(pct: number, exempt: boolean): string {
+  if (exempt) return `<span class="badge ok">exempt</span>`;
+  if (pct >= 100) return `<span class="badge warn">${pct}%</span>`;
+  if (pct >= 75) return `<span class="badge warn">${pct}%</span>`;
+  return `<span class="muted">${pct}%</span>`;
+}
 
 function shell(opts: {
   title: string;
@@ -114,6 +163,8 @@ function shell(opts: {
     ["users", "Users"],
     ["invites", "Invites"],
     ["usage", "Usage"],
+    ["quality", "Quality"],
+    ["system", "System"],
   ];
   const nav = opts.email
     ? `<nav class="nav">
@@ -141,7 +192,7 @@ function shell(opts: {
 <body>
 <main>
   <h1>Amilo admin</h1>
-  <p class="sub">Invite-only beta — requests, users, cost.</p>
+  <p class="sub">Beta ops — users, funnel, briefs, workers.</p>
   ${nav}
   ${flash}
   ${err}
@@ -180,7 +231,7 @@ function requestRowsHtml(
   if (!rows.length) return "<tr><td colspan=5>No requests yet.</td></tr>";
   return rows
     .map((r) => {
-      const when = r.createdAt.toISOString().slice(0, 16).replace("T", " ");
+      const when = fmtWhen(r.createdAt);
       const detail = [r.source, r.detail].filter(Boolean).join(" — ");
       const token = r.inviteId ? inviteTokenById.get(r.inviteId) : undefined;
       const inviteLink = token
@@ -215,13 +266,118 @@ function requestRowsHtml(
     .join("\n");
 }
 
+function userTableRow(u: AdminUserRow): string {
+  const google = u.googleLinked
+    ? `<span class="badge ok">${escapeHtml(u.googleEmails[0] ?? "linked")}</span><br><span class="muted">${relWhen(u.googleLastSync)}</span>`
+    : `<span class="badge off">none</span>`;
+  return `<tr>
+    <td><a href="/admin?tab=users&user=${escapeHtml(u.id)}">${escapeHtml(u.name ?? "—")}</a><br><code>${escapeHtml(u.phoneE164)}</code></td>
+    <td><span class="badge ${escapeHtml(u.status)}">${escapeHtml(u.status)}</span></td>
+    <td><span class="muted">${relWhen(u.lastSeen)}</span><br><span class="muted">${fmtWhen(u.lastSeen)}</span></td>
+    <td>${google}</td>
+    <td>${u.dayUsage}/${u.dayCap} ${capBadge(u.capPctDay, u.capExempt)}<br>${u.weekUsage}/${u.weekCap} ${capBadge(u.capPctWeek, u.capExempt)}</td>
+    <td>${formatUsdFromMicros(u.weekCostMicros)}</td>
+    <td><a href="/admin?tab=users&user=${escapeHtml(u.id)}">Inspect</a></td>
+  </tr>`;
+}
+
+function renderUserDrawer(detail: AdminUserInspect): string {
+  const u = detail.user;
+  const chatHtml = detail.chat.length
+    ? [...detail.chat]
+        .reverse()
+        .map((c) => {
+          const who = c.direction === "in" ? "User" : "Amilo";
+          const cls = c.direction === "in" ? "in" : "out";
+          const body = escapeHtml((c.bodyRef ?? `[${c.kind}]`).slice(0, 400));
+          return `<div class="line ${cls}"><span class="muted">${fmtWhen(c.ts).slice(11)}</span> <strong>${who}</strong>: ${body}</div>`;
+        })
+        .join("")
+    : `<p class="muted">No messages yet.</p>`;
+
+  const commits = detail.commitments.length
+    ? `<ul>${detail.commitments
+        .map(
+          (c) =>
+            `<li>${escapeHtml(c.title)}${c.dueAt ? ` <span class="muted">due ${fmtWhen(c.dueAt)}</span>` : ""}</li>`,
+        )
+        .join("")}</ul>`
+    : `<p class="muted">No open commitments.</p>`;
+
+  const pending = detail.pending
+    ? `<p><strong>${escapeHtml(detail.pending.kind)}</strong>: ${escapeHtml(detail.pending.summary)}<br>
+       <span class="muted">expires ${fmtWhen(detail.pending.expiresAt)}</span></p>`
+    : `<p class="muted">Nothing pending confirm.</p>`;
+
+  const watches = detail.openWatches.length
+    ? `<ul>${detail.openWatches
+        .map((w) => `<li><code>${escapeHtml(w.kind)}</code> ${escapeHtml(w.title)}</li>`)
+        .join("")}</ul>`
+    : `<p class="muted">No open watches.</p>`;
+
+  const google = detail.googleAccounts.length
+    ? detail.googleAccounts
+        .map(
+          (g) =>
+            `<span class="badge ok">${escapeHtml(g.label)}</span> ${escapeHtml(g.email ?? "—")} <span class="muted">sync ${relWhen(g.lastSyncAt)}</span>`,
+        )
+        .join("<br>")
+    : `<span class="badge off">Not connected</span>`;
+
+  const statusBtn =
+    u.status === "active"
+      ? `<form method="post" action="/admin/users/${escapeHtml(u.id)}/pause" style="display:inline"><button class="ghost sm" type="submit">Pause</button></form>`
+      : `<form method="post" action="/admin/users/${escapeHtml(u.id)}/resume" style="display:inline"><button class="ghost sm" type="submit">Resume</button></form>`;
+
+  return `<div class="drawer">
+    <div class="drawer-head">
+      <h2>${escapeHtml(u.name ?? u.phoneE164)}</h2>
+      <a class="ghost sm" href="/admin?tab=users" style="padding:6px 12px;border-radius:8px;text-decoration:none;border:1px solid #ccc">Close</a>
+      ${statusBtn}
+      <form method="post" action="/admin/users/${escapeHtml(u.id)}/sync" style="display:inline">
+        <button class="sm" type="submit">Force Google sync</button>
+      </form>
+    </div>
+    <div class="grid2">
+      <div>
+        <p class="muted"><code>${escapeHtml(u.phoneE164)}</code> · ${escapeHtml(u.timezone)} · joined ${fmtWhen(u.createdAt)}</p>
+        <p>Last seen: <strong>${relWhen(detail.lastSeen)}</strong> · Google: ${google}</p>
+        <p>Usage today ${detail.dayUsage} · week ${detail.weekUsage} · cost ${formatUsdFromMicros(detail.weekCostMicros)}${detail.capExempt ? ' · <span class="badge ok">cap exempt</span>' : ""}</p>
+      </div>
+      <div>
+        <h3>Open commitments</h3>${commits}
+        <h3>Pending confirm</h3>${pending}
+        <h3>Open watches</h3>${watches}
+      </div>
+    </div>
+    <h3>Recent chat (WhatsApp)</h3>
+    <div class="chat">${chatHtml}</div>
+  </div>`;
+}
+
+function miniBarChart(rows: Array<{ label: string; value: number }>, max?: number): string {
+  const top = max ?? Math.max(1, ...rows.map((r) => r.value));
+  return rows
+    .map((r) => {
+      const pct = Math.round((r.value / top) * 100);
+      return `<div class="bar-row"><span class="lbl">${escapeHtml(r.label)}</span><div class="bar"><div class="fill" style="width:${pct}%"></div></div><span class="num">${r.value}</span></div>`;
+    })
+    .join("");
+}
+
 export async function renderAdminDashboard(opts: {
   db: Db;
   publicBaseUrl: string;
   email: string;
   tab?: string;
+  userId?: string;
   message?: string;
   error?: string;
+  usageDayCap: number;
+  usageWeekCap: number;
+  usageCapExemptPhones: string[];
+  gitSha?: string;
+  workerStatuses?: WorkerHeartbeat[];
 }): Promise<string> {
   const tab = opts.tab || "overview";
   const stats = await getOnboardingStats(opts.db);
@@ -231,7 +387,7 @@ export async function renderAdminDashboard(opts: {
       : "—";
 
   const kpiBlock = `<div class="kpis">
-    <div class="kpi"><div class="n">${stats.requestsTotal}</div><div class="l">Requests received</div></div>
+    <div class="kpi"><div class="n">${stats.requestsTotal}</div><div class="l">Requests</div></div>
     <div class="kpi"><div class="n">${stats.requestsPending}</div><div class="l">Pending</div></div>
     <div class="kpi"><div class="n">${stats.requestsThisWeek}</div><div class="l">This week</div></div>
     <div class="kpi"><div class="n">${stats.activeUsers}</div><div class="l">Active users</div></div>
@@ -239,11 +395,16 @@ export async function renderAdminDashboard(opts: {
   </div>`;
 
   let body = "";
+  const weekAgo = new Date(Date.now() - 7 * 24 * 3600_000);
+  const caps = { day: opts.usageDayCap, week: opts.usageWeekCap };
+
   if (tab === "overview") {
+    const inviteSummary = await countInvitesSummary(opts.db);
     body = `<section>
       <h2>Pipeline</h2>
       ${kpiBlock}
-      <p class="muted">Pending ${stats.requestsPending} · Invited ${stats.requestsInvited} · From requests marked active ${stats.requestsActive} · Declined/spam ${stats.requestsDeclined}</p>
+      <p class="muted">Pending ${stats.requestsPending} · Invited ${stats.requestsInvited} · Active ${stats.requestsActive} · Declined/spam ${stats.requestsDeclined}</p>
+      <p class="muted">Invites: ${inviteSummary.total} total · ${inviteSummary.open} open · ${inviteSummary.totalUses} claims</p>
       <p class="sub" style="margin-top:12px">Website form → <code>POST ${escapeHtml(opts.publicBaseUrl)}/access-requests</code></p>
     </section>`;
   } else if (tab === "requests") {
@@ -260,7 +421,21 @@ export async function renderAdminDashboard(opts: {
       </table>
     </section>`;
   } else if (tab === "users") {
+    const adminUsers = await listUsersForAdmin(opts.db, {
+      caps,
+      exemptPhones: opts.usageCapExemptPhones,
+    });
     const phones = await listAllowedPhones(opts.db);
+    let drawer = "";
+    if (opts.userId) {
+      const detail = await getUserInspect(opts.db, opts.userId, {
+        exemptPhones: opts.usageCapExemptPhones,
+      });
+      if (detail) drawer = renderUserDrawer(detail);
+    }
+    const userRows =
+      adminUsers.map(userTableRow).join("\n") ||
+      "<tr><td colspan=7>No registered users yet — they appear after first WhatsApp message.</td></tr>";
     const phoneRows = phones
       .map(
         (p) => `<tr>
@@ -270,15 +445,22 @@ export async function renderAdminDashboard(opts: {
       <td>
         <form method="post" action="/admin/phones/remove" style="display:inline">
           <input type="hidden" name="phone" value="${escapeHtml(p.phoneE164)}" />
-          <button class="ghost" type="submit">Disable</button>
+          <button class="ghost sm" type="submit">Disable</button>
         </form>
       </td>
     </tr>`,
       )
       .join("\n");
-    body = `<section>
+    body = `${drawer}<section>
+      <h2>Users (${adminUsers.length})</h2>
+      <p class="sub">Registered WhatsApp users — status, last seen, Google, usage caps, cost (7d).</p>
+      <table>
+        <thead><tr><th>User</th><th>Status</th><th>Last seen</th><th>Google</th><th>Caps day/week</th><th>7d cost</th><th></th></tr></thead>
+        <tbody>${userRows}</tbody>
+      </table>
+    </section>
+    <section>
       <h2>Allowlist</h2>
-      <p class="sub">Active users (messaged Amilo): <strong>${stats.activeUsers}</strong></p>
       <form method="post" action="/admin/phones/add" class="row">
         <label>Phone (E.164)<input name="phone" placeholder="+9198XXXXXXXX" required /></label>
         <label>Label<input name="label" placeholder="Friend name" /></label>
@@ -286,7 +468,7 @@ export async function renderAdminDashboard(opts: {
       </form>
       <table>
         <thead><tr><th>Phone</th><th>Label</th><th>Status</th><th></th></tr></thead>
-        <tbody>${phoneRows || "<tr><td colspan=4>None yet (env ALLOWED_PHONES still works).</td></tr>"}</tbody>
+        <tbody>${phoneRows || "<tr><td colspan=4>None yet.</td></tr>"}</tbody>
       </table>
     </section>`;
   } else if (tab === "invites") {
@@ -306,7 +488,6 @@ export async function renderAdminDashboard(opts: {
       .join("\n");
     body = `<section>
       <h2>Invite link / QR</h2>
-      <p class="sub">Prefer approving a request — or create a one-off invite here.</p>
       <form method="post" action="/admin/invites/create" class="row">
         <label>Phone (optional)<input name="phone" placeholder="+91…" /></label>
         <label>Label<input name="label" placeholder="Priya beta" /></label>
@@ -318,9 +499,47 @@ export async function renderAdminDashboard(opts: {
         <tbody>${inviteList || "<tr><td colspan=5>No invites yet.</td></tr>"}</tbody>
       </table>
     </section>`;
-  } else {
-    const weekAgo = new Date(Date.now() - 7 * 24 * 3600_000);
+  } else if (tab === "usage") {
+    const funnel = await getInviteFunnelByDay(opts.db, 14);
+    const byKind = await listUsageByKindDay(opts.db, weekAgo);
     const usage = await listUsageByUser(opts.db, weekAgo);
+
+    const kindTotals = new Map<string, number>();
+    for (const r of byKind) {
+      kindTotals.set(r.kind, (kindTotals.get(r.kind) ?? 0) + r.units);
+    }
+    const kindBars = miniBarChart(
+      [...kindTotals.entries()]
+        .sort((a, b) => b[1] - a[1])
+        .map(([label, value]) => ({ label, value })),
+    );
+
+    const funnelRows = funnel
+      .map(
+        (f) => `<tr>
+        <td>${escapeHtml(f.day)}</td>
+        <td>${f.requests}</td>
+        <td>${f.invited}</td>
+        <td>${f.newUsers}</td>
+      </tr>`,
+      )
+      .join("\n");
+
+    const kindDayMap = new Map<string, Map<string, number>>();
+    for (const r of byKind) {
+      if (!kindDayMap.has(r.day)) kindDayMap.set(r.day, new Map());
+      kindDayMap.get(r.day)!.set(r.kind, r.units);
+    }
+    const kinds = [...kindTotals.keys()].sort();
+    const kindDayRows = [...kindDayMap.entries()]
+      .sort((a, b) => b[0].localeCompare(a[0]))
+      .slice(0, 14)
+      .map(([day, km]) => {
+        const cells = kinds.map((k) => `<td>${km.get(k) ?? 0}</td>`).join("");
+        return `<tr><td>${escapeHtml(day)}</td>${cells}</tr>`;
+      })
+      .join("\n");
+
     const usageRows = usage
       .map(
         (u) => `<tr>
@@ -331,14 +550,105 @@ export async function renderAdminDashboard(opts: {
     </tr>`,
       )
       .join("\n");
+
     body = `<section>
-      <h2>Usage (last 7 days)</h2>
-      <p class="sub">Interactions ≈ brain/voice turns. Caps default 40/day · 150/week.</p>
+      <h2>Invite funnel (14 days)</h2>
+      <table>
+        <thead><tr><th>Day</th><th>New requests</th><th>Invited</th><th>New users</th></tr></thead>
+        <tbody>${funnelRows || "<tr><td colspan=4>No data yet.</td></tr>"}</tbody>
+      </table>
+    </section>
+    <section>
+      <h2>Usage by kind (7 days)</h2>
+      ${kindBars}
+      ${
+        kinds.length
+          ? `<table style="margin-top:12px"><thead><tr><th>Day</th>${kinds.map((k) => `<th>${escapeHtml(k)}</th>`).join("")}</tr></thead><tbody>${kindDayRows}</tbody></table>`
+          : `<p class="muted">No usage events yet.</p>`
+      }
+    </section>
+    <section>
+      <h2>Per user (7 days)</h2>
+      <p class="muted">Caps: ${opts.usageDayCap}/day · ${opts.usageWeekCap}/week</p>
       <table>
         <thead><tr><th>Name</th><th>Phone</th><th>Interactions</th><th>~Cost</th></tr></thead>
         <tbody>${usageRows || "<tr><td colspan=4>No usage yet.</td></tr>"}</tbody>
       </table>
     </section>`;
+  } else if (tab === "quality") {
+    const brief = await getBriefQualityStats(opts.db, weekAgo);
+    const watch = await getWatcherQualityStats(opts.db, weekAgo);
+    const briefBars = miniBarChart(brief.byDay.slice(0, 7).map((d) => ({ label: d.day.slice(5), value: d.count })));
+    const openWatchKinds = miniBarChart(
+      Object.entries(watch.byKindOpen).map(([label, value]) => ({ label, value })),
+    );
+    const firedKinds = miniBarChart(
+      Object.entries(watch.byKindFiredWeek).map(([label, value]) => ({ label, value })),
+    );
+
+    body = `<section>
+      <h2>Brief quality (7 days)</h2>
+      <div class="kpis">
+        <div class="kpi"><div class="n">${brief.total}</div><div class="l">Briefs sent</div></div>
+        <div class="kpi"><div class="n">${brief.morning}</div><div class="l">Morning</div></div>
+        <div class="kpi"><div class="n">${brief.evening}</div><div class="l">Evening</div></div>
+        <div class="kpi"><div class="n">${brief.avgPriorities}</div><div class="l">Avg priorities</div></div>
+        <div class="kpi"><div class="n">${brief.freeFormRate}%</div><div class="l">Free-form (24h)</div></div>
+      </div>
+      <h3>By day</h3>
+      ${briefBars || `<p class="muted">No briefs logged yet.</p>`}
+    </section>
+    <section>
+      <h2>Watchers (7 days)</h2>
+      <div class="kpis">
+        <div class="kpi"><div class="n">${watch.open}</div><div class="l">Open now</div></div>
+        <div class="kpi"><div class="n">${watch.firedWeek}</div><div class="l">Fired</div></div>
+        <div class="kpi"><div class="n">${watch.alertsWeek}</div><div class="l">Alerts pushed</div></div>
+        <div class="kpi"><div class="n">${watch.cancelledWeek}</div><div class="l">Cancelled</div></div>
+      </div>
+      <div class="grid2">
+        <div><h3>Open by kind</h3>${openWatchKinds || `<p class="muted">None open.</p>`}</div>
+        <div><h3>Fired by kind</h3>${firedKinds || `<p class="muted">None fired this week.</p>`}</div>
+      </div>
+    </section>`;
+  } else if (tab === "system") {
+    const workers = opts.workerStatuses ?? [];
+    const workerRows = workers.length
+      ? workers
+          .map((w) => {
+            const ok = w.lastOkAt && (!w.lastErrorAt || w.lastOkAt > w.lastErrorAt);
+            const badge = w.running
+              ? `<span class="badge invited">running</span>`
+              : ok
+                ? `<span class="badge ok">ok</span>`
+                : w.lastErrorAt
+                  ? `<span class="badge warn">error</span>`
+                  : `<span class="badge off">idle</span>`;
+            return `<tr>
+          <td><strong>${escapeHtml(w.name)}</strong><br><span class="muted">every ${Math.round(w.intervalMs / 1000)}s</span></td>
+          <td>${badge}</td>
+          <td><span class="muted">${w.lastTickAt ? relWhen(new Date(w.lastTickAt)) : "—"}</span></td>
+          <td><span class="muted">${w.lastOkAt ? relWhen(new Date(w.lastOkAt)) : "—"}</span></td>
+          <td>${w.lastError ? `<span class="muted">${escapeHtml(w.lastError.slice(0, 80))}</span>` : "—"}</td>
+        </tr>`;
+          })
+          .join("\n")
+      : "<tr><td colspan=5>No workers registered.</td></tr>";
+
+    body = `<section>
+      <h2>Deploy</h2>
+      <p>Git SHA: <code>${escapeHtml(opts.gitSha ?? "unknown")}</code></p>
+      <p class="muted"><a href="/health" target="_blank">/health</a> JSON includes sha + worker summary.</p>
+    </section>
+    <section>
+      <h2>Background workers</h2>
+      <table>
+        <thead><tr><th>Worker</th><th>Status</th><th>Last tick</th><th>Last ok</th><th>Last error</th></tr></thead>
+        <tbody>${workerRows}</tbody>
+      </table>
+    </section>`;
+  } else {
+    body = `<section><p>Unknown tab.</p></section>`;
   }
 
   return shell({

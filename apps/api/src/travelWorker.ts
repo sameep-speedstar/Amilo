@@ -23,6 +23,12 @@ import {
   eventToTravelBlock,
   recheckTravelPlan,
 } from "./travelService.js";
+import {
+  markWorkerTickError,
+  markWorkerTickOk,
+  markWorkerTickStart,
+  registerWorker,
+} from "./workerStatus.js";
 
 /**
  * Travel intelligence worker: compute leave-by plans, departure alerts, T-30/T-10 rechecks.
@@ -38,15 +44,19 @@ export function startTravelWorker(opts: {
   const intervalMs = opts.intervalMs ?? 60_000;
   let running = false;
   const maps = opts.mapsApiKey ? new MapsClient(opts.mapsApiKey) : null;
+  registerWorker("travel", intervalMs);
 
   const tick = async () => {
     if (running || !maps) return;
     running = true;
+    markWorkerTickStart("travel");
     try {
       await computePlansForActiveUsers(opts.db, maps);
       await sendDepartureAlerts({ ...opts, maps });
       await runRechecks(opts.db, maps, opts.channel);
+      markWorkerTickOk("travel");
     } catch (err) {
+      markWorkerTickError("travel", err instanceof Error ? err.message : String(err));
       console.error(
         JSON.stringify({
           event: "travel_tick_error",

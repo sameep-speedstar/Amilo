@@ -7,6 +7,12 @@ import {
   markReminderNotified,
   type Db,
 } from "@amilo/db";
+import {
+  markWorkerTickError,
+  markWorkerTickOk,
+  markWorkerTickStart,
+  registerWorker,
+} from "./workerStatus.js";
 
 /**
  * Poll due reminders and push WhatsApp pings.
@@ -21,10 +27,12 @@ export function startReminderWorker(opts: {
 }): { stop: () => void } {
   const intervalMs = opts.intervalMs ?? 30_000;
   let running = false;
+  registerWorker("reminder", intervalMs);
 
   const tick = async () => {
     if (running) return;
     running = true;
+    markWorkerTickStart("reminder");
     try {
       const due = await listDueReminders(opts.db);
       for (const r of due) {
@@ -127,7 +135,9 @@ export function startReminderWorker(opts: {
           }
         }
       }
+      markWorkerTickOk("reminder");
     } catch (err) {
+      markWorkerTickError("reminder", err instanceof Error ? err.message : String(err));
       console.error(
         JSON.stringify({
           event: "reminder_tick_error",

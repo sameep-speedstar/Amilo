@@ -1,5 +1,7 @@
 FROM node:22.14-bookworm-slim AS build
 WORKDIR /app
+ARG GIT_SHA=unknown
+ENV GIT_SHA=$GIT_SHA
 COPY package.json package-lock.json* ./
 COPY apps ./apps
 COPY packages ./packages
@@ -10,7 +12,9 @@ RUN npm run build
 
 FROM node:22.14-bookworm-slim
 WORKDIR /app
+ARG GIT_SHA=unknown
 ENV NODE_ENV=production
+ENV GIT_SHA=$GIT_SHA
 RUN apt-get update \
   && apt-get install -y --no-install-recommends ffmpeg \
   && rm -rf /var/lib/apt/lists/*

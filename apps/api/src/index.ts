@@ -138,6 +138,7 @@ import {
   setAdminCookie,
   setAdminSessionCookie,
 } from "./adminUi.js";
+import { getWorkerStatuses, readGitSha } from "./workerStatus.js";
 
 loadEnv();
 
@@ -1173,6 +1174,16 @@ app.get("/health", async (c) => {
     db: dbOk ? "up" : "down",
     voice: settings.sarvamApiKey ? "sarvam" : "off",
     milestone: "M5.5",
+    gitSha: readGitSha(),
+    workers: getWorkerStatuses().map((w) => ({
+      name: w.name,
+      intervalMs: w.intervalMs,
+      lastTickAt: w.lastTickAt,
+      lastOkAt: w.lastOkAt,
+      lastErrorAt: w.lastErrorAt,
+      lastError: w.lastError,
+      running: w.running,
+    })),
   });
 });
 
@@ -1191,6 +1202,29 @@ async function requireAdminEmail(
   // Emergency: legacy ADMIN_TOKEN still works as a session-less cookie/query.
   if (adminAuthorized(c)) return settings.adminEmail || "admin";
   return null;
+}
+
+function adminDashboardOpts(
+  email: string,
+  tab: string,
+  extra: {
+    userId?: string;
+    message?: string;
+    error?: string;
+  } = {},
+) {
+  return {
+    db,
+    publicBaseUrl: settings.publicBaseUrl,
+    email,
+    tab,
+    usageDayCap: settings.usageDayCap,
+    usageWeekCap: settings.usageWeekCap,
+    usageCapExemptPhones: settings.usageCapExemptPhones,
+    gitSha: readGitSha(),
+    workerStatuses: getWorkerStatuses(),
+    ...extra,
+  };
 }
 
 const ACCESS_CORS_ORIGINS = new Set([
@@ -1332,13 +1366,14 @@ app.get("/admin", async (c) => {
     return c.text("Set ADMIN_PASSWORD (or ADMIN_TOKEN) to enable the admin dashboard.", 503);
   }
   const tab = String(c.req.query("tab") ?? "overview");
-  const html = await renderAdminDashboard({
-    db,
-    publicBaseUrl: settings.publicBaseUrl,
-    email,
-    tab,
-    ...(c.req.query("msg") ? { message: String(c.req.query("msg")) } : {}),
-  });
+  const userId = c.req.query("user") ? String(c.req.query("user")) : undefined;
+  const html = await renderAdminDashboard(
+    adminDashboardOpts(email, tab, {
+      ...(userId ? { userId } : {}),
+      ...(c.req.query("msg") ? { message: String(c.req.query("msg")) } : {}),
+      ...(c.req.query("error") ? { error: String(c.req.query("error")) } : {}),
+    }),
+  );
   return c.html(html);
 });
 
@@ -1354,13 +1389,11 @@ app.post("/admin/phones/add", async (c) => {
       ...(label ? { label } : {}),
     });
   } catch (e) {
-    const html = await renderAdminDashboard({
-      db,
-      publicBaseUrl: settings.publicBaseUrl,
-      email,
-      tab: "users",
-      error: e instanceof Error ? e.message : String(e),
-    });
+    const html = await renderAdminDashboard(
+      adminDashboardOpts(email, "users", {
+        error: e instanceof Error ? e.message : String(e),
+      }),
+    );
     return c.html(html, 400);
   }
   return c.redirect("/admin?tab=users&msg=" + encodeURIComponent("Phone added."));
@@ -1389,13 +1422,11 @@ app.post("/admin/invites/create", async (c) => {
       expiresInDays: 14,
     });
   } catch (e) {
-    const html = await renderAdminDashboard({
-      db,
-      publicBaseUrl: settings.publicBaseUrl,
-      email,
-      tab: "invites",
-      error: e instanceof Error ? e.message : String(e),
-    });
+    const html = await renderAdminDashboard(
+      adminDashboardOpts(email, "invites", {
+        error: e instanceof Error ? e.message : String(e),
+      }),
+    );
     return c.html(html, 400);
   }
   return c.redirect("/admin?tab=invites&msg=" + encodeURIComponent("Invite created."));
@@ -1413,15 +1444,72 @@ app.post("/admin/requests/approve", async (c) => {
         encodeURIComponent(`Approved ${r.request.name}. Invite: ${url}`),
     );
   } catch (e) {
-    const html = await renderAdminDashboard({
-      db,
-      publicBaseUrl: settings.publicBaseUrl,
-      email,
-      tab: "requests",
-      error: e instanceof Error ? e.message : String(e),
-    });
+    const html = await renderAdminDashboard(
+      adminDashboardOpts(email, "requests", {
+        error: e instanceof Error ? e.message : String(e),
+      }),
+    );
     return c.html(html, 400);
   }
+});
+
+app.post("/admin/users/:id/sync", async (c) => {
+  const email = await requireAdminEmail(c);
+  if (!email) return c.redirect("/admin/login");
+  const userId = c.req.param("id");
+  const user = await getUserById(db, userId);
+  if (!user) {
+    return c.redirect("/admin?tab=users&error=" + encodeURIComponent("User not found."));
+  }
+  if (!googleCfg) {
+    return c.redirect(
+      `/admin?tab=users&user=${encodeURIComponent(userId)}&error=` +
+        encodeURIComponent("Google OAuth not configured on this server."),
+    );
+  }
+  try {
+    const prefs = await getUserPrefs(db, userId);
+    const r = await syncGoogleForUser(
+      db,
+      googleCfg,
+      userId,
+      user.timezone,
+      prefs.mutedPatterns,
+    );
+    return c.redirect(
+      `/admin?tab=users&user=${encodeURIComponent(userId)}&msg=` +
+        encodeURIComponent(
+          `Synced ${r.accounts} account(s): ${r.mail} mail, ${r.calendar} calendar events.`,
+        ),
+    );
+  } catch (e) {
+    return c.redirect(
+      `/admin?tab=users&user=${encodeURIComponent(userId)}&error=` +
+        encodeURIComponent(e instanceof Error ? e.message : String(e)),
+    );
+  }
+});
+
+app.post("/admin/users/:id/pause", async (c) => {
+  const email = await requireAdminEmail(c);
+  if (!email) return c.redirect("/admin/login");
+  const userId = c.req.param("id");
+  await setUserStatus(db, userId, "paused");
+  return c.redirect(
+    `/admin?tab=users&user=${encodeURIComponent(userId)}&msg=` +
+      encodeURIComponent("User paused."),
+  );
+});
+
+app.post("/admin/users/:id/resume", async (c) => {
+  const email = await requireAdminEmail(c);
+  if (!email) return c.redirect("/admin/login");
+  const userId = c.req.param("id");
+  await setUserStatus(db, userId, "active");
+  return c.redirect(
+    `/admin?tab=users&user=${encodeURIComponent(userId)}&msg=` +
+      encodeURIComponent("User resumed."),
+  );
 });
 
 app.post("/admin/requests/decline", async (c) => {

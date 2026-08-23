@@ -57,6 +57,7 @@ ACR_LOGIN_SERVER="$(az acr show --name "$ACR_NAME" --resource-group "$RESOURCE_G
 
 echo "== Build + push ${IMAGE_NAME}:${IMAGE_TAG} (ACR Tasks) =="
 az acr build --registry "$ACR_NAME" --resource-group "$RESOURCE_GROUP" \
+  --build-arg GIT_SHA="${IMAGE_TAG}" \
   --image "${IMAGE_NAME}:${IMAGE_TAG}" --image "${IMAGE_NAME}:latest" .
 
 echo "== Ensure web app ${APP_NAME} =="
@@ -119,6 +120,7 @@ az webapp config appsettings set --name "$APP_NAME" --resource-group "$RESOURCE_
     USAGE_WEEK_CAP="${USAGE_WEEK_CAP:-150}" \
     HOST_PHONE="${HOST_PHONE:-}" \
     USAGE_CAP_EXEMPT_PHONES="${USAGE_CAP_EXEMPT_PHONES:-}" \
+    GIT_SHA="${IMAGE_TAG}" \
     DOCKER_ENABLE_CI=true \
     WEBSITE_PULL_IMAGE_OVER_VNET=false \
   >/dev/null

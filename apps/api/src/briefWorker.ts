@@ -25,6 +25,12 @@ import {
 import { classifyBorderlineMail } from "@amilo/brain-grok";
 import type { GoogleOAuthConfig } from "@amilo/google";
 import { syncGoogleForUser } from "./googleSync.js";
+import {
+  markWorkerTickError,
+  markWorkerTickOk,
+  markWorkerTickStart,
+  registerWorker,
+} from "./workerStatus.js";
 
 /**
  * Poll local morning/evening slots and push briefs.
@@ -45,6 +51,7 @@ export function startBriefWorker(opts: {
   const fireWindow = opts.fireWindowMinutes ?? 5;
   const lang = opts.languageCode ?? "en";
   let running = false;
+  registerWorker("brief", intervalMs);
 
   const briefClassify = opts.grok
     ? (items: Array<{ id: string; from: string; subject: string; snippet: string }>) =>
@@ -76,6 +83,7 @@ export function startBriefWorker(opts: {
     if (running) return;
     if (!opts.googleCfg) return;
     running = true;
+    markWorkerTickStart("brief");
     const now = new Date();
     try {
       const candidates = await listUsersForScheduledBriefs(opts.db);
@@ -310,7 +318,9 @@ export function startBriefWorker(opts: {
           }
         }
       }
+      markWorkerTickOk("brief");
     } catch (err) {
+      markWorkerTickError("brief", err instanceof Error ? err.message : String(err));
       console.error(
         JSON.stringify({
           event: "brief_worker_tick_error",
