@@ -1217,6 +1217,29 @@ app.options("/access-requests", (c) => {
   return new Response(null, { status: 204, headers });
 });
 
+/** Browser GET (opening the URL) — not the form path. Form uses POST. */
+app.get("/access-requests", (c) => {
+  const accept = c.req.header("accept") ?? "";
+  if (accept.includes("text/html")) {
+    return c.html(
+      `<!doctype html><html><head><meta charset="utf-8"/><title>Amilo access requests</title>
+<style>body{font-family:system-ui,sans-serif;max-width:36rem;margin:3rem auto;padding:0 1.25rem;color:#1a1a1a;line-height:1.5}
+code{background:#f3f3f0;padding:.1em .35em;border-radius:4px}</style></head><body>
+<h1>Access requests API</h1>
+<p>This endpoint accepts <strong>POST</strong> only (from <a href="https://amilo.io/invite.html">amilo.io/invite</a>).</p>
+<p>Opening it in a browser is expected to show this page — it does not list requests.</p>
+<p>Founders: review the queue at <a href="/admin?tab=requests"><code>/admin</code> → Requests</a>.</p>
+</body></html>`,
+    );
+  }
+  return c.json({
+    ok: true,
+    method: "POST",
+    path: "/access-requests",
+    hint: "Submit invite interest via POST JSON from amilo.io. Review queue at /admin?tab=requests.",
+  });
+});
+
 app.post("/access-requests", async (c) => {
   const origin = c.req.header("origin");
   const headers = accessCorsHeaders(origin);
