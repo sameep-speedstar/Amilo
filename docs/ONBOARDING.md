@@ -45,6 +45,11 @@ CORS allows `https://amilo.io` and `https://www.amilo.io`. Honeypot field `compa
 
 Replace (or dual-write alongside) the current Web3Forms submit.
 
+**Live form endpoint:** `POST https://api.amilo.io/access-requests` (already wired in `site/`).
+
+**Preview host (Azure static):** https://amilostaticweb.z29.web.core.windows.net/  
+Point Cloudflare `amilo.io` / `www` at that static origin, or upload `site/index.html` + `site/invite.html` to the existing Pages project. Until then, production `amilo.io` still posts to Web3Forms.
+
 ## Caps / cost
 
 Each brain turn (and STT) is metered in `usage_events`. Defaults:

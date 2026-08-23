@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-R4W16EDE7P"></script>
+<script>
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){dataLayer.push(arguments);}
+  gtag('js', new Date());
+  gtag('config', 'G-R4W16EDE7P');
+</script>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Amilo — a day, lived alongside</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,600;1,9..144,400&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --ink:#1C1B33; --ink-2:#24233F; --amber:#E9A23B; --paper:#FFFFFF;
+    --muted:#9A9AB0; --chat-bg:#EFE9E1; --user-bubble:#DCF3D0; --amilo-bubble:#FFFFFF;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{height:100%}
+  body{
+    font-family:'Inter',system-ui,sans-serif; color:var(--paper);
+    background:var(--ink); overflow:hidden;
+  }
+  /* ---- stage: sky shifts with time of day ---- */
+  #sky{position:fixed;inset:0;transition:background 3s ease;
+    background:linear-gradient(160deg,#2A1E3F 0%,#1C1B33 55%,#3A2A1E 100%);}
+  #sky::after{content:"";position:absolute;inset:0;
+    background:radial-gradient(1200px 600px at 78% 30%, rgba(233,162,59,.10), transparent 60%);}
+  .stage{position:relative;z-index:2;height:100vh;display:grid;
+    grid-template-columns:minmax(340px,1fr) minmax(320px,420px);
+    align-items:center;gap:4vw;padding:0 6vw;}
+  /* ---- narration column ---- */
+  .brand{position:fixed;top:32px;left:6vw;display:flex;align-items:center;gap:10px;z-index:5}
+  .brand b{font-family:'Fraunces',serif;font-weight:600;font-size:20px;letter-spacing:.14em}
+  .brand i{width:8px;height:8px;border-radius:50%;background:var(--amber);display:inline-block}
+  .clock{position:fixed;top:30px;right:6vw;z-index:5;text-align:right}
+  .clock .t{font-family:'Fraunces',serif;font-size:30px;font-weight:600;font-variant-numeric:tabular-nums}
+  .clock .d{font-size:11px;letter-spacing:.18em;color:var(--muted);text-transform:uppercase;margin-top:2px}
+  .caption{max-width:520px}
+  .caption .kicker{font-size:12px;letter-spacing:.24em;text-transform:uppercase;color:var(--amber);
+    margin-bottom:14px;opacity:0;transform:translateY(8px);transition:all .7s ease}
+  .caption h1{font-family:'Fraunces',serif;font-weight:400;font-size:clamp(28px,3.4vw,44px);
+    line-height:1.16;opacity:0;transform:translateY(10px);transition:all .8s ease .1s}
+  .caption h1 em{font-style:italic;color:var(--amber)}
+  .caption p{margin-top:16px;font-size:15px;line-height:1.65;color:#C9C9DA;max-width:44ch;
+    opacity:0;transform:translateY(10px);transition:all .8s ease .22s}
+  .caption.on .kicker,.caption.on h1,.caption.on p{opacity:1;transform:none}
+  /* ---- phone ---- */
+  .phone{width:min(360px,88vw);height:min(720px,86vh);border-radius:38px;background:#0B0B14;
+    padding:12px;box-shadow:0 40px 90px rgba(0,0,0,.55),0 0 0 1px rgba(255,255,255,.07);
+    justify-self:end;position:relative}
+  .notch{position:absolute;top:12px;left:50%;transform:translateX(-50%);
+    width:120px;height:26px;background:#0B0B14;border-radius:0 0 16px 16px;z-index:4}
+  .screen{height:100%;border-radius:28px;overflow:hidden;display:flex;flex-direction:column;background:var(--chat-bg)}
+  .chat-head{background:var(--ink);padding:34px 16px 12px;display:flex;align-items:center;gap:12px;flex-shrink:0}
+  .avatar{width:38px;height:38px;border-radius:50%;background:var(--amber);display:grid;place-items:center;
+    font-family:'Fraunces',serif;font-weight:600;color:var(--ink);font-size:18px}
+  .chat-head .who b{display:block;font-size:15px}
+  .chat-head .who span{font-size:11px;color:#8FD48F}
+  .thread{flex:1;overflow-y:auto;padding:16px 12px 20px;display:flex;flex-direction:column;gap:8px;
+    background:
+      radial-gradient(circle at 20% 10%, rgba(28,27,51,.05) 0 2px, transparent 3px),
+      var(--chat-bg);
+    scroll-behavior:smooth}
+  .day-chip{align-self:center;background:rgba(28,27,51,.10);color:#55556A;font-size:10.5px;
+    padding:4px 12px;border-radius:12px;letter-spacing:.06em;margin:6px 0 2px}
+  .msg{max-width:84%;padding:9px 12px 8px;border-radius:12px;font-size:13.2px;line-height:1.45;color:#20202E;
+    box-shadow:0 1px 1px rgba(0,0,0,.08);opacity:0;transform:translateY(10px) scale(.98);
+    animation:pop .38s ease forwards;position:relative;white-space:pre-line}
+  @keyframes pop{to{opacity:1;transform:none}}
+  .amilo{align-self:flex-start;background:var(--amilo-bubble);border-top-left-radius:4px}
+  .user{align-self:flex-end;background:var(--user-bubble);border-top-right-radius:4px}
+  .msg .meta{display:block;font-size:9.5px;color:#9797A6;text-align:right;margin-top:4px}
+  .msg b{font-weight:600}
+  .msg .hl{color:#B4770F;font-weight:600}
+  .msg .tick{color:#4FA3E3}
+  .voice{display:flex;align-items:center;gap:8px;min-width:180px}
+  .voice .play{width:26px;height:26px;border-radius:50%;background:var(--ink);color:#fff;display:grid;place-items:center;font-size:10px}
+  .wave{display:flex;align-items:center;gap:2px;height:20px}
+  .wave i{width:3px;background:#7C7C90;border-radius:2px;animation:wv 1s ease-in-out infinite}
+  @keyframes wv{0%,100%{transform:scaleY(.4)}50%{transform:scaleY(1)}}
+  .typing{align-self:flex-start;background:var(--amilo-bubble);border-radius:12px;border-top-left-radius:4px;
+    padding:12px 14px;display:flex;gap:4px;box-shadow:0 1px 1px rgba(0,0,0,.08)}
+  .typing i{width:6px;height:6px;border-radius:50%;background:#B9B9C6;animation:blink 1.2s infinite}
+  .typing i:nth-child(2){animation-delay:.2s}.typing i:nth-child(3){animation-delay:.4s}
+  @keyframes blink{0%,80%,100%{opacity:.3}40%{opacity:1}}
+  /* ---- timeline / controls ---- */
+  .rail{position:fixed;left:6vw;right:6vw;bottom:34px;z-index:5}
+  .ticks{display:flex;justify-content:space-between;font-size:10px;letter-spacing:.14em;
+    color:var(--muted);text-transform:uppercase;margin-bottom:8px}
+  .bar{height:3px;background:rgba(255,255,255,.14);border-radius:2px;overflow:hidden}
+  .bar>i{display:block;height:100%;width:0%;background:var(--amber);border-radius:2px}
+  .ctrl{position:fixed;bottom:58px;right:6vw;z-index:6;display:flex;gap:10px}
+  .ctrl button{font:600 12px 'Inter';letter-spacing:.08em;text-transform:uppercase;cursor:pointer;
+    background:rgba(255,255,255,.08);color:var(--paper);border:1px solid rgba(255,255,255,.18);
+    padding:9px 16px;border-radius:20px;transition:background .2s}
+  .ctrl button:hover{background:rgba(255,255,255,.16)}
+  .ctrl button:focus-visible{outline:2px solid var(--amber);outline-offset:2px}
+  .ctrl a.invite{font:600 12px 'Inter';letter-spacing:.08em;text-transform:uppercase;text-decoration:none;
+    background:var(--amber);color:var(--ink);padding:9px 18px;border-radius:20px;transition:filter .2s}
+  .ctrl a.invite:hover{filter:brightness(1.1)}
+  #finale .fin-cta{display:inline-block;margin-top:34px;font:600 14px 'Inter';letter-spacing:.04em;text-decoration:none;
+    background:var(--amber);color:var(--ink);padding:15px 30px;border-radius:26px;transition:filter .2s}
+  #finale .fin-cta:hover{filter:brightness(1.1)}
+  #finale .fin-home{display:block;margin-top:18px;font-size:12px;letter-spacing:.14em;text-transform:uppercase;
+    color:var(--muted);text-decoration:none}
+  #finale .fin-home:hover{color:#fff}
+  /* ---- finale ---- */
+  #finale{position:fixed;inset:0;z-index:8;display:grid;place-items:center;background:var(--ink);
+    opacity:0;pointer-events:none;transition:opacity 1.4s ease;text-align:center;padding:0 24px}
+  #finale.on{opacity:1;pointer-events:auto}
+  #finale h2{font-family:'Fraunces',serif;font-weight:400;font-size:clamp(30px,4.4vw,58px);line-height:1.2;max-width:18ch}
+  #finale h2 em{font-style:italic;color:var(--amber)}
+  #finale p{margin-top:22px;color:var(--muted);font-size:14px;letter-spacing:.16em;text-transform:uppercase}
+  @media (max-width:900px){
+    .stage{grid-template-columns:1fr;padding-top:96px;gap:20px;overflow-y:auto;align-items:start}
+    .phone{justify-self:center;height:64vh}
+    .caption h1{font-size:26px}
+  }
+  @media (prefers-reduced-motion: reduce){
+    .msg{animation:none;opacity:1;transform:none}
+    #sky{transition:none}
+  }
+</style>
+</head>
+<body>
+<div id="sky"></div>
+
+<a class="brand" href="index.html" style="text-decoration:none;color:inherit">
+  <svg width="26" height="26" viewBox="0 0 512 512" aria-hidden="true"><path d="M 332.1 112.2 A 162 162 0 1 0 414.5 289.7" fill="none" stroke="#FFFFFF" stroke-width="56" stroke-linecap="round"/><circle cx="402.8" cy="187.5" r="46" fill="#E9A23B"/></svg>
+  <b>AMILO</b></a>
+<div class="clock"><div class="t" id="clockT">07:00</div><div class="d">One day · one user</div></div>
+
+<div class="stage">
+  <div class="caption" id="cap">
+    <div class="kicker" id="capK"></div>
+    <h1 id="capH"></h1>
+    <p id="capP"></p>
+  </div>
+  <div class="phone">
+    <div class="notch"></div>
+    <div class="screen">
+      <div class="chat-head">
+        <div class="avatar">A</div>
+        <div class="who"><b>Amilo</b><span>your chief of staff · online</span></div>
+      </div>
+      <div class="thread" id="thread"><div class="day-chip">Friday, 17 July</div></div>
+    </div>
+  </div>
+</div>
+
+<div class="ctrl">
+  <button id="btnPlay" aria-label="Pause or resume">Pause</button>
+  <button id="btnRestart" aria-label="Restart the demo">Restart</button>
+  <a class="invite" href="index.html#request">Request invite</a>
+</div>
+<div class="rail">
+  <div class="ticks"><span>7 am</span><span>10 am</span><span>2 pm</span><span>4 pm</span><span>9 pm</span></div>
+  <div class="bar"><i id="prog"></i></div>
+</div>
+
+<div id="finale">
+  <div>
+    <h2>22 handled quietly.<br>Trust it <em>more</em>. Need it <em>less</em>.</h2>
+    <p>Amilo · Speedstar AI Labs</p>
+    <a class="fin-cta" href="index.html#request">Request an invite</a>
+    <a class="fin-home" href="index.html">← back to amilo.io</a>
+  </div>
+</div>
+
+<script>
+const thread = document.getElementById('thread');
+const skies = {
+  dawn:  'linear-gradient(160deg,#3A2A4F 0%,#1C1B33 45%,#8A5320 100%)',
+  day:   'linear-gradient(160deg,#274068 0%,#1C1B33 60%,#2E4A46 100%)',
+  noon:  'linear-gradient(160deg,#2E4E72 0%,#22304F 55%,#3D5B3A 100%)',
+  dusk:  'linear-gradient(160deg,#4A2E5E 0%,#1C1B33 55%,#93401F 100%)',
+  night: 'linear-gradient(160deg,#141327 0%,#1C1B33 60%,#241A3A 100%)'
+};
+function setSky(k){ document.getElementById('sky').style.background = skies[k]; }
+function setClock(t){ document.getElementById('clockT').textContent = t; }
+function caption(k,h,p){
+  const cap=document.getElementById('cap');
+  cap.classList.remove('on');
+  setTimeout(()=>{
+    document.getElementById('capK').textContent=k;
+    document.getElementById('capH').innerHTML=h;
+    document.getElementById('capP').textContent=p;
+    cap.classList.add('on');
+  },420);
+}
+function el(html){ const d=document.createElement('div'); d.innerHTML=html.trim(); return d.firstChild; }
+function scrollDown(){ thread.scrollTop = thread.scrollHeight + 200; }
+let typingNode=null;
+function typing(on){
+  if(on && !typingNode){ typingNode=el('<div class="typing"><i></i><i></i><i></i></div>'); thread.appendChild(typingNode); scrollDown(); }
+  if(!on && typingNode){ typingNode.remove(); typingNode=null; }
+}
+function msg(who, body, time){
+  typing(false);
+  thread.appendChild(el(`<div class="msg ${who}">${body}<span class="meta">${time}${who==='user'?' <span class="tick">✓✓</span>':''}</span></div>`));
+  scrollDown();
+}
+const wave = '<span class="voice"><span class="play">▶</span><span class="wave">'+
+  Array.from({length:16},(_,i)=>`<i style="height:${6+((i*7)%14)}px;animation-delay:${i*60}ms"></i>`).join('')+
+  '</span><b>0:14</b></span>';
+
+/* ---- the day, as a script: [t(ms), fn] ---- */
+const SCRIPT = [
+  // SCENE 1 — 07:00 briefing
+  [0, ()=>{ setSky('dawn'); setClock('07:00');
+    caption('07:00 · the briefing',
+      'The day arrives <em>already sorted</em>.',
+      'Amilo read two inboxes, three calendars and last night\u2019s notes before the user woke up. Three things deserve attention. Twenty-two didn\u2019t.'); }],
+  [1200, ()=>typing(true)],
+  [2600, ()=>msg('amilo','Good morning, Sameep — Friday, 17 July.\n<b>1.</b> <span class="hl">[Work]</span> Priya — contract redlines needed by noon\n<b>2.</b> <span class="hl">[Personal]</span> School fee ₹18,500 due today\n<b>3.</b> Rajeev — deploy sign-off before 6 pm','7:00 am')],
+  [4600, ()=>msg('amilo','Calendar: 5 events across both accounts. Tightest departure: <b>leave by 4:15</b> for the 5 pm airport meeting — 45 min in traffic.\n<b>22 handled quietly.</b>\nReply 1, 2 or 3 for details, or send a voice note.','7:00 am')],
+  [7200, ()=>msg('user','2','7:04 am')],
+  [7900, ()=>typing(true)],
+  [8900, ()=>msg('amilo','School fee — DPS portal, ₹18,500, due 11:59 pm tonight. Link ready. Want a reminder at 6 pm if it\u2019s still unpaid?','7:04 am')],
+  [11200, ()=>msg('user','OK','7:05 am')],
+
+  // SCENE 2 — 09:40 voice note
+  [13000, ()=>{ setSky('day'); setClock('09:40');
+    caption('09:40 · a voice note, on the move',
+      'Hinglish in. <em>Confirmed actions</em> out.',
+      'The natural input for India is a voice note in mixed Hindi-English. Amilo parses it, proposes, and touches nothing until the user says OK.'); }],
+  [14200, ()=>msg('user', wave, '9:40 am')],
+  [15000, ()=>typing(true)],
+  [16600, ()=>msg('amilo','Heard: <i>\u201CKal subah Sharma ji ko call karna hai, aur aaj gym ko 7 baje move kar do.\u201D</i>\nConfirm:\n<b>1.</b> Reminder — call <b>Sharma ji</b>, tomorrow 9:30 am\n<b>2.</b> Move <b>gym → 7:00 pm</b> today (Personal calendar)','9:40 am')],
+  [19400, ()=>msg('user','OK','9:41 am')],
+  [20200, ()=>msg('amilo','✓ Both done. Calendar updated.','9:41 am')],
+
+  // SCENE 3 — 14:02 the routine that lives on no calendar
+  [22400, ()=>{ setSky('noon'); setClock('14:02');
+    caption('14:02 · the invisible commitment',
+      'School pickup is on <em>no calendar</em>. Amilo defends it anyway.',
+      'Weeks ago the user said \u201Ccan\u2019t do 2pm, that\u2019s pickup\u201D — once. Amilo remembered, confirmed it, and now treats it like a meeting that cannot move.'); }],
+  [23600, ()=>typing(true)],
+  [25000, ()=>msg('amilo','Heads up — Anil just proposed <b>2:15 pm Tuesday</b> for the vendor review. That conflicts with <b>school pickup at 2:30</b> (20 min away).\nPickup wins. Propose <b>3:30</b> to Anil instead?','2:02 pm')],
+  [28200, ()=>msg('user','OK','2:03 pm')],
+  [29000, ()=>msg('amilo','✓ Counter-proposed 3:30. I\u2019ll confirm when Anil replies.','2:03 pm')],
+
+  // SCENE 4 — 16:00 traffic escalation
+  [31200, ()=>{ setSky('dusk'); setClock('16:00');
+    caption('16:00 · the physics of the day',
+      'Two events can be <em>impossible</em> without overlapping.',
+      'Amilo re-checks traffic before every departure. When the road degrades, the plan changes — before the user is late, not after.'); }],
+  [32400, ()=>typing(true)],
+  [33600, ()=>msg('amilo','⚠ Traffic to the airport just got worse — now <b>55 min</b>, not 45.\n<b>Leave now, not 4:15.</b> Assuming you\u2019re at the office.\n<span class="hl">Tap to navigate ›</span>','4:00 pm')],
+  [36400, ()=>msg('user','Leaving 👍','4:01 pm')],
+
+  // SCENE 5 — 21:00 evening wrap
+  [38400, ()=>{ setSky('night'); setClock('21:00');
+    caption('21:00 · the wrap',
+      'Loops get <em>closed</em>, not counted.',
+      'What got done, what slipped, what\u2019s waiting on others — and exactly one open loop. Then Amilo goes quiet. That\u2019s the product.'); }],
+  [39600, ()=>typing(true)],
+  [41200, ()=>msg('amilo','Evening wrap, Sameep.\nDone: 6 — the one that mattered: <b>school fee paid</b>.\nSlipped: Priya\u2019s redlines — carried to tomorrow, 10 am hold placed.\nTomorrow starts with: <b>Rajeev, 9:00</b>.\nDid the <b>Sharma ji</b> call get scheduled for the right time?','9:00 pm')],
+  [44800, ()=>msg('user','yes','9:02 pm')],
+  [45600, ()=>msg('amilo','✓ Closed. Anything to capture before tomorrow? Send a voice note. Good night.','9:02 pm')],
+
+  // FINALE
+  [48600, ()=>{ document.getElementById('finale').classList.add('on'); }],
+];
+const TOTAL = 50500;
+
+/* ---- engine ---- */
+let startAt=null, elapsed=0, playing=true, fired=new Set(), raf=null;
+const prog=document.getElementById('prog');
+function tick(now){
+  if(!startAt) startAt=now-elapsed;
+  if(playing){
+    elapsed=now-startAt;
+    prog.style.width=Math.min(100,(elapsed/TOTAL)*100)+'%';
+    SCRIPT.forEach(([t,fn],i)=>{ if(elapsed>=t && !fired.has(i)){ fired.add(i); fn(); } });
+  } else { startAt=now-elapsed; }
+  raf=requestAnimationFrame(tick);
+}
+raf=requestAnimationFrame(tick);
+
+document.getElementById('btnPlay').addEventListener('click',e=>{
+  playing=!playing; e.target.textContent=playing?'Pause':'Play';
+});
+document.getElementById('btnRestart').addEventListener('click',()=>{
+  cancelAnimationFrame(raf);
+  fired.clear(); elapsed=0; startAt=null; playing=true; typingNode=null;
+  document.getElementById('btnPlay').textContent='Pause';
+  document.getElementById('finale').classList.remove('on');
+  thread.innerHTML='<div class="day-chip">Friday, 17 July</div>';
+  document.getElementById('cap').classList.remove('on');
+  raf=requestAnimationFrame(tick);
+});
+if(window.matchMedia('(prefers-reduced-motion: reduce)').matches){
+  // fire everything instantly for reduced-motion users
+  SCRIPT.forEach(([t,fn])=>fn());
+}
+
+document.querySelectorAll('a[href="index.html#request"]').forEach(function(el){
+  el.addEventListener('click', function(){
+    if (window.gtag) gtag('event', 'invite_cta_click', {source: 'how_it_works', transport_type: 'beacon'});
+  });
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-R4W16EDE7P"></script>
+<script>
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){dataLayer.push(arguments);}
+  gtag('js', new Date());
+  gtag('config', 'G-R4W16EDE7P');
+</script>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Request an invite — Amilo</title>
+<link rel="canonical" href="https://amilo.io/invite.html">
+<meta name="theme-color" content="#12162E">
+<meta name="robots" content="noindex">
+<link rel="icon" href="mark.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,450;0,9..144,600;1,9..144,450&family=Albert+Sans:wght@400;500;600&family=Spline+Sans+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root{--ink:#21264A;--text:#2A2F55;--muted:#6E7391;--paper:#FBFAF6;--card:#FFFFFF;--line:#E7E4DA;--gold:#F2A93B;--gold-deep:#C07E17}
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{font-family:'Albert Sans',system-ui,sans-serif;color:var(--text);background:var(--paper);line-height:1.6;font-size:16px;min-height:100vh;display:flex;flex-direction:column}
+  a{color:var(--ink)}
+  .wrap{max-width:640px;margin:0 auto;padding:0 24px;width:100%}
+  header{padding:28px 0}
+  .brandrow a{display:flex;align-items:center;gap:12px;text-decoration:none;width:fit-content}
+  .mark{width:34px;height:34px}
+  .wordmark{font-family:'Fraunces',serif;font-weight:600;font-size:22px;color:var(--ink)}
+  main{flex:1;padding-bottom:70px}
+  h1{font-family:'Fraunces',serif;font-weight:450;color:var(--ink);font-size:34px;margin:26px 0 8px}
+  h1 em{font-style:italic;color:var(--gold-deep)}
+  .sub{color:var(--muted);margin-bottom:34px;max-width:48ch}
+  form{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:30px;box-shadow:0 24px 60px -34px rgba(33,38,74,.3)}
+  .field{margin-bottom:22px}
+  label{display:block;font-weight:600;font-size:.9rem;color:var(--ink);margin-bottom:7px}
+  label .opt{font-weight:400;color:var(--muted);font-size:.8rem}
+  input,select,textarea{
+    width:100%;font:inherit;color:var(--text);background:var(--paper);
+    border:1px solid var(--line);border-radius:10px;padding:12px 14px;outline:none;
+    transition:border .15s, box-shadow .15s;
+  }
+  input:focus,select:focus,textarea:focus{border-color:var(--gold);box-shadow:0 0 0 3px rgba(242,169,59,.18)}
+  .hint{font-size:.78rem;color:var(--muted);margin-top:6px}
+  textarea{resize:vertical;min-height:70px}
+  .hp{position:absolute;left:-9999px;opacity:0;height:0;overflow:hidden}
+  button[type=submit]{
+    font-family:'Albert Sans',sans-serif;font-weight:600;font-size:1rem;cursor:pointer;
+    background:var(--gold);color:var(--ink);border:none;border-radius:99px;padding:15px 30px;width:100%;
+    transition:background .18s, box-shadow .25s, transform .18s;
+  }
+  button[type=submit]:hover{background:#F7C877;box-shadow:0 0 30px rgba(242,169,59,.4)}
+  button[type=submit]:active{transform:scale(.98)}
+  button[type=submit]:disabled{opacity:.6;cursor:wait}
+  .fineprint{font-size:.78rem;color:var(--muted);margin-top:16px;text-align:center}
+  #done{display:none;text-align:center;background:var(--card);border:1px solid var(--line);border-radius:16px;padding:56px 30px}
+  #done h2{font-family:'Fraunces',serif;font-weight:450;color:var(--ink);font-size:26px}
+  #done p{color:var(--muted);margin-top:12px;max-width:40ch;margin-left:auto;margin-right:auto}
+  #done .dot{width:12px;height:12px;border-radius:50%;background:var(--gold);margin:0 auto 20px;box-shadow:0 0 0 8px rgba(242,169,59,.15)}
+  #err{display:none;color:#A33B2E;font-size:.85rem;margin-top:14px;text-align:center}
+  footer{padding:30px 0;color:var(--muted);font-size:13px;border-top:1px solid var(--line)}
+  .foot{display:flex;justify-content:space-between;flex-wrap:wrap;gap:14px}
+  .foot a{color:var(--muted);text-decoration:none}
+  .foot a:hover{color:var(--ink)}
+</style>
+</head>
+<body>
+<header class="wrap">
+  <div class="brandrow">
+    <a href="index.html">
+      <svg class="mark" viewBox="0 0 512 512" aria-hidden="true">
+        <path d="M 332.1 112.2 A 162 162 0 1 0 414.5 289.7" fill="none" stroke="#21264A" stroke-width="56" stroke-linecap="round"/>
+        <circle cx="402.8" cy="187.5" r="46" fill="#F2A93B"/>
+      </svg>
+      <span class="wordmark">amilo</span>
+    </a>
+  </div>
+</header>
+
+<main class="wrap">
+  <h1>Request an <em>invite.</em></h1>
+  <p class="sub">Amilo (say it <strong>ah-MEE-lo</strong>) onboards a handful of people at a time, deliberately. Tell us where to reach you and we'll write back when the next seats open.</p>
+
+  <form id="inviteForm" novalidate>
+    <div class="field">
+      <label for="f-name">Your name</label>
+      <input id="f-name" name="name" type="text" autocomplete="name" required maxlength="80" placeholder="Priya Sharma">
+    </div>
+    <div class="field">
+      <label for="f-phone">WhatsApp number</label>
+      <input id="f-phone" name="phone" type="tel" autocomplete="tel" required maxlength="20" placeholder="+91 98xxxxxxxx" pattern="^\+?[0-9\s\-]{8,18}$">
+      <p class="hint">Your phone number is your identity on Amilo — briefings arrive there.</p>
+    </div>
+    <div class="field">
+      <label for="f-email">Email</label>
+      <input id="f-email" name="email" type="email" autocomplete="email" required maxlength="120" placeholder="you@example.com">
+    </div>
+    <div class="field">
+      <label for="f-source">How did you hear about Amilo?</label>
+      <select id="f-source" name="source" required>
+        <option value="" selected disabled>Choose one</option>
+        <option>A friend told me</option>
+        <option>LinkedIn</option>
+        <option>X / Twitter</option>
+        <option>Search</option>
+        <option>Press / a blog</option>
+        <option>Other</option>
+      </select>
+    </div>
+    <div class="field">
+      <label for="f-detail">Anything else? <span class="opt">optional</span></label>
+      <textarea id="f-detail" name="detail" maxlength="500" placeholder="Who sent you, or what you're hoping Amilo takes off your plate."></textarea>
+    </div>
+    <!-- honeypot: real people never see or fill this -->
+    <div class="hp" aria-hidden="true">
+      <label for="f-company">Company</label>
+      <input id="f-company" name="company" type="text" tabindex="-1" autocomplete="off">
+    </div>
+    <button type="submit" id="submitBtn">Request my invite</button>
+    <p id="err">That didn't go through — please try once more, or email <a href="mailto:sales@speedstar.ai">sales@speedstar.ai</a>.</p>
+    <p class="fineprint">We use these details only to contact you about Amilo access — see the <a href="privacy.html">privacy policy</a>. No newsletters, no sharing, ever.</p>
+  </form>
+
+  <div id="done">
+    <div class="dot"></div>
+    <h2>You're on the list.</h2>
+    <p>We onboard slowly and deliberately — when your seat opens, the first message you get will be from Amilo itself.</p>
+    <p style="margin-top:20px"><a href="how-it-works.html">Watch a day with Amilo →</a></p>
+  </div>
+</main>
+
+<footer>
+  <div class="wrap foot">
+    <span>© 2026 Speedstar AI Labs Private Limited</span>
+    <span><a href="index.html">Home</a> · <a href="how-it-works.html">How it works</a> · <a href="privacy.html">Privacy</a> · <a href="terms.html">Terms</a></span>
+  </div>
+</footer>
+
+<script>
+/* ============================================================
+   Lead capture → Amilo admin (access_requests).
+   Honeypot field `company` must stay empty.
+   ============================================================ */
+var FORM_ENDPOINT = 'https://api.amilo.io/access-requests';
+
+(function(){
+  var form = document.getElementById('inviteForm');
+  var btn = document.getElementById('submitBtn');
+  var err = document.getElementById('err');
+
+  form.addEventListener('submit', function(e){
+    e.preventDefault();
+    err.style.display = 'none';
+    if (!form.reportValidity()) return;
+    if (form.elements['company'].value) return; /* honeypot tripped: silently drop */
+
+    var data = {
+      name: form.elements['name'].value.trim(),
+      phone: form.elements['phone'].value.trim(),
+      email: form.elements['email'].value.trim(),
+      source: form.elements['source'].value,
+      detail: form.elements['detail'].value.trim(),
+      page: location.href,
+      company: ''
+    };
+
+    if (window.gtag) gtag('event', 'generate_lead', {method: 'amilo_api', transport_type: 'beacon'});
+
+    btn.disabled = true; btn.textContent = 'Sending…';
+    fetch(FORM_ENDPOINT, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json', 'Accept': 'application/json'},
+      body: JSON.stringify(data)
+    }).then(function(r){ return r.json().then(function(j){ return { ok: r.ok, j: j }; }); })
+    .then(function(res){
+      if (!res.ok || !res.j.ok) throw new Error((res.j && res.j.error) || 'submit failed');
+      form.style.display = 'none';
+      document.getElementById('done').style.display = 'block';
+    }).catch(function(){
+      btn.disabled = false; btn.textContent = 'Request my invite';
+      err.style.display = 'block';
+    });
+  });
+})();
+</script>
+</body>
+</html>
