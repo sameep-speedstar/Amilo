@@ -380,3 +380,41 @@ export const usageEvents = pgTable(
     index("usage_events_kind_ts_idx").on(t.kind, t.ts),
   ],
 );
+
+/** Website invite-interest form → admin queue. */
+export const accessRequests = pgTable(
+  "access_requests",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    name: varchar("name", { length: 120 }).notNull(),
+    phoneE164: varchar("phone_e164", { length: 20 }).notNull(),
+    email: varchar("email", { length: 200 }).notNull(),
+    source: varchar("source", { length: 120 }),
+    detail: text("detail"),
+    /** new | invited | active | declined | spam */
+    status: varchar("status", { length: 20 }).notNull().default("new"),
+    inviteId: uuid("invite_id").references(() => invites.id, { onDelete: "set null" }),
+    userId: uuid("user_id").references(() => users.id, { onDelete: "set null" }),
+    adminNote: text("admin_note"),
+    pageUrl: text("page_url"),
+    decidedAt: timestamp("decided_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("access_requests_status_created_idx").on(t.status, t.createdAt),
+    index("access_requests_phone_idx").on(t.phoneE164),
+  ],
+);
+
+/** Founder admin browser sessions (email login). */
+export const adminSessions = pgTable(
+  "admin_sessions",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    email: varchar("email", { length: 200 }).notNull(),
+    tokenHash: varchar("token_hash", { length: 64 }).notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex("admin_sessions_token_hash_uidx").on(t.tokenHash)],
+);

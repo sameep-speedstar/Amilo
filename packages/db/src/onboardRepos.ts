@@ -1,11 +1,25 @@
+import { createHash, randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
+import { and, count, desc, eq, gte, inArray, sql, sum } from "drizzle-orm";
 import { localDayBoundsUtc } from "@amilo/core";
-import { and, desc, eq, gte, sql, sum } from "drizzle-orm";
-import { randomBytes } from "node:crypto";
-import { allowedPhones, invites, usageEvents, users } from "./schema.js";
+import {
+  accessRequests,
+  adminSessions,
+  allowedPhones,
+  invites,
+  usageEvents,
+  users,
+} from "./schema.js";
 import type { Db } from "./index.js";
 
 export type AllowedPhoneRow = typeof allowedPhones.$inferSelect;
 export type InviteRow = typeof invites.$inferSelect;
+export type AccessRequestRow = typeof accessRequests.$inferSelect;
+export type AccessRequestStatus =
+  | "new"
+  | "invited"
+  | "active"
+  | "declined"
+  | "spam";
 
 export function normalizePhoneE164(raw: string): string | null {
   const digits = raw.replace(/\D/g, "");
@@ -184,7 +198,307 @@ export async function claimInvite(
     .where(eq(invites.id, invite.id))
     .returning();
 
+  await markAccessRequestActiveByPhone(db, phone);
   return { ok: true, phoneE164: phone, invite: updated ?? invite };
+}
+
+export function normalizeEmail(raw: string): string {
+  return raw.trim().toLowerCase();
+}
+
+export function isValidEmail(raw: string): boolean {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizeEmail(raw));
+}
+
+export async function createAccessRequest(
+  db: Db,
+  opts: {
+    name: string;
+    phone: string;
+    email: string;
+    source?: string | null;
+    detail?: string | null;
+    pageUrl?: string | null;
+  },
+): Promise<AccessRequestRow> {
+  const name = opts.name.trim().slice(0, 120);
+  if (name.length < 2) throw new Error("Name is required");
+  const phone = normalizePhoneE164(opts.phone);
+  if (!phone) throw new Error("Invalid WhatsApp number — use country code, e.g. +9198XXXXXXXX");
+  const email = normalizeEmail(opts.email);
+  if (!isValidEmail(email)) throw new Error("Invalid email");
+
+  const existing = await db.query.accessRequests.findFirst({
+    where: and(
+      eq(accessRequests.phoneE164, phone),
+      inArray(accessRequests.status, ["new", "invited"]),
+    ),
+    orderBy: [desc(accessRequests.createdAt)],
+  });
+  if (existing) {
+    const [updated] = await db
+      .update(accessRequests)
+      .set({
+        name,
+        email,
+        source: opts.source?.trim().slice(0, 120) || existing.source,
+        detail: opts.detail?.trim().slice(0, 2000) || existing.detail,
+        pageUrl: opts.pageUrl?.trim().slice(0, 500) || existing.pageUrl,
+      })
+      .where(eq(accessRequests.id, existing.id))
+      .returning();
+    return updated ?? existing;
+  }
+
+  const [row] = await db
+    .insert(accessRequests)
+    .values({
+      name,
+      phoneE164: phone,
+      email,
+      source: opts.source?.trim().slice(0, 120) || null,
+      detail: opts.detail?.trim().slice(0, 2000) || null,
+      pageUrl: opts.pageUrl?.trim().slice(0, 500) || null,
+      status: "new",
+    })
+    .returning();
+  if (!row) throw new Error("failed to save access request");
+  return row;
+}
+
+export async function listAccessRequests(
+  db: Db,
+  opts?: { status?: AccessRequestStatus | "all"; limit?: number },
+): Promise<AccessRequestRow[]> {
+  const limit = Math.min(200, Math.max(1, opts?.limit ?? 100));
+  if (opts?.status && opts.status !== "all") {
+    return db.query.accessRequests.findMany({
+      where: eq(accessRequests.status, opts.status),
+      orderBy: [desc(accessRequests.createdAt)],
+      limit,
+    });
+  }
+  return db.query.accessRequests.findMany({
+    orderBy: [desc(accessRequests.createdAt)],
+    limit,
+  });
+}
+
+export async function getAccessRequest(
+  db: Db,
+  id: string,
+): Promise<AccessRequestRow | null> {
+  return (
+    (await db.query.accessRequests.findFirst({
+      where: eq(accessRequests.id, id),
+    })) ?? null
+  );
+}
+
+export async function decideAccessRequest(
+  db: Db,
+  id: string,
+  opts: {
+    status: Exclude<AccessRequestStatus, "new">;
+    adminNote?: string | null;
+    inviteId?: string | null;
+    userId?: string | null;
+  },
+): Promise<AccessRequestRow | null> {
+  const [row] = await db
+    .update(accessRequests)
+    .set({
+      status: opts.status,
+      decidedAt: new Date(),
+      ...(opts.adminNote !== undefined
+        ? { adminNote: opts.adminNote?.slice(0, 1000) ?? null }
+        : {}),
+      ...(opts.inviteId !== undefined ? { inviteId: opts.inviteId } : {}),
+      ...(opts.userId !== undefined ? { userId: opts.userId } : {}),
+    })
+    .where(eq(accessRequests.id, id))
+    .returning();
+  return row ?? null;
+}
+
+/** Approve: allowlist + invite link, mark invited (or active if already chatting). */
+export async function approveAccessRequest(
+  db: Db,
+  id: string,
+  opts?: { adminNote?: string | null; expiresInDays?: number },
+): Promise<{ request: AccessRequestRow; invite: InviteRow; inviteUrlPath: string }> {
+  const req = await getAccessRequest(db, id);
+  if (!req) throw new Error("Request not found");
+  if (req.status === "declined" || req.status === "spam") {
+    throw new Error("Request was declined — create a new invite manually if needed.");
+  }
+  const invite = await createInvite(db, {
+    phoneE164: req.phoneE164,
+    label: req.name,
+    maxUses: 1,
+    expiresInDays: opts?.expiresInDays ?? 14,
+  });
+  const user = await db.query.users.findFirst({
+    where: eq(users.phoneE164, req.phoneE164),
+  });
+  const alreadyActive = Boolean(user);
+  const updated = await decideAccessRequest(db, id, {
+    status: alreadyActive ? "active" : "invited",
+    inviteId: invite.id,
+    userId: user?.id ?? null,
+    adminNote: opts?.adminNote ?? null,
+  });
+  if (!updated) throw new Error("failed to update request");
+  return { request: updated, invite, inviteUrlPath: `/i/${invite.token}` };
+}
+
+export async function markAccessRequestActiveByPhone(
+  db: Db,
+  phoneRaw: string,
+  userId?: string | null,
+): Promise<void> {
+  const phone = normalizePhoneE164(phoneRaw);
+  if (!phone) return;
+  await db
+    .update(accessRequests)
+    .set({
+      status: "active",
+      decidedAt: new Date(),
+      ...(userId ? { userId } : {}),
+    })
+    .where(
+      and(
+        eq(accessRequests.phoneE164, phone),
+        inArray(accessRequests.status, ["new", "invited"]),
+      ),
+    );
+}
+
+export async function countActiveUsers(db: Db): Promise<number> {
+  const rows = await db
+    .select({ n: count() })
+    .from(users)
+    .where(eq(users.status, "active"));
+  return Number(rows[0]?.n ?? 0) || 0;
+}
+
+export async function getOnboardingStats(db: Db): Promise<{
+  requestsTotal: number;
+  requestsPending: number;
+  requestsInvited: number;
+  requestsActive: number;
+  requestsDeclined: number;
+  requestsThisWeek: number;
+  activeUsers: number;
+}> {
+  const weekAgo = new Date(Date.now() - 7 * 24 * 3600_000);
+  const byStatus = await db
+    .select({
+      status: accessRequests.status,
+      n: count(),
+    })
+    .from(accessRequests)
+    .groupBy(accessRequests.status);
+  const map = new Map(byStatus.map((r) => [r.status, Number(r.n) || 0]));
+  const weekRows = await db
+    .select({ n: count() })
+    .from(accessRequests)
+    .where(gte(accessRequests.createdAt, weekAgo));
+  const activeUsers = await countActiveUsers(db);
+  const requestsPending = map.get("new") ?? 0;
+  const requestsInvited = map.get("invited") ?? 0;
+  const requestsActive = map.get("active") ?? 0;
+  const requestsDeclined = (map.get("declined") ?? 0) + (map.get("spam") ?? 0);
+  return {
+    requestsTotal: [...map.values()].reduce((a, b) => a + b, 0),
+    requestsPending,
+    requestsInvited,
+    requestsActive,
+    requestsDeclined,
+    requestsThisWeek: Number(weekRows[0]?.n ?? 0) || 0,
+    activeUsers,
+  };
+}
+
+function hashSessionToken(token: string): string {
+  return createHash("sha256").update(token).digest("hex");
+}
+
+export function hashAdminPassword(password: string, salt: string): string {
+  return scryptSync(password, salt, 32).toString("hex");
+}
+
+export function verifyAdminPassword(
+  password: string,
+  salt: string,
+  expectedHex: string,
+): boolean {
+  try {
+    const got = Buffer.from(hashAdminPassword(password, salt), "hex");
+    const exp = Buffer.from(expectedHex, "hex");
+    if (got.length !== exp.length) return false;
+    return timingSafeEqual(got, exp);
+  } catch {
+    return false;
+  }
+}
+
+/** Dev/deploy convenience: derive a stable hash from password + salt. */
+export function adminPasswordMatches(
+  password: string,
+  opts: { passwordPlain?: string; passwordHash?: string; passwordSalt?: string },
+): boolean {
+  const plain = opts.passwordPlain?.trim() ?? "";
+  if (plain) {
+    const a = Buffer.from(password);
+    const b = Buffer.from(plain);
+    if (a.length !== b.length) return false;
+    return timingSafeEqual(a, b);
+  }
+  const hash = opts.passwordHash?.trim() ?? "";
+  const salt = opts.passwordSalt?.trim() ?? "";
+  if (!hash || !salt) return false;
+  return verifyAdminPassword(password, salt, hash);
+}
+
+export async function createAdminSession(
+  db: Db,
+  email: string,
+  ttlDays = 14,
+): Promise<{ token: string; expiresAt: Date }> {
+  const token = randomBytes(32).toString("base64url");
+  const expiresAt = new Date(Date.now() + ttlDays * 86_400_000);
+  await db.insert(adminSessions).values({
+    email: normalizeEmail(email),
+    tokenHash: hashSessionToken(token),
+    expiresAt,
+  });
+  return { token, expiresAt };
+}
+
+export async function getAdminSessionEmail(
+  db: Db,
+  token: string | undefined | null,
+): Promise<string | null> {
+  if (!token) return null;
+  const hash = hashSessionToken(token);
+  const row = await db.query.adminSessions.findFirst({
+    where: eq(adminSessions.tokenHash, hash),
+  });
+  if (!row) return null;
+  if (row.expiresAt.getTime() < Date.now()) {
+    await db.delete(adminSessions).where(eq(adminSessions.id, row.id));
+    return null;
+  }
+  return row.email;
+}
+
+export async function destroyAdminSession(
+  db: Db,
+  token: string | undefined | null,
+): Promise<void> {
+  if (!token) return;
+  await db.delete(adminSessions).where(eq(adminSessions.tokenHash, hashSessionToken(token)));
 }
 
 /** Rough micro-USD estimates for beta metering. */

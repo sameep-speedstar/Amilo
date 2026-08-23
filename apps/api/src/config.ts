@@ -26,6 +26,13 @@ export interface Settings {
   sarvamLanguageCode: string;
   googleMapsApiKey: string;
   adminToken: string;
+  /** Founder admin login email (default sameep@speedstar.ai). */
+  adminEmail: string;
+  /** Plain password for admin login (set in Azure). */
+  adminPassword: string;
+  /** Optional scrypt hash+salt instead of plain password. */
+  adminPasswordHash: string;
+  adminPasswordSalt: string;
   /** WhatsApp business number for wa.me deep links (E.164). */
   wabaDisplayPhone: string;
   usageDayCap: number;
@@ -88,6 +95,10 @@ export function loadSettings(): Settings {
     sarvamLanguageCode: req("SARVAM_LANGUAGE_CODE", "unknown"),
     googleMapsApiKey: req("GOOGLE_MAPS_API_KEY"),
     adminToken: req("ADMIN_TOKEN"),
+    adminEmail: req("ADMIN_EMAIL", "sameep@speedstar.ai").trim().toLowerCase(),
+    adminPassword: req("ADMIN_PASSWORD"),
+    adminPasswordHash: req("ADMIN_PASSWORD_HASH"),
+    adminPasswordSalt: req("ADMIN_PASSWORD_SALT"),
     wabaDisplayPhone: req("WABA_DISPLAY_PHONE"),
     usageDayCap: Number(req("USAGE_DAY_CAP", "40")) || 40,
     usageWeekCap: Number(req("USAGE_WEEK_CAP", "150")) || 150,

@@ -2,16 +2,48 @@
 
 Friends join Amilo by scanning a QR or opening an invite link. That lands on `api.amilo.io`, allowlists their WhatsApp number, then opens WhatsApp (`wa.me`) with a prefilled **Hi Amilo**.
 
-## Admin
+Website interest form (`amilo.io/invite.html`) posts to the API; requests sit in admin until you approve.
 
-1. Set `ADMIN_TOKEN` (e.g. `openssl rand -hex 24`) and `WABA_DISPLAY_PHONE` (business number E.164).
-2. Open `https://api.amilo.io/admin?token=<ADMIN_TOKEN>`.
-3. **Add phone** to allowlist, and/or **Create invite**:
-   - With phone → friend is allowlisted immediately; link/QR opens WhatsApp.
-   - Without phone → friend enters their number once, then WhatsApp opens.
-4. Share `/i/<token>` or `/i/<token>/qr`.
+## Admin login
 
-Env `ALLOWED_PHONES` still works alongside the DB allowlist.
+1. Set `ADMIN_EMAIL=sameep@speedstar.ai` and `ADMIN_PASSWORD` (e.g. `openssl rand -base64 24`).
+2. Open `https://api.amilo.io/admin` → sign in with that email + password.
+3. Optional emergency: `ADMIN_TOKEN` still works as `?token=` / cookie (legacy).
+
+## Admin tabs
+
+| Tab | What |
+|-----|------|
+| Overview | Requests received · pending · this week · **active users** · conversion |
+| Requests | Website form queue — Approve / Decline / Spam |
+| Users | Allowlist phones |
+| Invites | Manual invite QR/links |
+| Usage | 7-day cost / interactions |
+
+**Approve** allowlists the phone, creates a 14-day invite, and shows the share link. When they message Amilo, status flips to **active**.
+
+## Website form → API
+
+Point `invite.html` at:
+
+```http
+POST https://api.amilo.io/access-requests
+Content-Type: application/json
+
+{
+  "name": "Priya Sharma",
+  "phone": "+9198XXXXXXXX",
+  "email": "priya@example.com",
+  "source": "Friend",
+  "detail": "optional note",
+  "page": "https://amilo.io/invite.html",
+  "company": ""
+}
+```
+
+CORS allows `https://amilo.io` and `https://www.amilo.io`. Honeypot field `company` must be empty.
+
+Replace (or dual-write alongside) the current Web3Forms submit.
 
 ## Caps / cost
 
@@ -22,7 +54,7 @@ Each brain turn (and STT) is metered in `usage_events`. Defaults:
 
 Host / operator phones are never capped: `ALLOWED_PHONES`, `HOST_PHONE`, `USAGE_CAP_EXEMPT_PHONES`, plus the product host number.
 
-Over-cap users get a short WhatsApp message instead of a brain reply. Weekly cost rollup is on the admin page.
+Over-cap users get a short WhatsApp message instead of a brain reply. Weekly cost rollup is on the Usage tab.
 
 ## Meta Dev mode
 

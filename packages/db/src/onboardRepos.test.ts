@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
+  adminPasswordMatches,
   formatUsdFromMicros,
   inviteIsOpen,
   isUsageCapExemptPhone,
+  isValidEmail,
+  normalizeEmail,
   normalizePhoneE164,
   phoneDigits,
   usageDayStartUtc,
@@ -31,6 +34,19 @@ describe("onboard phone helpers", () => {
 
   it("formats micros as USD", () => {
     assert.equal(formatUsdFromMicros(800), "$0.0008");
+  });
+
+  it("matches plain admin password", () => {
+    assert.equal(adminPasswordMatches("secret", { passwordPlain: "secret" }), true);
+    assert.equal(adminPasswordMatches("nope", { passwordPlain: "secret" }), false);
+  });
+});
+
+describe("access request helpers", () => {
+  it("normalizes email", () => {
+    assert.equal(normalizeEmail(" Sameep@Speedstar.ai "), "sameep@speedstar.ai");
+    assert.equal(isValidEmail("sameep@speedstar.ai"), true);
+    assert.equal(isValidEmail("nope"), false);
   });
 });
 

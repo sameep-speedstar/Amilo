@@ -88,6 +88,15 @@ import {
   USAGE_COST_MICROS,
   claimInvite,
   createInvite,
+  createAccessRequest,
+  createAdminSession,
+  destroyAdminSession,
+  getAdminSessionEmail,
+  adminPasswordMatches,
+  approveAccessRequest,
+  decideAccessRequest,
+  markAccessRequestActiveByPhone,
+  normalizeEmail,
   addAllowedPhone,
   deactivateAllowedPhone,
   getInviteByToken,
@@ -121,9 +130,13 @@ import { correctTravelOrigin, geocodeAddress } from "./travelService.js";
 import {
   adminAuthOk,
   buildQrPngDataUrl,
+  clearAdminSessionCookie,
+  getAdminSessionToken,
   renderAdminDashboard,
+  renderAdminLogin,
   renderInvitePage,
   setAdminCookie,
+  setAdminSessionCookie,
 } from "./adminUi.js";
 
 loadEnv();
@@ -957,6 +970,7 @@ async function processInbound(rawJson: unknown): Promise<void> {
       ...(parsed.profileName ? { profileName: parsed.profileName } : {}),
     });
     await touchWhatsAppInbound(db, parsed.waId, parsed.timestamp);
+    await markAccessRequestActiveByPhone(db, parsed.phoneE164, user.id);
 
     if (
       !isUsageCapExemptPhone(parsed.phoneE164, settings.usageCapExemptPhones)
@@ -1163,28 +1177,152 @@ app.get("/health", async (c) => {
 });
 
 function adminAuthorized(c: Parameters<typeof adminAuthOk>[0], bodyToken?: string): boolean {
-  if (!settings.adminToken) return false;
-  if (adminAuthOk(c, settings.adminToken)) return true;
-  return Boolean(bodyToken && bodyToken === settings.adminToken);
+  if (settings.adminToken && adminAuthOk(c, settings.adminToken)) return true;
+  if (bodyToken && settings.adminToken && bodyToken === settings.adminToken) return true;
+  return false;
 }
 
-app.get("/admin", async (c) => {
-  if (!settings.adminToken) return c.text("Set ADMIN_TOKEN to enable the beta admin dashboard.", 503);
-  if (!adminAuthorized(c)) return c.text("Unauthorized — open /admin?token=…", 401);
-  if (c.req.query("token") === settings.adminToken) {
-    c.header("Set-Cookie", setAdminCookie(settings.adminToken));
+async function requireAdminEmail(
+  c: Parameters<typeof adminAuthOk>[0],
+): Promise<string | null> {
+  const sessionTok = getAdminSessionToken(c);
+  const email = await getAdminSessionEmail(db, sessionTok);
+  if (email) return email;
+  // Emergency: legacy ADMIN_TOKEN still works as a session-less cookie/query.
+  if (adminAuthorized(c)) return settings.adminEmail || "admin";
+  return null;
+}
+
+const ACCESS_CORS_ORIGINS = new Set([
+  "https://amilo.io",
+  "https://www.amilo.io",
+  "http://localhost:3000",
+  "http://127.0.0.1:3000",
+]);
+
+function accessCorsHeaders(origin: string | undefined): Record<string, string> {
+  if (origin && ACCESS_CORS_ORIGINS.has(origin)) {
+    return {
+      "Access-Control-Allow-Origin": origin,
+      "Access-Control-Allow-Methods": "POST, OPTIONS",
+      "Access-Control-Allow-Headers": "Content-Type",
+      Vary: "Origin",
+    };
   }
+  return {};
+}
+
+app.options("/access-requests", (c) => {
+  const headers = accessCorsHeaders(c.req.header("origin"));
+  return new Response(null, { status: 204, headers });
+});
+
+app.post("/access-requests", async (c) => {
+  const origin = c.req.header("origin");
+  const headers = accessCorsHeaders(origin);
+  try {
+    const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null;
+    if (!body || typeof body !== "object") {
+      return c.json({ ok: false, error: "Expected JSON body" }, 400, headers);
+    }
+    // Honeypot (website uses `company`)
+    if (String(body.company ?? body.botcheck ?? "").trim()) {
+      return c.json({ ok: true }, 200, headers);
+    }
+    const row = await createAccessRequest(db, {
+      name: String(body.name ?? ""),
+      phone: String(body.phone ?? ""),
+      email: String(body.email ?? ""),
+      source: body.source != null ? String(body.source) : null,
+      detail: body.detail != null ? String(body.detail) : null,
+      pageUrl: body.page != null ? String(body.page) : body.pageUrl != null ? String(body.pageUrl) : null,
+    });
+    return c.json(
+      { ok: true, id: row.id, status: row.status },
+      200,
+      headers,
+    );
+  } catch (e) {
+    return c.json(
+      { ok: false, error: e instanceof Error ? e.message : String(e) },
+      400,
+      headers,
+    );
+  }
+});
+
+app.get("/admin/login", async (c) => {
+  const email = await requireAdminEmail(c);
+  if (email) return c.redirect("/admin");
+  return c.html(renderAdminLogin({ emailHint: settings.adminEmail }));
+});
+
+app.post("/admin/login", async (c) => {
+  const body = await c.req.parseBody();
+  const email = normalizeEmail(String(body.email ?? ""));
+  const password = String(body.password ?? "");
+  const allowed = settings.adminEmail;
+  if (!allowed) {
+    return c.html(
+      renderAdminLogin({ error: "ADMIN_EMAIL is not configured.", emailHint: email }),
+      503,
+    );
+  }
+  if (email !== allowed) {
+    return c.html(
+      renderAdminLogin({ error: "Unknown admin account.", emailHint: email }),
+      401,
+    );
+  }
+  const ok = adminPasswordMatches(password, {
+    passwordPlain: settings.adminPassword,
+    passwordHash: settings.adminPasswordHash,
+    passwordSalt: settings.adminPasswordSalt,
+  });
+  if (!ok) {
+    return c.html(
+      renderAdminLogin({ error: "Wrong password.", emailHint: email }),
+      401,
+    );
+  }
+  const session = await createAdminSession(db, email);
+  c.header("Set-Cookie", setAdminSessionCookie(session.token));
+  return c.redirect("/admin");
+});
+
+app.post("/admin/logout", async (c) => {
+  await destroyAdminSession(db, getAdminSessionToken(c));
+  c.header("Set-Cookie", clearAdminSessionCookie());
+  return c.redirect("/admin/login");
+});
+
+app.get("/admin", async (c) => {
+  const email = await requireAdminEmail(c);
+  if (!email) {
+    if (c.req.query("token") && settings.adminToken && c.req.query("token") === settings.adminToken) {
+      c.header("Set-Cookie", setAdminCookie(settings.adminToken));
+      return c.redirect("/admin");
+    }
+    return c.redirect("/admin/login");
+  }
+  if (!(settings.adminPassword || settings.adminPasswordHash) && !settings.adminToken) {
+    return c.text("Set ADMIN_PASSWORD (or ADMIN_TOKEN) to enable the admin dashboard.", 503);
+  }
+  const tab = String(c.req.query("tab") ?? "overview");
   const html = await renderAdminDashboard({
     db,
     publicBaseUrl: settings.publicBaseUrl,
-    adminToken: settings.adminToken,
+    email,
+    tab,
+    ...(c.req.query("msg") ? { message: String(c.req.query("msg")) } : {}),
   });
   return c.html(html);
 });
 
 app.post("/admin/phones/add", async (c) => {
+  const email = await requireAdminEmail(c);
+  if (!email) return c.redirect("/admin/login");
   const body = await c.req.parseBody();
-  if (!adminAuthorized(c, String(body.token ?? ""))) return c.text("Unauthorized", 401);
   const phone = String(body.phone ?? "");
   const label = String(body.label ?? "");
   try {
@@ -1196,24 +1334,27 @@ app.post("/admin/phones/add", async (c) => {
     const html = await renderAdminDashboard({
       db,
       publicBaseUrl: settings.publicBaseUrl,
-      adminToken: settings.adminToken,
-      message: e instanceof Error ? e.message : String(e),
+      email,
+      tab: "users",
+      error: e instanceof Error ? e.message : String(e),
     });
     return c.html(html, 400);
   }
-  return c.redirect(`/admin?token=${encodeURIComponent(settings.adminToken)}`);
+  return c.redirect("/admin?tab=users&msg=" + encodeURIComponent("Phone added."));
 });
 
 app.post("/admin/phones/remove", async (c) => {
+  const email = await requireAdminEmail(c);
+  if (!email) return c.redirect("/admin/login");
   const body = await c.req.parseBody();
-  if (!adminAuthorized(c, String(body.token ?? ""))) return c.text("Unauthorized", 401);
   await deactivateAllowedPhone(db, String(body.phone ?? ""));
-  return c.redirect(`/admin?token=${encodeURIComponent(settings.adminToken)}`);
+  return c.redirect("/admin?tab=users&msg=" + encodeURIComponent("Phone disabled."));
 });
 
 app.post("/admin/invites/create", async (c) => {
+  const email = await requireAdminEmail(c);
+  if (!email) return c.redirect("/admin/login");
   const body = await c.req.parseBody();
-  if (!adminAuthorized(c, String(body.token ?? ""))) return c.text("Unauthorized", 401);
   const phone = String(body.phone ?? "").trim();
   const label = String(body.label ?? "").trim();
   const maxUses = Number(body.maxUses ?? 1) || 1;
@@ -1228,12 +1369,52 @@ app.post("/admin/invites/create", async (c) => {
     const html = await renderAdminDashboard({
       db,
       publicBaseUrl: settings.publicBaseUrl,
-      adminToken: settings.adminToken,
-      message: e instanceof Error ? e.message : String(e),
+      email,
+      tab: "invites",
+      error: e instanceof Error ? e.message : String(e),
     });
     return c.html(html, 400);
   }
-  return c.redirect(`/admin?token=${encodeURIComponent(settings.adminToken)}`);
+  return c.redirect("/admin?tab=invites&msg=" + encodeURIComponent("Invite created."));
+});
+
+app.post("/admin/requests/approve", async (c) => {
+  const email = await requireAdminEmail(c);
+  if (!email) return c.redirect("/admin/login");
+  const body = await c.req.parseBody();
+  try {
+    const r = await approveAccessRequest(db, String(body.id ?? ""));
+    const url = `${settings.publicBaseUrl}${r.inviteUrlPath}`;
+    return c.redirect(
+      "/admin?tab=requests&msg=" +
+        encodeURIComponent(`Approved ${r.request.name}. Invite: ${url}`),
+    );
+  } catch (e) {
+    const html = await renderAdminDashboard({
+      db,
+      publicBaseUrl: settings.publicBaseUrl,
+      email,
+      tab: "requests",
+      error: e instanceof Error ? e.message : String(e),
+    });
+    return c.html(html, 400);
+  }
+});
+
+app.post("/admin/requests/decline", async (c) => {
+  const email = await requireAdminEmail(c);
+  if (!email) return c.redirect("/admin/login");
+  const body = await c.req.parseBody();
+  await decideAccessRequest(db, String(body.id ?? ""), { status: "declined" });
+  return c.redirect("/admin?tab=requests&msg=" + encodeURIComponent("Declined."));
+});
+
+app.post("/admin/requests/spam", async (c) => {
+  const email = await requireAdminEmail(c);
+  if (!email) return c.redirect("/admin/login");
+  const body = await c.req.parseBody();
+  await decideAccessRequest(db, String(body.id ?? ""), { status: "spam" });
+  return c.redirect("/admin?tab=requests&msg=" + encodeURIComponent("Marked spam."));
 });
 
 app.get("/i/:token", async (c) => {
