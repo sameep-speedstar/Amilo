@@ -2898,7 +2898,7 @@ export async function buildPriorityBriefPayload(
           since: yesterday.timeMin,
         })
       : [];
-  const handledRaw: Array<{ line: string; fingerprint: string; threadId?: string | null }> = [];
+  const handledRaw: Array<{ line: string; fingerprint: string; threadId?: string | null; score: number }> = [];
   for (const e of handledRows) {
     if (e.createdAt < yesterday.timeMin || e.createdAt >= yesterday.timeMax) continue;
     const score = mailPriorityScore(e.title ?? "", e.actor ?? "", vipList, e.snippet ?? "", {
@@ -2910,9 +2910,11 @@ export async function buildPriorityBriefPayload(
     handledRaw.push({
       line: `${cleanSubject(e.title)} — ${shortActor(e.actor)}`.slice(0, 90),
       fingerprint: mailBriefFingerprint(e.actor ?? "", e.title ?? ""),
+      score,
       ...(threadId ? { threadId } : {}),
     });
   }
+  handledRaw.sort((a, b) => b.score - a.score);
   const handledLines = dedupeHandledMailLines(handledRaw, 16);
   const quieterCount = handledLines.length;
   const items: BriefPriorityItem[] = top.map((c, i) => ({

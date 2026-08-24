@@ -316,4 +316,18 @@ describe("handled list dedupe", () => {
       "UPI Debit Alert — Yes Bank",
     ]);
   });
+
+  it("preserves score-desc order when input is pre-sorted (More / handled list)", () => {
+    const sorted = [
+      { line: "SIP failed — Groww", fingerprint: "groww|sip failed", score: 62 },
+      { line: "Newsletter — Substack", fingerprint: "sub|newsletter", score: 12 },
+      { line: "Statement ready — HDFC", fingerprint: "hdfc|statement", score: 45 },
+    ].sort((a, b) => b.score - a.score);
+    const lines = dedupeHandledMailLines(sorted);
+    assert.deepEqual(lines, [
+      "SIP failed — Groww",
+      "Statement ready — HDFC",
+      "Newsletter — Substack",
+    ]);
+  });
 });
