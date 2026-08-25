@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
+  buildMeetingLinkAlertText,
   computeLeaveBy,
   detectTravelConflictsFromCoords,
+  extractMeetingUrl,
   haversineKm,
+  isOnlineMeeting,
   parseOriginCorrection,
   parsePlaceSetCommand,
   parsePlaceSetCommands,
@@ -62,6 +65,35 @@ describe("travel helpers", () => {
     assert.equal(multi.length, 2);
     assert.equal(multi[0]?.label, "home");
     assert.equal(multi[1]?.label, "office");
+  });
+
+  it("extracts Meet/Zoom links and classifies online vs physical", () => {
+    assert.equal(
+      extractMeetingUrl({ hangoutLink: "https://meet.google.com/abc-defg-hij" }),
+      "https://meet.google.com/abc-defg-hij",
+    );
+    assert.equal(
+      extractMeetingUrl({
+        location: "Zoom: https://zoom.us/j/123456789",
+      }),
+      "https://zoom.us/j/123456789",
+    );
+    assert.equal(
+      isOnlineMeeting({ meetingUrl: "https://meet.google.com/abc-defg-hij" }),
+      true,
+    );
+    assert.equal(
+      isOnlineMeeting({ location: "LITTLE PEARLS Dental Clinic, Bangalore" }),
+      false,
+    );
+    const text = buildMeetingLinkAlertText({
+      title: "Standup",
+      start: new Date("2026-08-25T11:00:00.000Z"),
+      meetingUrl: "https://meet.google.com/abc-defg-hij",
+      timeZone: "UTC",
+    });
+    assert.match(text, /Standup starts at/);
+    assert.match(text, /meet\.google\.com/);
   });
 });
 

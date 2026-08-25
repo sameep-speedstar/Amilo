@@ -1,7 +1,7 @@
 import { and, asc, eq, gte, isNull, lte } from "drizzle-orm";
 import type { Db } from "./index.js";
 import type { EventRow } from "./repos.js";
-import { geocodeCache, messageLog, places, travelPlans } from "./schema.js";
+import { geocodeCache, events, messageLog, places, travelPlans } from "./schema.js";
 
 export type PlaceRow = typeof places.$inferSelect;
 export type TravelPlanRow = typeof travelPlans.$inferSelect;
@@ -293,6 +293,71 @@ export function calendarLocationFromEvent(e: EventRow): string | null {
   if (typeof metaLoc === "string" && metaLoc.trim()) return metaLoc.trim();
   if (e.snippet?.trim()) return e.snippet.trim();
   return null;
+}
+
+export type OnlineMeetingAlertRow = {
+  id: string;
+  userId: string;
+  title: string;
+  occursAt: Date;
+  meetingUrl: string;
+};
+
+/** Online calendar meetings starting soon that still need a join-link WhatsApp ping. */
+export async function listOnlineMeetingsNeedingLinkAlert(
+  db: Db,
+  opts: { now?: Date; leadMins?: number } = {},
+): Promise<OnlineMeetingAlertRow[]> {
+  const now = opts.now ?? new Date();
+  const leadMins = opts.leadMins ?? 15;
+  const windowEnd = new Date(now.getTime() + leadMins * 60_000);
+  const rows = await db.query.events.findMany({
+    where: and(
+      eq(events.source, "calendar"),
+      gte(events.occursAt, new Date(now.getTime() - 5 * 60_000)),
+      lte(events.occursAt, windowEnd),
+    ),
+    orderBy: [asc(events.occursAt)],
+    limit: 80,
+  });
+  const out: OnlineMeetingAlertRow[] = [];
+  for (const e of rows) {
+    if (!e.occursAt || !e.userId) continue;
+    const meta = (e.meta ?? {}) as Record<string, unknown>;
+    if (meta.meetingLinkAlertedAt) continue;
+    const meetingUrl =
+      typeof meta.meetingUrl === "string" ? meta.meetingUrl.trim() : "";
+    if (!meetingUrl.startsWith("http")) continue;
+    out.push({
+      id: e.id,
+      userId: e.userId,
+      title: (e.title ?? "Meeting").trim() || "Meeting",
+      occursAt: e.occursAt,
+      meetingUrl,
+    });
+  }
+  return out;
+}
+
+export async function markMeetingLinkAlerted(
+  db: Db,
+  eventId: string,
+  at: Date = new Date(),
+): Promise<void> {
+  const row = await db.query.events.findFirst({
+    where: eq(events.id, eventId),
+    columns: { id: true, meta: true },
+  });
+  if (!row) return;
+  await db
+    .update(events)
+    .set({
+      meta: {
+        ...((row.meta ?? {}) as Record<string, unknown>),
+        meetingLinkAlertedAt: at.toISOString(),
+      },
+    })
+    .where(eq(events.id, eventId));
 }
 
 export async function countRoutesCallsToday(db: Db): Promise<number> {

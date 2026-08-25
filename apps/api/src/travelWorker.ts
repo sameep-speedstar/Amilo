@@ -1,6 +1,7 @@
 import {
   ALERT_LEAD_MINS,
   buildDepartureAlertText,
+  buildMeetingLinkAlertText,
   isInQuietHours,
   localDayBoundsUtc,
   type ChannelPort,
@@ -9,9 +10,11 @@ import {
   events,
   getUserById,
   getUserPrefs,
+  listOnlineMeetingsNeedingLinkAlert,
   listTravelPlansForRecheck,
   listTravelPlansNeedingAlert,
   logMessage,
+  markMeetingLinkAlerted,
   markTravelAlertSent,
   users,
   type Db,
@@ -47,13 +50,17 @@ export function startTravelWorker(opts: {
   registerWorker("travel", intervalMs);
 
   const tick = async () => {
-    if (running || !maps) return;
+    if (running) return;
     running = true;
     markWorkerTickStart("travel");
     try {
-      await computePlansForActiveUsers(opts.db, maps);
-      await sendDepartureAlerts({ ...opts, maps });
-      await runRechecks(opts.db, maps, opts.channel);
+      // Online join-link pings do not need Maps.
+      await sendMeetingLinkAlerts(opts);
+      if (maps) {
+        await computePlansForActiveUsers(opts.db, maps);
+        await sendDepartureAlerts({ ...opts, maps });
+        await runRechecks(opts.db, maps, opts.channel);
+      }
       markWorkerTickOk("travel");
     } catch (err) {
       markWorkerTickError("travel", err instanceof Error ? err.message : String(err));
@@ -195,6 +202,70 @@ async function sendDepartureAlerts(opts: {
           JSON.stringify({
             event: "travel_alert_send_error",
             id: plan.id,
+            error: msg,
+          }),
+        );
+      }
+    }
+  }
+}
+
+async function sendMeetingLinkAlerts(opts: {
+  db: Db;
+  channel: ChannelPort;
+  alertTemplate: string;
+  languageCode?: string;
+}): Promise<void> {
+  const meetings = await listOnlineMeetingsNeedingLinkAlert(opts.db, {
+    leadMins: ALERT_LEAD_MINS,
+  });
+  for (const m of meetings) {
+    const user = await getUserById(opts.db, m.userId);
+    if (!user || user.status === "paused") {
+      await markMeetingLinkAlerted(opts.db, m.id);
+      continue;
+    }
+    const prefs = await getUserPrefs(opts.db, m.userId);
+    if (isInQuietHours(new Date(), user.timezone, prefs.quietStartHm, prefs.quietEndHm)) {
+      continue;
+    }
+    const body = buildMeetingLinkAlertText({
+      title: m.title,
+      start: m.occursAt,
+      meetingUrl: m.meetingUrl,
+      timeZone: user.timezone,
+    });
+    const name = user.name?.split(/\s+/)[0] || "there";
+    try {
+      const waMessageId = await opts.channel.send(m.userId, { text: body });
+      await logMessage(opts.db, {
+        userId: m.userId,
+        channel: "whatsapp",
+        direction: "out",
+        kind: "text",
+        bodyRef: body.slice(0, 500),
+        meta: {
+          meetingLinkAlert: true,
+          eventId: m.id,
+          ...(waMessageId ? { waMessageId } : {}),
+        },
+      });
+      await markMeetingLinkAlerted(opts.db, m.id);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (/Outside 24h|24h window/i.test(msg) && opts.alertTemplate) {
+        const param = body.replace(/\n/g, " ").replace(/\s{2,}/g, " ").slice(0, 900);
+        await opts.channel.send(m.userId, {
+          templateName: opts.alertTemplate,
+          languageCode: opts.languageCode ?? "en",
+          variables: [name, param],
+        });
+        await markMeetingLinkAlerted(opts.db, m.id);
+      } else {
+        console.error(
+          JSON.stringify({
+            event: "meeting_link_alert_send_error",
+            id: m.id,
             error: msg,
           }),
         );

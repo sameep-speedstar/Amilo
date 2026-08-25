@@ -1,4 +1,4 @@
-import { localDayBoundsUtc } from "@amilo/core";
+import { extractMeetingUrl, localDayBoundsUtc } from "@amilo/core";
 
 export interface CalendarEvent {
   id: string;
@@ -6,6 +6,9 @@ export interface CalendarEvent {
   startIso: string | null;
   endIso: string | null;
   location: string | null;
+  description: string | null;
+  /** Google Meet / conference join URL when present. */
+  meetingUrl: string | null;
   status: string;
   allDay: boolean;
   organizerEmail: string | null;
@@ -44,6 +47,8 @@ export async function listCalendarRange(
   url.searchParams.set("timeZone", timezone);
   url.searchParams.set("timeMin", timeMin.toISOString());
   url.searchParams.set("timeMax", timeMax.toISOString());
+  // Needed for Meet / Zoom conference entry points.
+  url.searchParams.set("conferenceDataVersion", "1");
 
   const res = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
   if (!res.ok) {
@@ -218,12 +223,27 @@ function parseEvent(item: Record<string, unknown>): CalendarEvent {
   const selfAttendee =
     attendees.find((a) => a.self) ??
     attendees.find((a) => (a.email ?? "").toLowerCase() === (organizer.email ?? "").toLowerCase() && organizer.self);
+  const conference = (item.conferenceData ?? {}) as {
+    entryPoints?: Array<{ entryPointType?: string; uri?: string }>;
+  };
+  const location = item.location ? String(item.location) : null;
+  const description = item.description ? String(item.description) : null;
+  const hangoutLink = item.hangoutLink ? String(item.hangoutLink) : null;
+  const meetingUrl =
+    extractMeetingUrl({
+      hangoutLink,
+      location,
+      description,
+      conferenceEntryPoints: conference.entryPoints ?? null,
+    }) ?? null;
   return {
     id: String(item.id),
     summary: item.summary ? String(item.summary) : null,
     startIso: start.dateTime ?? start.date ?? null,
     endIso: end.dateTime ?? end.date ?? null,
-    location: item.location ? String(item.location) : null,
+    location,
+    description,
+    meetingUrl,
     status: String(item.status ?? "confirmed"),
     allDay,
     organizerEmail: organizer.email ? String(organizer.email).toLowerCase() : null,

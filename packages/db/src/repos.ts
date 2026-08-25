@@ -1061,6 +1061,13 @@ export async function upsertEvent(
   ) {
     nextMeta.briefClosedAt = prevMeta.briefClosedAt;
   }
+  if (
+    prevMeta.meetingLinkAlertedAt != null &&
+    row.meta &&
+    !("meetingLinkAlertedAt" in row.meta)
+  ) {
+    nextMeta.meetingLinkAlertedAt = prevMeta.meetingLinkAlertedAt;
+  }
 
   await db
     .insert(events)
@@ -3009,7 +3016,15 @@ export async function buildPriorityBriefPayload(
       const allDay = Boolean((e.meta as { allDay?: unknown })?.allDay);
       const when =
         allDay || !e.occursAt ? "all day" : formatLocalHm(e.occursAt, timezone);
-      return `${when} ${cleanCalendarDisplayTitle((e.title ?? "Event").trim())}`;
+      const title = cleanCalendarDisplayTitle((e.title ?? "Event").trim());
+      const meetingUrl =
+        typeof (e.meta as { meetingUrl?: unknown })?.meetingUrl === "string"
+          ? String((e.meta as { meetingUrl: string }).meetingUrl).trim()
+          : "";
+      if (meetingUrl.startsWith("http")) {
+        return `${when} ${title} (online)`;
+      }
+      return `${when} ${title}`;
     }),
     ...apptSorted.map((a) => a.label),
   ];

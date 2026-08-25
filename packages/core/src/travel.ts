@@ -109,6 +109,60 @@ export function buildDepartureAlertText(opts: {
   );
 }
 
+const MEETING_URL_RE =
+  /https?:\/\/(?:meet\.google\.com\/[a-z0-9-]+|[\w.-]*zoom\.us\/[^\s<>"']+|teams\.microsoft\.com\/l\/meetup-join\/[^\s<>"']+|teams\.live\.com\/[^\s<>"']+)/i;
+
+/** Pull a join URL from Calendar hangout / conference / location / description. */
+export function extractMeetingUrl(opts: {
+  hangoutLink?: string | null;
+  location?: string | null;
+  description?: string | null;
+  conferenceEntryPoints?: Array<{ entryPointType?: string | null; uri?: string | null }> | null;
+}): string | null {
+  const hangout = opts.hangoutLink?.trim();
+  if (hangout && /^https?:\/\//i.test(hangout)) return hangout.split(/\s/)[0]!;
+
+  const video = (opts.conferenceEntryPoints ?? []).find(
+    (p) =>
+      String(p.entryPointType ?? "").toLowerCase() === "video" &&
+      String(p.uri ?? "").trim().startsWith("http"),
+  );
+  if (video?.uri) return String(video.uri).trim().split(/\s/)[0]!;
+
+  for (const blob of [opts.location, opts.description]) {
+    const m = String(blob ?? "").match(MEETING_URL_RE);
+    if (m?.[0]) return m[0].replace(/[),.;]+$/, "");
+  }
+  return null;
+}
+
+/** True when the event is virtual (Meet/Zoom/Teams) — no leave-by / Maps. */
+export function isOnlineMeeting(opts: {
+  meetingUrl?: string | null;
+  location?: string | null;
+}): boolean {
+  if (opts.meetingUrl?.trim()) return true;
+  const loc = String(opts.location ?? "").toLowerCase();
+  if (!loc) return false;
+  if (MEETING_URL_RE.test(loc)) return true;
+  return (
+    /\b(google meet|zoom|microsoft teams|webex|online only|virtual meeting)\b/.test(loc) &&
+    !/\b\d{1,5}\s+\w/.test(loc) // street-ish address still physical
+  );
+}
+
+/** WhatsApp ping for an online meeting (join link instead of Maps). */
+export function buildMeetingLinkAlertText(opts: {
+  title: string;
+  start: Date;
+  meetingUrl: string;
+  timeZone: string;
+}): string {
+  const when = formatLocalHm(opts.start, opts.timeZone);
+  const title = (opts.title || "Meeting").trim() || "Meeting";
+  return `${title} starts at ${when} — join: ${opts.meetingUrl}`;
+}
+
 export function occurrenceDateLocal(start: Date, timeZone: string): string {
   return localDayBoundsUtc(timeZone, start).day;
 }

@@ -1,6 +1,7 @@
 import {
   computeLeaveBy,
   DEFAULT_TRAVEL_BUFFER_MINS,
+  isOnlineMeeting,
   occurrenceDateLocal,
   timeOfDayPlaceLabel,
   type TravelBlock,
@@ -72,6 +73,12 @@ export function eventToTravelBlock(e: EventRow, timeZone: string): LocatedCalend
   if (!e.occursAt) return null;
   const location = calendarLocationFromEvent(e);
   if (!location) return null;
+  const meetingUrl =
+    typeof (e.meta as { meetingUrl?: unknown })?.meetingUrl === "string"
+      ? String((e.meta as { meetingUrl: string }).meetingUrl)
+      : null;
+  // Online / Meet / Zoom — join-link path, not leave-by Maps.
+  if (isOnlineMeeting({ meetingUrl, location })) return null;
   const endIso = (e.meta as { end?: unknown })?.end;
   const end =
     typeof endIso === "string" && endIso
