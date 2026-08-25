@@ -7,6 +7,10 @@ COPY apps ./apps
 COPY packages ./packages
 COPY brain ./brain
 COPY tsconfig.base.json ./
+# @cursor/sdk pulls sqlite3 (native) — need compilers in the build stage only.
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends python3 make g++ \
+  && rm -rf /var/lib/apt/lists/*
 RUN npm install
 RUN npm run build
 
