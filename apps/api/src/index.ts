@@ -55,6 +55,7 @@ import {
   getWhatsAppAddress,
   getWhatsAppLastInbound,
   listGoogleAccounts,
+  listHandledMailLines,
   logEvalEvent,
   logMessage,
   findCalendarEventMatches,
@@ -627,7 +628,15 @@ function orchestratorDeps(): OrchestratorDeps {
     },
     getLastBriefItems: async (userId) => {
       const prefs = await getUserPrefs(db, userId);
-      return { items: prefs.lastBriefItems, more: prefs.lastBriefMore };
+      const u = await getUserById(db, userId);
+      const moreLines = await listHandledMailLines(db, userId, {
+        timezone: u?.timezone || "Asia/Kolkata",
+        vipList: prefs.vipList,
+      });
+      const more = moreLines.length
+        ? moreLines.map((l, i) => `${i + 1}) ${l}`).join("\n")
+        : null;
+      return { items: prefs.lastBriefItems, more };
     },
     listCompleted: async (userId) => {
       const prefs = await getUserPrefs(db, userId);
@@ -635,7 +644,11 @@ function orchestratorDeps(): OrchestratorDeps {
     },
     listHandled: async (userId) => {
       const prefs = await getUserPrefs(db, userId);
-      return prefs.lastHandledLines;
+      const u = await getUserById(db, userId);
+      return listHandledMailLines(db, userId, {
+        timezone: u?.timezone || "Asia/Kolkata",
+        vipList: prefs.vipList,
+      });
     },
     closeBriefPriority: async (userId, opts) => {
       return closeBriefPriorityItem(db, userId, {

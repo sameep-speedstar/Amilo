@@ -1971,6 +1971,59 @@ export function dedupeHandledMailLines(
   return out;
 }
 
+/** Yesterday's quieter mail for HANDLED / M — ranked, hard junk dropped. */
+export async function listHandledMailLines(
+  db: Db,
+  userId: string,
+  opts?: {
+    timezone?: string;
+    vipList?: string[];
+    now?: Date;
+    cap?: number;
+  },
+): Promise<string[]> {
+  const timezone = opts?.timezone ?? "Asia/Kolkata";
+  const vipList = opts?.vipList ?? [];
+  const now = opts?.now ?? new Date();
+  const todayBounds = localDayBoundsUtc(timezone, now);
+  const yesterday = localDayBoundsUtc(
+    timezone,
+    new Date(todayBounds.timeMin.getTime() - 60_000),
+  );
+  const handledRows = await listMailCandidates(db, userId, [], 40, {
+    excludePassive: false,
+    since: yesterday.timeMin,
+  });
+  const handledRaw: Array<{
+    line: string;
+    fingerprint: string;
+    threadId?: string | null;
+    score: number;
+  }> = [];
+  for (const e of handledRows) {
+    if (e.createdAt < yesterday.timeMin || e.createdAt >= yesterday.timeMax) continue;
+    const title = e.title ?? "";
+    const actor = e.actor ?? "";
+    const snippet = e.snippet ?? "";
+    const focusScore = mailPriorityScore(title, actor, vipList, snippet, {
+      timezone,
+      now,
+    });
+    if (focusScore >= 70) continue;
+    const score = mailQuietRankScore(title, actor, vipList, snippet);
+    if (score <= 0) continue; // order delivery / UPI / promo — out of M
+    const threadId = gmailThreadIdFromMeta(e.meta);
+    handledRaw.push({
+      line: `${cleanSubject(title)} — ${shortActor(actor)}`.slice(0, 90),
+      fingerprint: mailBriefFingerprint(actor, title),
+      score,
+      ...(threadId ? { threadId } : {}),
+    });
+  }
+  handledRaw.sort((a, b) => b.score - a.score || a.line.localeCompare(b.line));
+  return dedupeHandledMailLines(handledRaw, opts?.cap ?? 16);
+}
+
 export function isClosedMailFingerprintSuppressed(
   fingerprint: string | null | undefined,
   closedFingerprints: Record<string, string>,
@@ -2180,6 +2233,12 @@ export function isPassiveTransactionalMail(hay: string): boolean {
     /\bpayment (received|successful|confirmed)\b/.test(h) ||
     /\b(otp|one[- ]time password|passcode)\b/.test(h) ||
     /\b(shipping|shipped|out for delivery|delivered)\b/.test(h) ||
+    /\border\s+(delivery|delivered|shipped|dispatched|confirmed|placed|update|summary)\b/.test(h) ||
+    /\b(your order|order #|order no\.?|tracking (id|number|link)|package (is )?(on the way|arriving))\b/.test(
+      h,
+    ) ||
+    /\b(arriving (today|soon)|on the way to you|delivery (partner|attempt|slot))\b/.test(h) ||
+    /\b(bigbasket|big basket|blinkit|zepto|instamart|swiggy instamart)\b/.test(h) ||
     /\badd alternate (contact|details)\b/.test(h)
   );
 }
@@ -2360,6 +2419,34 @@ export function mailPriorityScore(
 
   // Generic personal mail with no action signal stays out of top brief.
   return score;
+}
+
+/**
+ * Rank for HANDLED / M list (quieter than FOCUS).
+ * Hard junk (passive / promo / order delivery) → 0 and should be dropped from M.
+ * Soft FYI gets mid ranks so the list can sort descending by importance.
+ */
+export function mailQuietRankScore(
+  title: string,
+  actor: string,
+  vipList: string[] = [],
+  snippet = "",
+): number {
+  const hay = `${actor} ${title} ${snippet}`;
+  if (looksLikePromoMail(hay)) return 0;
+  if (isPassiveTransactionalMail(hay)) return 0;
+
+  const priority = mailPriorityScore(title, actor, vipList, snippet);
+  if (priority > 0 && priority < 70) return priority;
+
+  let rank = 25;
+  if (isVipMail(hay, vipList)) rank += 30;
+  if (/\b(school|parent|circular|class|teacher|fees?)\b/i.test(hay)) rank += 20;
+  if (/\b(statement|invoice|policy|renewal|insurance)\b/i.test(hay)) rank += 15;
+  if (/\b(meeting|invite|calendar|rsvp)\b/i.test(hay)) rank += 10;
+  // Commerce leftovers that slipped past passive — keep at the bottom of soft items.
+  if (/\b(order|delivery|shipped|courier|tracking|grocery)\b/i.test(hay)) rank = Math.min(rank, 8);
+  return rank;
 }
 
 export async function summarizeOpenCommitments(
@@ -2887,35 +2974,15 @@ export async function buildPriorityBriefPayload(
       deadline: c.deadline ?? null,
     });
   }
-  const yesterday = localDayBoundsUtc(
-    timezone,
-    new Date(todayBounds.timeMin.getTime() - 60_000),
-  );
-  const handledRows =
+  const handledLines =
     kind === "am"
-      ? await listMailCandidates(db, userId, [], 40, {
-          excludePassive: false,
-          since: yesterday.timeMin,
+      ? await listHandledMailLines(db, userId, {
+          timezone,
+          vipList,
+          now,
+          cap: 16,
         })
       : [];
-  const handledRaw: Array<{ line: string; fingerprint: string; threadId?: string | null; score: number }> = [];
-  for (const e of handledRows) {
-    if (e.createdAt < yesterday.timeMin || e.createdAt >= yesterday.timeMax) continue;
-    const score = mailPriorityScore(e.title ?? "", e.actor ?? "", vipList, e.snippet ?? "", {
-      timezone,
-      now,
-    });
-    if (score >= 70) continue;
-    const threadId = gmailThreadIdFromMeta(e.meta);
-    handledRaw.push({
-      line: `${cleanSubject(e.title)} — ${shortActor(e.actor)}`.slice(0, 90),
-      fingerprint: mailBriefFingerprint(e.actor ?? "", e.title ?? ""),
-      score,
-      ...(threadId ? { threadId } : {}),
-    });
-  }
-  handledRaw.sort((a, b) => b.score - a.score);
-  const handledLines = dedupeHandledMailLines(handledRaw, 16);
   const quieterCount = handledLines.length;
   const items: BriefPriorityItem[] = top.map((c, i) => ({
     index: i + 1,
@@ -3122,7 +3189,10 @@ export async function buildPriorityBriefPayload(
       (c) => c.dueAt && c.dueAt >= timeMin && c.dueAt <= timeMax,
     ).length,
     attentionState: trimAttentionState(attentionState),
-    lastHandledDay: kind === "am" ? yesterday.day : null,
+    lastHandledDay:
+      kind === "am"
+        ? localDayBoundsUtc(timezone, new Date(todayBounds.timeMin.getTime() - 60_000)).day
+        : null,
     lastHandledLines: kind === "am" ? handledLines : [],
   };
 }

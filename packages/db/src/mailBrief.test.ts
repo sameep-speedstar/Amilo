@@ -9,6 +9,7 @@ import {
   isPassiveTransactionalMail,
   mailBriefFingerprint,
   mailPriorityScore,
+  mailQuietRankScore,
   parseAppointmentReminder,
 } from "./repos.js";
 
@@ -329,5 +330,39 @@ describe("handled list dedupe", () => {
       "Statement ready — HDFC",
       "Newsletter — Substack",
     ]);
+  });
+
+  it("treats BigBasket / order delivery as passive junk (out of M)", () => {
+    assert.equal(
+      isPassiveTransactionalMail("BigBasket Order Delivery — your groceries are on the way"),
+      true,
+    );
+    assert.equal(
+      isPassiveTransactionalMail("Your BigBasket order #BB123 has been delivered"),
+      true,
+    );
+    assert.equal(
+      mailQuietRankScore(
+        "BigBasket Order Delivery",
+        "orders@bigbasket.com",
+        [],
+        "Your order is out for delivery",
+      ),
+      0,
+    );
+    assert.equal(
+      mailPriorityScore("BigBasket Order Delivery", "orders@bigbasket.com"),
+      0,
+    );
+  });
+
+  it("ranks school circular above soft FYI for M order", () => {
+    const school = mailQuietRankScore(
+      "Parent circular: sports day consent",
+      "school@example.edu",
+    );
+    const soft = mailQuietRankScore("Weekly digest", "notes@example.com");
+    assert.ok(school > soft, `school=${school} soft=${soft}`);
+    assert.ok(school > 0);
   });
 });
