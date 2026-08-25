@@ -33,8 +33,12 @@ export {
 } from "./schedules.js";
 export {
   buildInboundConflictAlert,
+  buildNewCalendarInviteAlert,
   findInboundInviteConflicts,
+  findNewInboundInvites,
   isInboundInviteCandidate,
+  shouldNotifyNewInvite,
+  NEW_INVITE_NOTIFY_MAX_AGE_MS,
   type InboundCalendarBlock,
   type InboundConflictHit,
 } from "./inboundConflict.js";

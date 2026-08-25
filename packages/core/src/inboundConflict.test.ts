@@ -2,8 +2,11 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
   buildInboundConflictAlert,
+  buildNewCalendarInviteAlert,
   findInboundInviteConflicts,
+  findNewInboundInvites,
   isInboundInviteCandidate,
+  shouldNotifyNewInvite,
 } from "./inboundConflict.js";
 import { zonedLocalDateTime } from "./time.js";
 
@@ -76,11 +79,48 @@ describe("inbound calendar conflicts", () => {
     assert.match(hits[0]!.blockers[0]!.title, /Pickup/i);
 
     const body = buildInboundConflictAlert(hits[0]!, tz);
+    assert.match(body, /New meeting/i);
     assert.match(body, /boss@acme\.com/i);
     assert.match(body, /Test meeting/i);
     assert.match(body, /Pickup/i);
     assert.match(body, /yes/i);
     assert.match(body, /alternate/i);
     assert.match(body, /decline/i);
+  });
+
+  it("notifies fresh inbound invites with details (no conflict required)", () => {
+    const now = zonedLocalDateTime(tz, "2026-08-25", 10, 0);
+    const start = zonedLocalDateTime(tz, "2026-08-26", 18, 30);
+    const end = zonedLocalDateTime(tz, "2026-08-26", 19, 30);
+    const createdIso = new Date(now.getTime() - 30 * 60_000).toISOString();
+    const inv = {
+      eventId: "meet1",
+      title: "Design review",
+      start,
+      end,
+      accountEmail: "me@x.com",
+      organizerEmail: "alex@acme.com",
+      selfResponseStatus: "needsAction",
+      createdIso,
+      meetingUrl: "https://meet.google.com/abc-defg-hij",
+    };
+    assert.equal(shouldNotifyNewInvite(inv, now), true);
+    assert.equal(shouldNotifyNewInvite({ ...inv, inviteNotified: true }, now), false);
+    assert.equal(
+      shouldNotifyNewInvite(
+        { ...inv, createdIso: new Date(now.getTime() - 72 * 3600_000).toISOString() },
+        now,
+      ),
+      false,
+    );
+
+    const news = findNewInboundInvites([inv], now);
+    assert.equal(news.length, 1);
+    const body = buildNewCalendarInviteAlert(inv, tz);
+    assert.match(body, /New meeting/);
+    assert.match(body, /Design review/);
+    assert.match(body, /alex@acme\.com/);
+    assert.match(body, /meet\.google\.com/);
+    assert.match(body, /yes/i);
   });
 });

@@ -1,6 +1,8 @@
 import {
   buildInboundConflictAlert,
+  buildNewCalendarInviteAlert,
   findInboundInviteConflicts,
+  findNewInboundInvites,
   formatLocalHm,
   formatLocalWhenFriendly,
   intervalsOverlap,
@@ -17,6 +19,7 @@ import {
 import { and, eq } from "drizzle-orm";
 import {
   countWatcherAlertsToday,
+  createCommitment,
   createPendingAction,
   events,
   getUserById,
@@ -26,6 +29,7 @@ import {
   listUsersWithGoogleForScan,
   logMessage,
   markCalendarConflictAlerted,
+  markCalendarInviteNotified,
   type Db,
 } from "@amilo/db";
 import {
@@ -56,9 +60,8 @@ function inviteHitsAutoDeclineHold(
 }
 
 /**
- * Live-scan connected calendars for inbound invites that overlap existing blocks
- * or schedule-memory windows. Creates a calendar_conflict pending + WhatsApp alert,
- * or auto-declines when an active schedule hold requests it.
+ * Live-scan connected calendars for new inbound invites (WhatsApp + commitment)
+ * and overlaps with existing blocks / schedule holds.
  */
 export async function scanInboundCalendarConflicts(opts: {
   db: Db;
@@ -110,7 +113,10 @@ export async function scanInboundCalendarConflicts(opts: {
             eq(events.sourceId, sourceId),
           ),
         });
-        const meta = (row?.meta ?? {}) as { conflictAlertedAt?: unknown };
+        const meta = (row?.meta ?? {}) as {
+          conflictAlertedAt?: unknown;
+          inviteNotifiedAt?: unknown;
+        };
         blocks.push({
           eventId: ev.id,
           title: (ev.summary ?? "Event").trim() || "Event",
@@ -122,6 +128,9 @@ export async function scanInboundCalendarConflicts(opts: {
           accountEmail,
           createdIso: ev.createdIso,
           conflictAlerted: Boolean(meta.conflictAlertedAt),
+          inviteNotified: Boolean(meta.inviteNotifiedAt),
+          location: ev.location,
+          meetingUrl: ev.meetingUrl,
         });
       }
     } catch (err) {
@@ -152,132 +161,239 @@ export async function scanInboundCalendarConflicts(opts: {
   }
 
   const hits = findInboundInviteConflicts(blocks, timezone, now);
-  if (!hits.length) return { alerted: 0 };
+  if (hits.length) {
+    // One conflict action per tick (attention discipline).
+    const hit = hits[0]!;
+    const inv = hit.invite;
+    const account =
+      accounts.find(
+        (a) => (a.email ?? "").toLowerCase() === (inv.accountEmail ?? "").toLowerCase(),
+      ) ?? accounts[0]!;
+    const attendeeEmail = (inv.accountEmail ?? account.email ?? "").trim();
 
-  // One action per tick (attention discipline).
-  const hit = hits[0]!;
-  const inv = hit.invite;
-  const account =
-    accounts.find(
-      (a) => (a.email ?? "").toLowerCase() === (inv.accountEmail ?? "").toLowerCase(),
-    ) ?? accounts[0]!;
-  const attendeeEmail = (inv.accountEmail ?? account.email ?? "").trim();
-
-  const hold = inviteHitsAutoDeclineHold(inv, schedules, timezone, now);
-  if (hold && attendeeEmail.includes("@")) {
-    try {
-      const { accessToken } = await ensureAccessToken(opts.db, opts.googleCfg, account);
-      await setCalendarRsvp(accessToken, inv.eventId, attendeeEmail, "declined");
-      const untilHm = formatLocalHm(hold.holdUntil, timezone);
-      const want = `${formatLocalHm(inv.start, timezone)}–${formatLocalHm(inv.end, timezone)}`;
-      const body = `Declined “${inv.title}” (${want}) — ${hold.label} hold till ${untilHm}.`;
-      const name = (user.name || "there").split(/\s+/)[0] || "there";
-      let sent = false;
+    const hold = inviteHitsAutoDeclineHold(inv, schedules, timezone, now);
+    if (hold && attendeeEmail.includes("@")) {
       try {
-        const waMessageId = await opts.channel.send(opts.userId, { text: body });
-        await logMessage(opts.db, {
-          userId: opts.userId,
-          channel: "whatsapp",
-          direction: "out",
-          kind: "text",
-          bodyRef: body.slice(0, 500),
-          meta: {
-            watchId: `calconflict-autodecline:${inv.eventId}`,
-            watchKind: "calendar_conflict",
-            calendarConflictEventId: inv.eventId,
-            autoDeclined: true,
-            ...(waMessageId ? { waMessageId } : {}),
-          },
-        });
-        sent = true;
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        if (/Outside 24h|24h window/i.test(msg) && opts.alertTemplate) {
-          const param = body.replace(/\n/g, " ").replace(/\s{2,}/g, " ").slice(0, 900);
-          const waMessageId = await opts.channel.send(opts.userId, {
-            templateName: opts.alertTemplate,
-            languageCode: opts.languageCode ?? "en",
-            variables: [name, param],
-          });
+        const { accessToken } = await ensureAccessToken(opts.db, opts.googleCfg, account);
+        await setCalendarRsvp(accessToken, inv.eventId, attendeeEmail, "declined");
+        const untilHm = formatLocalHm(hold.holdUntil, timezone);
+        const want = `${formatLocalHm(inv.start, timezone)}–${formatLocalHm(inv.end, timezone)}`;
+        const body = `Declined “${inv.title}” (${want}) — ${hold.label} hold till ${untilHm}.`;
+        const name = (user.name || "there").split(/\s+/)[0] || "there";
+        let sent = false;
+        try {
+          const waMessageId = await opts.channel.send(opts.userId, { text: body });
           await logMessage(opts.db, {
             userId: opts.userId,
             channel: "whatsapp",
             direction: "out",
-            kind: "template",
-            bodyRef: param.slice(0, 500),
+            kind: "text",
+            bodyRef: body.slice(0, 500),
             meta: {
               watchId: `calconflict-autodecline:${inv.eventId}`,
               watchKind: "calendar_conflict",
               calendarConflictEventId: inv.eventId,
               autoDeclined: true,
-              via: "template",
               ...(waMessageId ? { waMessageId } : {}),
             },
           });
           sent = true;
-        } else {
-          console.error(
-            JSON.stringify({
-              event: "inbound_conflict_autodecline_send_error",
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          if (/Outside 24h|24h window/i.test(msg) && opts.alertTemplate) {
+            const param = body.replace(/\n/g, " ").replace(/\s{2,}/g, " ").slice(0, 900);
+            const waMessageId = await opts.channel.send(opts.userId, {
+              templateName: opts.alertTemplate,
+              languageCode: opts.languageCode ?? "en",
+              variables: [name, param],
+            });
+            await logMessage(opts.db, {
               userId: opts.userId,
-              error: msg,
-            }),
-          );
+              channel: "whatsapp",
+              direction: "out",
+              kind: "template",
+              bodyRef: param.slice(0, 500),
+              meta: {
+                watchId: `calconflict-autodecline:${inv.eventId}`,
+                watchKind: "calendar_conflict",
+                calendarConflictEventId: inv.eventId,
+                autoDeclined: true,
+                via: "template",
+                ...(waMessageId ? { waMessageId } : {}),
+              },
+            });
+            sent = true;
+          } else {
+            console.error(
+              JSON.stringify({
+                event: "inbound_conflict_autodecline_send_error",
+                userId: opts.userId,
+                error: msg,
+              }),
+            );
+          }
         }
+        await markCalendarConflictAlerted(opts.db, opts.userId, inv.eventId, now);
+        console.log(
+          JSON.stringify({
+            event: "inbound_conflict_auto_declined",
+            userId: opts.userId,
+            eventId: inv.eventId,
+            hold: hold.label,
+            when: formatLocalWhenFriendly(inv.start, timezone),
+          }),
+        );
+        return { alerted: sent ? 1 : 0 };
+      } catch (err) {
+        console.error(
+          JSON.stringify({
+            event: "inbound_conflict_autodecline_error",
+            userId: opts.userId,
+            eventId: inv.eventId,
+            error: err instanceof Error ? err.message : String(err),
+          }),
+        );
+        // Fall through to manual pending alert.
       }
+    }
+
+    const body = buildInboundConflictAlert(hit, timezone);
+    const summary = `Conflict: ${inv.title} vs ${hit.blockers[0]?.title ?? "busy"}`;
+    await createPendingAction(opts.db, {
+      userId: opts.userId,
+      kind: "calendar_conflict",
+      summary,
+      payload: {
+        accountLabel: account.label,
+        accountEmail: inv.accountEmail ?? account.email,
+        eventId: inv.eventId,
+        title: inv.title,
+        start: inv.start.toISOString(),
+        end: inv.end.toISOString(),
+        startIso: inv.start.toISOString(),
+        endIso: inv.end.toISOString(),
+        organizerEmail: inv.organizerEmail,
+        conflictWith: hit.blockers[0]?.title ?? "an existing block",
+        conflictWithStart: hit.blockers[0]?.start.toISOString(),
+        conflictWithEnd: hit.blockers[0]?.end.toISOString(),
+        ...(hit.suggested
+          ? {
+              suggestedStart: hit.suggested.start.toISOString(),
+              suggestedEnd: hit.suggested.end.toISOString(),
+            }
+          : {}),
+      },
+      expiresInMs: 6 * 60 * 60 * 1000,
+    });
+
+    if (!inv.inviteNotified) {
+      await trackCalendarInviteCommitment(opts.db, opts.userId, inv);
+    }
+
+    const name = (user.name || "there").split(/\s+/)[0] || "there";
+    let sent = false;
+    try {
+      const waMessageId = await opts.channel.send(opts.userId, { text: body });
+      await logMessage(opts.db, {
+        userId: opts.userId,
+        channel: "whatsapp",
+        direction: "out",
+        kind: "text",
+        bodyRef: body.slice(0, 500),
+        meta: {
+          watchId: `calconflict:${inv.eventId}`,
+          watchKind: "calendar_conflict",
+          calendarConflictEventId: inv.eventId,
+          ...(waMessageId ? { waMessageId } : {}),
+        },
+      });
+      sent = true;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (/Outside 24h|24h window/i.test(msg) && opts.alertTemplate) {
+        const param = body.replace(/\n/g, " ").replace(/\s{2,}/g, " ").slice(0, 900);
+        const waMessageId = await opts.channel.send(opts.userId, {
+          templateName: opts.alertTemplate,
+          languageCode: opts.languageCode ?? "en",
+          variables: [name, param],
+        });
+        await logMessage(opts.db, {
+          userId: opts.userId,
+          channel: "whatsapp",
+          direction: "out",
+          kind: "template",
+          bodyRef: param.slice(0, 500),
+          meta: {
+            watchId: `calconflict:${inv.eventId}`,
+            watchKind: "calendar_conflict",
+            calendarConflictEventId: inv.eventId,
+            via: "template",
+            ...(waMessageId ? { waMessageId } : {}),
+          },
+        });
+        sent = true;
+      } else {
+        console.error(
+          JSON.stringify({
+            event: "inbound_conflict_send_error",
+            userId: opts.userId,
+            error: msg,
+          }),
+        );
+      }
+    }
+
+    if (sent) {
       await markCalendarConflictAlerted(opts.db, opts.userId, inv.eventId, now);
       console.log(
         JSON.stringify({
-          event: "inbound_conflict_auto_declined",
+          event: "inbound_conflict_alerted",
           userId: opts.userId,
           eventId: inv.eventId,
-          hold: hold.label,
+          conflictWith: hit.blockers[0]?.title,
           when: formatLocalWhenFriendly(inv.start, timezone),
         }),
       );
-      return { alerted: sent ? 1 : 0 };
-    } catch (err) {
-      console.error(
-        JSON.stringify({
-          event: "inbound_conflict_autodecline_error",
-          userId: opts.userId,
-          eventId: inv.eventId,
-          error: err instanceof Error ? err.message : String(err),
-        }),
-      );
-      // Fall through to manual pending alert.
+      return { alerted: 1 };
     }
+    return { alerted: 0 };
   }
 
-  const body = buildInboundConflictAlert(hit, timezone);
-  const summary = `Conflict: ${inv.title} vs ${hit.blockers[0]?.title ?? "busy"}`;
-  await createPendingAction(opts.db, {
-    userId: opts.userId,
-    kind: "calendar_conflict",
-    summary,
-    payload: {
-      accountLabel: account.label,
-      accountEmail: inv.accountEmail ?? account.email,
-      eventId: inv.eventId,
-      title: inv.title,
-      start: inv.start.toISOString(),
-      end: inv.end.toISOString(),
-      startIso: inv.start.toISOString(),
-      endIso: inv.end.toISOString(),
-      organizerEmail: inv.organizerEmail,
-      conflictWith: hit.blockers[0]?.title ?? "an existing block",
-      conflictWithStart: hit.blockers[0]?.start.toISOString(),
-      conflictWithEnd: hit.blockers[0]?.end.toISOString(),
-      ...(hit.suggested
-        ? {
-            suggestedStart: hit.suggested.start.toISOString(),
-            suggestedEnd: hit.suggested.end.toISOString(),
-          }
-        : {}),
-    },
-    expiresInMs: 6 * 60 * 60 * 1000,
-  });
+  // No conflict — still notify fresh inbound meetings (hard commitments).
+  const news = findNewInboundInvites(blocks, now);
+  if (!news.length) return { alerted: 0 };
+  const inv = news[0]!;
+  const account =
+    accounts.find(
+      (a) => (a.email ?? "").toLowerCase() === (inv.accountEmail ?? "").toLowerCase(),
+    ) ?? accounts[0]!;
 
+  const commitmentId = await trackCalendarInviteCommitment(opts.db, opts.userId, inv);
+
+  const status = (inv.selfResponseStatus ?? "").toLowerCase();
+  if (status === "needsaction") {
+    await createPendingAction(opts.db, {
+      userId: opts.userId,
+      kind: "calendar_conflict",
+      summary: `Invite: ${inv.title}`,
+      payload: {
+        accountLabel: account.label,
+        accountEmail: inv.accountEmail ?? account.email,
+        eventId: inv.eventId,
+        title: inv.title,
+        start: inv.start.toISOString(),
+        end: inv.end.toISOString(),
+        startIso: inv.start.toISOString(),
+        endIso: inv.end.toISOString(),
+        organizerEmail: inv.organizerEmail,
+        ...(inv.meetingUrl ? { meetingUrl: inv.meetingUrl } : {}),
+        ...(inv.location ? { location: inv.location } : {}),
+      },
+      expiresInMs: 6 * 60 * 60 * 1000,
+    });
+  }
+
+  const body = buildNewCalendarInviteAlert(inv, timezone);
   const name = (user.name || "there").split(/\s+/)[0] || "there";
   let sent = false;
   try {
@@ -289,9 +405,9 @@ export async function scanInboundCalendarConflicts(opts: {
       kind: "text",
       bodyRef: body.slice(0, 500),
       meta: {
-        watchId: `calconflict:${inv.eventId}`,
-        watchKind: "calendar_conflict",
-        calendarConflictEventId: inv.eventId,
+        watchId: `calinvite:${inv.eventId}`,
+        watchKind: "calendar_invite",
+        calendarInviteEventId: inv.eventId,
         ...(waMessageId ? { waMessageId } : {}),
       },
     });
@@ -312,9 +428,9 @@ export async function scanInboundCalendarConflicts(opts: {
         kind: "template",
         bodyRef: param.slice(0, 500),
         meta: {
-          watchId: `calconflict:${inv.eventId}`,
-          watchKind: "calendar_conflict",
-          calendarConflictEventId: inv.eventId,
+          watchId: `calinvite:${inv.eventId}`,
+          watchKind: "calendar_invite",
+          calendarInviteEventId: inv.eventId,
           via: "template",
           ...(waMessageId ? { waMessageId } : {}),
         },
@@ -323,7 +439,7 @@ export async function scanInboundCalendarConflicts(opts: {
     } else {
       console.error(
         JSON.stringify({
-          event: "inbound_conflict_send_error",
+          event: "inbound_invite_send_error",
           userId: opts.userId,
           error: msg,
         }),
@@ -332,19 +448,50 @@ export async function scanInboundCalendarConflicts(opts: {
   }
 
   if (sent) {
-    await markCalendarConflictAlerted(opts.db, opts.userId, inv.eventId, now);
+    await markCalendarInviteNotified(
+      opts.db,
+      opts.userId,
+      inv.eventId,
+      now,
+      commitmentId ? { commitmentId } : undefined,
+    );
     console.log(
       JSON.stringify({
-        event: "inbound_conflict_alerted",
+        event: "inbound_invite_alerted",
         userId: opts.userId,
         eventId: inv.eventId,
-        conflictWith: hit.blockers[0]?.title,
         when: formatLocalWhenFriendly(inv.start, timezone),
       }),
     );
     return { alerted: 1 };
   }
   return { alerted: 0 };
+}
+
+async function trackCalendarInviteCommitment(
+  db: Db,
+  userId: string,
+  inv: InboundCalendarBlock,
+): Promise<string | null> {
+  try {
+    const { id } = await createCommitment(db, {
+      userId,
+      title: inv.title.slice(0, 200),
+      dueAt: inv.start,
+      reason: "calendar_invite",
+    });
+    return id;
+  } catch (err) {
+    console.error(
+      JSON.stringify({
+        event: "calendar_invite_commitment_error",
+        userId,
+        eventId: inv.eventId,
+        error: err instanceof Error ? err.message : String(err),
+      }),
+    );
+    return null;
+  }
 }
 
 /** Scan all Google-connected active users (watch-worker tick). */

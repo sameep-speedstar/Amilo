@@ -1068,6 +1068,13 @@ export async function upsertEvent(
   ) {
     nextMeta.meetingLinkAlertedAt = prevMeta.meetingLinkAlertedAt;
   }
+  if (
+    prevMeta.inviteNotifiedAt != null &&
+    row.meta &&
+    !("inviteNotifiedAt" in row.meta)
+  ) {
+    nextMeta.inviteNotifiedAt = prevMeta.inviteNotifiedAt;
+  }
 
   await db
     .insert(events)
@@ -1116,7 +1123,42 @@ export async function markCalendarConflictAlerted(
     limit: 5,
   });
   for (const e of rows) {
-    const meta = { ...((e.meta ?? {}) as Record<string, unknown>), conflictAlertedAt: at.toISOString() };
+    const meta = {
+      ...((e.meta ?? {}) as Record<string, unknown>),
+      conflictAlertedAt: at.toISOString(),
+      inviteNotifiedAt: at.toISOString(),
+    };
+    await db.update(events).set({ meta }).where(eq(events.id, e.id));
+  }
+}
+
+/** Mark a calendar invite as WhatsApp-notified (new meeting ping). */
+export async function markCalendarInviteNotified(
+  db: Db,
+  userId: string,
+  googleEventId: string,
+  at: Date = new Date(),
+  extra?: { commitmentId?: string },
+): Promise<void> {
+  const id = googleEventId.trim();
+  if (!id) return;
+  const rows = await db.query.events.findMany({
+    where: and(
+      eq(events.userId, userId),
+      eq(events.source, "calendar"),
+      sql`(
+        ${events.meta}->>'calendarId' = ${id}
+        OR ${events.sourceId} LIKE ${"%:" + id}
+      )`,
+    ),
+    limit: 5,
+  });
+  for (const e of rows) {
+    const meta = {
+      ...((e.meta ?? {}) as Record<string, unknown>),
+      inviteNotifiedAt: at.toISOString(),
+      ...(extra?.commitmentId ? { commitmentId: extra.commitmentId } : {}),
+    };
     await db.update(events).set({ meta }).where(eq(events.id, e.id));
   }
 }

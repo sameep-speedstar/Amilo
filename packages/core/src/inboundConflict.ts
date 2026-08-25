@@ -17,6 +17,10 @@ export type InboundCalendarBlock = CalendarBlock & {
   createdIso?: string | null;
   /** Already alerted for overlap. */
   conflictAlerted?: boolean;
+  /** Already WhatsApp'd as a new invite / meeting. */
+  inviteNotified?: boolean;
+  location?: string | null;
+  meetingUrl?: string | null;
 };
 
 export type InboundConflictHit = {
@@ -24,6 +28,9 @@ export type InboundConflictHit = {
   blockers: CalendarBlock[];
   suggested: { start: Date; end: Date } | null;
 };
+
+/** How recent an invite must be to fire a "new meeting" WhatsApp (avoid backfill spam). */
+export const NEW_INVITE_NOTIFY_MAX_AGE_MS = 48 * 3600_000;
 
 function isSelfOrganized(b: InboundCalendarBlock): boolean {
   const org = (b.organizerEmail ?? "").trim().toLowerCase();
@@ -41,6 +48,22 @@ export function isInboundInviteCandidate(b: InboundCalendarBlock): boolean {
   // Not organized by you → treat as inbound (invite or shared booking).
   if (b.organizerEmail && !isSelfOrganized(b)) return true;
   return false;
+}
+
+/** Fresh inbound invite that still needs a "new meeting" WhatsApp. */
+export function shouldNotifyNewInvite(
+  b: InboundCalendarBlock,
+  now: Date = new Date(),
+  maxAgeMs = NEW_INVITE_NOTIFY_MAX_AGE_MS,
+): boolean {
+  if (b.inviteNotified || b.allDay) return false;
+  if (!isInboundInviteCandidate(b)) return false;
+  if (b.end.getTime() <= now.getTime()) return false;
+  if (!b.createdIso) return false;
+  const created = Date.parse(b.createdIso);
+  if (Number.isNaN(created)) return false;
+  if (now.getTime() - created > maxAgeMs) return false;
+  return true;
 }
 
 /**
@@ -73,6 +96,55 @@ export function findInboundInviteConflicts(
   return hits;
 }
 
+/** Fresh inbound invites that need a new-meeting ping (no conflict required). */
+export function findNewInboundInvites(
+  blocks: InboundCalendarBlock[],
+  now: Date = new Date(),
+): InboundCalendarBlock[] {
+  return blocks
+    .filter((b) => shouldNotifyNewInvite(b, now))
+    .sort((a, b) => {
+      const ac = Date.parse(a.createdIso ?? "") || 0;
+      const bc = Date.parse(b.createdIso ?? "") || 0;
+      return bc - ac;
+    });
+}
+
+function inviteDetailLines(inv: InboundCalendarBlock, timeZone: string): string[] {
+  const day = formatLocalDayShort(inv.start, timeZone);
+  const when = `${formatLocalHm(inv.start, timeZone)}–${formatLocalHm(inv.end, timeZone)}`;
+  const who = (inv.organizerEmail ?? "Someone").trim();
+  const title = (inv.title || "a meeting").trim().slice(0, 80);
+  const lines = [
+    `New meeting: “${title}”`,
+    `From: ${who}`,
+    `When: ${day} ${when}`,
+  ];
+  const meet = (inv.meetingUrl ?? "").trim();
+  const loc = (inv.location ?? "").trim();
+  if (meet) {
+    lines.push(`Join: ${meet}`);
+  } else if (loc) {
+    lines.push(`Where: ${loc.slice(0, 120)}`);
+  }
+  return lines;
+}
+
+/** WhatsApp body for a new inbound meeting (hard commitment). */
+export function buildNewCalendarInviteAlert(
+  inv: InboundCalendarBlock,
+  timeZone: string,
+): string {
+  const lines = inviteDetailLines(inv, timeZone);
+  const status = (inv.selfResponseStatus ?? "").toLowerCase();
+  if (status === "needsaction") {
+    lines.push("Reply yes to accept, or decline to reject.");
+  } else {
+    lines.push("Amilo is tracking this as a commitment.");
+  }
+  return lines.join("\n");
+}
+
 /** WhatsApp body for an inbound overlap. */
 export function buildInboundConflictAlert(
   hit: InboundConflictHit,
@@ -80,26 +152,18 @@ export function buildInboundConflictAlert(
 ): string {
   const inv = hit.invite;
   const blocker = hit.blockers[0]!;
-  const day = formatLocalDayShort(inv.start, timeZone);
-  const want = `${formatLocalHm(inv.start, timeZone)}–${formatLocalHm(inv.end, timeZone)}`;
   const taken = `${formatLocalHm(blocker.start, timeZone)}–${formatLocalHm(blocker.end, timeZone)}`;
-  const who = (inv.organizerEmail ?? "Someone").trim();
-  const title = (inv.title || "a meeting").trim().slice(0, 80);
   const blockTitle = (blocker.title || "an existing block").trim().slice(0, 80);
 
-  const lines = [
-    `${who} scheduled “${title}” ${day} ${want}.`,
-    `That conflicts with “${blockTitle}” (${taken}).`,
-  ];
+  const lines = inviteDetailLines(inv, timeZone);
+  lines.push(`That conflicts with “${blockTitle}” (${taken}).`);
   if (hit.suggested) {
     const free = `${formatLocalHm(hit.suggested.start, timeZone)}–${formatLocalHm(hit.suggested.end, timeZone)}`;
     lines.push(
       `Reply yes to keep / accept, alternate to propose ${free}, or decline to reject the invite.`,
     );
   } else {
-    lines.push(
-      `Reply yes to keep / accept, or decline to reject the invite.`,
-    );
+    lines.push(`Reply yes to keep / accept, or decline to reject the invite.`);
   }
   return lines.join("\n");
 }
