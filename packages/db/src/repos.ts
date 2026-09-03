@@ -121,6 +121,16 @@ export async function setUserStatus(
   await db.update(users).set({ status }).where(eq(users.id, userId));
 }
 
+export async function setUserDisplayName(
+  db: Db,
+  userId: string,
+  name: string,
+): Promise<void> {
+  const cleaned = name.trim().slice(0, 120);
+  if (!cleaned) return;
+  await db.update(users).set({ name: cleaned }).where(eq(users.id, userId));
+}
+
 export async function setUserTimezone(
   db: Db,
   userId: string,
@@ -856,7 +866,7 @@ export async function rememberPersonEmail(
 ): Promise<ContextNodeRow> {
   const email = opts.email.trim().toLowerCase();
   const label = normalizeLabel(opts.label);
-  return upsertNode(
+  const node = await upsertNode(
     db,
     userId,
     "person",
@@ -864,6 +874,13 @@ export async function rememberPersonEmail(
     { ...(opts.attrs ?? {}), email },
     95,
   );
+  try {
+    const { attachEmailToOpenWatches } = await import("./watchRepos.js");
+    await attachEmailToOpenWatches(db, userId, { personLabel: label, email });
+  } catch {
+    /* best-effort — watch arming still works on next create */
+  }
+  return node;
 }
 
 /** Resolve a person's email from the context graph (+ known seeds). */
@@ -1537,6 +1554,19 @@ export type UserPrefs = {
   lastHandledLines: string[];
   /** Last mail find for CoS follow-ups (action points / reply / schedule). */
   mailWorkingSet: MailWorkingSet | null;
+  /** Days 1–7 onboarding guide state. */
+  onboarding: OnboardingState;
+};
+
+export type OnboardingState = {
+  startedAt: string | null;
+  /** Local YYYY-MM-DD when guide started (user TZ). */
+  startedLocalDay: string | null;
+  guideComplete: boolean;
+  skipped: boolean;
+  completedMilestones: string[];
+  lastTipLocalDay: string | null;
+  lastTipId: string | null;
 };
 
 const DEFAULT_PREFS: UserPrefs = {
@@ -1558,6 +1588,15 @@ const DEFAULT_PREFS: UserPrefs = {
   lastHandledDay: null,
   lastHandledLines: [],
   mailWorkingSet: null,
+  onboarding: {
+    startedAt: null,
+    startedLocalDay: null,
+    guideComplete: false,
+    skipped: false,
+    completedMilestones: [],
+    lastTipLocalDay: null,
+    lastTipId: null,
+  },
 };
 
 function asHm(raw: unknown, fallback: string): string {
@@ -1613,6 +1652,37 @@ export function parseUserPrefs(raw: Record<string, unknown> | null | undefined):
       ? raw!.lastHandledLines.map(String).map((s) => s.trim()).filter(Boolean).slice(0, 20)
       : [],
     mailWorkingSet: parseMailWorkingSet(raw?.mailWorkingSet),
+    onboarding: parseOnboardingState(raw?.onboarding),
+  };
+}
+
+function parseOnboardingState(raw: unknown): OnboardingState {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return DEFAULT_PREFS.onboarding;
+  }
+  const o = raw as Record<string, unknown>;
+  return {
+    startedAt:
+      typeof o.startedAt === "string" && o.startedAt.trim()
+        ? o.startedAt.trim()
+        : null,
+    startedLocalDay:
+      typeof o.startedLocalDay === "string" && o.startedLocalDay.trim()
+        ? o.startedLocalDay.trim().slice(0, 16)
+        : null,
+    guideComplete: o.guideComplete === true,
+    skipped: o.skipped === true,
+    completedMilestones: Array.isArray(o.completedMilestones)
+      ? o.completedMilestones.map(String).filter(Boolean)
+      : [],
+    lastTipLocalDay:
+      typeof o.lastTipLocalDay === "string" && o.lastTipLocalDay.trim()
+        ? o.lastTipLocalDay.trim()
+        : null,
+    lastTipId:
+      typeof o.lastTipId === "string" && o.lastTipId.trim()
+        ? o.lastTipId.trim()
+        : null,
   };
 }
 
@@ -1719,6 +1789,7 @@ export function prefsToJson(prefs: UserPrefs): Record<string, unknown> {
     lastHandledDay: prefs.lastHandledDay,
     lastHandledLines: prefs.lastHandledLines,
     mailWorkingSet: prefs.mailWorkingSet,
+    onboarding: prefs.onboarding,
   };
 }
 
@@ -2684,6 +2755,36 @@ export async function listUsersForScheduledBriefs(db: Db): Promise<ScheduledBrie
   return out;
 }
 
+/** Active users still in the Days 1–7 onboarding guide (Google optional). */
+export async function listUsersActiveForOnboarding(db: Db): Promise<ScheduledBriefUser[]> {
+  const rows = await db
+    .select({
+      id: users.id,
+      name: users.name,
+      timezone: users.timezone,
+      status: users.status,
+      prefs: users.prefs,
+    })
+    .from(users)
+    .where(eq(users.status, "active"))
+    .limit(300);
+
+  const out: ScheduledBriefUser[] = [];
+  for (const r of rows) {
+    const prefs = parseUserPrefs(r.prefs as Record<string, unknown>);
+    const ob = prefs.onboarding;
+    if (!ob.startedAt || ob.guideComplete || ob.skipped) continue;
+    out.push({
+      id: r.id,
+      name: r.name,
+      timezone: r.timezone,
+      status: r.status,
+      prefs,
+    });
+  }
+  return out;
+}
+
 /** Thin alias for inbound conflict / CoS scans. */
 export async function listUsersWithGoogleForScan(
   db: Db,
@@ -3323,8 +3424,9 @@ export async function buildPriorityBriefPayload(
     kind === "am" && quieterCount > 0
       ? `HANDLED\n${quieterCount} quieter yesterday. Reply M for that list.`
       : items.length
-        ? "\nReply 1–3 for detail."
+        ? "Reply 1–3 for detail."
         : null,
+    'Type Help for anything else.',
   ]
     .filter((l) => l != null)
     .join("\n")

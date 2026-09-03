@@ -92,6 +92,36 @@ export async function cancelWatchesForCommitment(db: Db, commitmentId: string): 
   return rows.length;
 }
 
+/**
+ * When a person email is learned later, attach it to open awaiting_reply
+ * watches that still lack email (label / title match).
+ */
+export async function attachEmailToOpenWatches(
+  db: Db,
+  userId: string,
+  opts: { personLabel: string; email: string },
+): Promise<number> {
+  const email = opts.email.trim().toLowerCase();
+  if (!email.includes("@")) return 0;
+  const needle = opts.personLabel.trim().toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+  if (!needle) return 0;
+  const open = await listOpenWatches(db, userId);
+  let n = 0;
+  for (const w of open) {
+    if (w.kind !== "awaiting_reply") continue;
+    if (w.email) continue;
+    const hay = `${w.personLabel ?? ""} ${w.title}`.toLowerCase();
+    const label = (w.personLabel ?? "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+    const match =
+      (label && (label === needle || label.includes(needle) || needle.includes(label))) ||
+      hay.includes(needle);
+    if (!match) continue;
+    await db.update(watches).set({ email }).where(eq(watches.id, w.id));
+    n += 1;
+  }
+  return n;
+}
+
 export async function cancelWatchesByHint(
   db: Db,
   userId: string,

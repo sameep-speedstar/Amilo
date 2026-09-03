@@ -16,6 +16,8 @@ import {
   listOpenWatchesWithUsers,
   logMessage,
   markWatchChecked,
+  resolvePersonEmail,
+  watches,
   type Db,
 } from "@amilo/db";
 import { commitments } from "@amilo/db";
@@ -132,17 +134,30 @@ export function startWatchWorker(opts: {
 
         let body: string | null = null;
 
-        if (w.kind === "awaiting_reply" && w.email) {
-          const mail = await findInboundMailAfter(opts.db, {
-            userId: w.userId,
-            email: w.email,
-            after: w.armedAt,
-          });
-          if (mail[0]) {
-            body = buildAwaitingReplyAlert({
-              personLabel: w.personLabel ?? w.email,
-              mailTitle: mail[0].title,
+        if (w.kind === "awaiting_reply") {
+          let email = w.email?.trim().toLowerCase() || null;
+          if (!email && w.personLabel) {
+            const resolved = await resolvePersonEmail(opts.db, w.userId, w.personLabel);
+            if (resolved?.email) {
+              email = resolved.email.trim().toLowerCase();
+              await opts.db
+                .update(watches)
+                .set({ email })
+                .where(eq(watches.id, w.id));
+            }
+          }
+          if (email) {
+            const mail = await findInboundMailAfter(opts.db, {
+              userId: w.userId,
+              email,
+              after: w.armedAt,
             });
+            if (mail[0]) {
+              body = buildAwaitingReplyAlert({
+                personLabel: w.personLabel ?? email,
+                mailTitle: mail[0].title,
+              });
+            }
           }
         }
 

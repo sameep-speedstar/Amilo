@@ -7,6 +7,8 @@ Amilo watches **workday obligations**, not the whole internet. Background alerts
 | Kind | Arms when | Fires when |
 |------|-----------|------------|
 | `awaiting_reply` | `waiting on <person> for <thing>` | Inbound Gmail from that person's email after arm time |
+
+If you arm a wait before Amilo knows their email, say `Nisha's email is …` — that email is stored on the person **and** attached to any open `awaiting_reply` watch for them. Without an email on the watch, inbound mail cannot fire.
 | `commitment_stall` | Reminder / commitment with `due_at` | Due within ~4h or overdue |
 | `calendar_invite` (inbound) | Always on when Google is connected | New invite (other organizer / `needsAction`) created in last ~48h |
 | `calendar_conflict` (inbound) | Always on when Google is connected | New invite overlaps an existing timed block **or a schedule memory window** |
