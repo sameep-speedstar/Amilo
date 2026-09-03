@@ -17,3 +17,4 @@ export * from "./watchRepos.js";
 export * from "./onboardRepos.js";
 export * from "./adminRepos.js";
 export * from "./attention.js";
+export * from "./meetingFollowup.js";

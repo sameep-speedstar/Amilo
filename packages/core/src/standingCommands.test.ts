@@ -27,6 +27,9 @@ import {
   parseWaitingForMail,
   formatMailWorkingSet,
   STANDING_HELP,
+  isBareAffirmative,
+  mailQueryFromUserLine,
+  pendingMailSearchFromChat,
 } from "./standingCommands.js";
 import {
   buildAwaitingReplyAlert,
@@ -203,6 +206,28 @@ describe("standing commands", () => {
     assert.match(STANDING_HELP, /delete pending/i);
     assert.match(STANDING_HELP, /completed/i);
     assert.match(STANDING_HELP, /handled/i);
+  });
+
+  it("turns a search-mail offer + yes into the prior subject query", () => {
+    assert.equal(isBareAffirmative("yes"), true);
+    assert.equal(isBareAffirmative("sure"), true);
+    const q = mailQueryFromUserLine(
+      "More details on RE: Dedicated Escrow<> Hulip<>IDFC<>Universal — Ajay Malhotra",
+    );
+    assert.ok(q);
+    assert.match(q!.query, /Dedicated Escrow/i);
+    const pending = pendingMailSearchFromChat(
+      [
+        "User: More details on RE: Dedicated Escrow<> Hulip<>IDFC<>Universal — Ajay Malhotra",
+        "Amilo: No matching mail in working set. Want me to search mail?",
+      ].join("\n"),
+    );
+    assert.ok(pending);
+    assert.match(pending!.query, /Dedicated Escrow/i);
+    assert.equal(
+      pendingMailSearchFromChat("User: hello\nAmilo: How can I help?"),
+      null,
+    );
   });
 });
 

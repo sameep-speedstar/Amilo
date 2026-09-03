@@ -74,7 +74,7 @@ describe("focus cadence", () => {
     assert.equal(shouldShowInFocus(twice.a, { now, kind: "am" }), false);
   });
 
-  it("shows overdue once, then parks (money/KYC gets one extra)", () => {
+  it("shows overdue once, then parks (money/KYC is one-shot too)", () => {
     const overdue = new Date("2026-08-15T02:00:00.000Z");
     assert.equal(
       shouldShowInFocus(undefined, { now, kind: "am", deadline: overdue }),
@@ -102,14 +102,27 @@ describe("focus cadence", () => {
         deadline: overdue,
         moneyOrKyc: true,
       }),
-      true,
+      false,
     );
-    const kycTwice = markShown(kycOnce, "kyc", { now, label: "KYC", deadline: overdue });
+  });
+
+  it("does not daily-repeat money/KYC even with a near deadline", () => {
+    const soon = new Date(now.getTime() + 6 * 3600_000);
+    const kycOnce = markShown({}, "kyc", { now, label: "Card block", deadline: soon });
     assert.equal(
-      shouldShowInFocus(kycTwice.kyc, {
+      shouldShowInFocus(kycOnce.kyc, {
         now,
         kind: "am",
-        deadline: overdue,
+        deadline: soon,
+        moneyOrKyc: true,
+      }),
+      false,
+    );
+    assert.equal(
+      shouldShowInFocus(kycOnce.kyc, {
+        now,
+        kind: "pm",
+        deadline: soon,
         moneyOrKyc: true,
       }),
       false,

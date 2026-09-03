@@ -1,9 +1,12 @@
 import {
+  eveningBriefTemplateVarsV2,
   flattenWaTemplateParam,
   formatLocalDateLong,
   isHmInWindow,
+  isStructuredBriefTemplate,
   localDayBoundsUtc,
   localHm,
+  morningBriefTemplateVarsV2,
   type ChannelPort,
 } from "@amilo/core";
 import { isInside24hWindow } from "@amilo/channels-whatsapp";
@@ -151,9 +154,26 @@ export function startBriefWorker(opts: {
             let waMessageId: string | void;
             let bodyRef: string;
             if (canFreeForm) {
-              const text = `Morning brief — ${name}\n\n${brief.digestText}`.slice(0, 3500);
+              const text = `Good morning, ${name} — ${formatLocalDateLong(now, tz)}.\n\n${brief.digestText}`.slice(
+                0,
+                3500,
+              );
               waMessageId = await opts.channel.send(u.id, { text });
               bodyRef = text;
+            } else if (isStructuredBriefTemplate(opts.morningTemplate)) {
+              const variables = morningBriefTemplateVarsV2({
+                name,
+                dateLong: formatLocalDateLong(now, tz),
+                items: brief.items,
+                quieterCount: brief.quieterCount,
+                calendarLines: brief.calendarLines,
+              });
+              waMessageId = await opts.channel.send(u.id, {
+                templateName: opts.morningTemplate,
+                languageCode: lang,
+                variables,
+              });
+              bodyRef = `Morning brief · ${brief.digestText.replace(/\n/g, " | ").slice(0, 400)}`;
             } else {
               const bodyFlat = flattenWaTemplateParam(brief.digestFlat, 900);
               const dateLong = flattenWaTemplateParam(formatLocalDateLong(now, tz), 80);
@@ -260,9 +280,22 @@ export function startBriefWorker(opts: {
             let waMessageId: string | void;
             let bodyRef: string;
             if (canFreeForm) {
-              const text = `Evening wrap — ${name}\n\n${brief.digestText}`.slice(0, 3500);
+              const text = `Evening wrap, ${name}.\n\n${brief.digestText}`.slice(0, 3500);
               waMessageId = await opts.channel.send(u.id, { text });
               bodyRef = text;
+            } else if (isStructuredBriefTemplate(opts.eveningTemplate)) {
+              const variables = eveningBriefTemplateVarsV2({
+                name,
+                todayLines: brief.todayLines,
+                calendarLines: brief.calendarLines,
+                items: brief.items,
+              });
+              waMessageId = await opts.channel.send(u.id, {
+                templateName: opts.eveningTemplate,
+                languageCode: lang,
+                variables,
+              });
+              bodyRef = `Evening wrap · ${brief.digestText.replace(/\n/g, " | ").slice(0, 400)}`;
             } else {
               const bodyFlat = flattenWaTemplateParam(brief.digestFlat, 900);
               waMessageId = await opts.channel.send(u.id, {

@@ -14,7 +14,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "npm run build && node --test dist/mailBrief.test.js dist/attention.test.js dist/onboardRepos.test.js",
+    "test": "npm run build && node --test dist/mailBrief.test.js dist/attention.test.js dist/onboardRepos.test.js dist/meetingFollowup.test.js",
     "generate": "drizzle-kit generate",
     "migrate": "tsx src/migrate.ts"
   },

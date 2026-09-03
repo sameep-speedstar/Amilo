@@ -563,6 +563,63 @@ export function mailLookupFromChatSummary(summary: string | undefined): {
   return null;
 }
 
+/** Bare yes/ok/sure — used to confirm a prior mail-search offer. */
+export function isBareAffirmative(message: string): boolean {
+  return /^(yes|y|yeah|yep|yup|ok|okay|sure|please|do it|go ahead|search(\s+it)?|yes\s+please|sure\s+please)$/i.test(
+    message.trim().replace(/[.!]+$/g, ""),
+  );
+}
+
+const MAIL_SEARCH_OFFER_RE =
+  /\b(want me to search|shall i search|should i search|i can search|search (your |the )?mail|look (it|that) up in (your )?mail|search (for )?it)\b/i;
+
+/** Pull a subject / mail needle from a user line that isn't a formal find-mail command. */
+export function mailQueryFromUserLine(body: string): { query: string; lookbackDays: number } | null {
+  const raw = body.trim().replace(/[?.!]+$/g, "");
+  if (!raw || isBareAffirmative(raw)) return null;
+  const mail = parseMailLookup(raw);
+  if (mail) return mail;
+  const details = raw.match(
+    /^(?:more\s+details?\s+(?:on|about|for)\s+|show\s+(?:me\s+)?(?:more\s+)?details?\s+(?:on|about|for)\s+|details?\s+(?:on|about|for)\s+)(.+)$/i,
+  );
+  if (details?.[1]) {
+    const q = details[1].trim();
+    if (q.length >= 5) return { query: q.slice(0, 160), lookbackDays: 14 };
+  }
+  if (/\b(re|fwd|fw):/i.test(raw) || /—/.test(raw) || /<>/.test(raw)) {
+    if (raw.length >= 8) return { query: raw.slice(0, 160), lookbackDays: 14 };
+  }
+  return null;
+}
+
+/**
+ * If Amilo just offered to search mail, return the query from the prior user ask.
+ * Used so a bare "yes" actually runs the search instead of soft-holding.
+ */
+export function pendingMailSearchFromChat(summary: string | undefined): {
+  query: string;
+  lookbackDays: number;
+} | null {
+  if (!summary) return null;
+  const lines = summary.split("\n");
+  let lastAmilo = -1;
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    if (/^Amilo:/i.test(lines[i]!)) {
+      lastAmilo = i;
+      break;
+    }
+  }
+  if (lastAmilo < 0 || !MAIL_SEARCH_OFFER_RE.test(lines[lastAmilo]!)) return null;
+  for (let i = lastAmilo - 1; i >= 0; i -= 1) {
+    const line = lines[i]!;
+    if (!/^User:/i.test(line)) continue;
+    const body = line.replace(/^User:\s*/i, "").trim();
+    const hit = mailQueryFromUserLine(body);
+    if (hit) return hit;
+  }
+  return mailLookupFromChatSummary(summary);
+}
+
 export const STANDING_HELP = [
   "Amilo — quick commands",
   "",

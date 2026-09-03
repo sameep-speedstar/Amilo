@@ -9,6 +9,7 @@ A commitment is something the user owes the world or the world owes the user tha
 - Explicit promise the user made ("I'll send the deck tomorrow")
 - Appointment extracted from a confirmation email (use the **appointment time**, not the email arrival time)
 - **Waiting on** someone (`waiting on Rajeev for board deck`) — opens a commitment + CoS watch
+- **Meeting action** (`meeting_action`) — explicit Action:/TODO/- [ ] lines from an attended meeting's calendar description, recorded at evening brief for tomorrow
 
 ## Lifecycle
 

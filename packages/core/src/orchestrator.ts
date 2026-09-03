@@ -48,6 +48,8 @@ import {
   looksLikeInventedMailMiss,
   mailLookupFromChatSummary,
   mailSearchTokens,
+  isBareAffirmative,
+  pendingMailSearchFromChat,
   type MailWorkingSet,
   type MailWorkingHit,
 } from "./standingCommands.js";
@@ -1756,6 +1758,41 @@ export async function handleInbound(
     (waitingMail
       ? { query: waitingMail.query, lookbackDays: waitingMail.lookbackDays }
       : null);
+
+  // Bare "yes" after Amilo offered to search mail → actually search.
+  if (
+    !mailLookup &&
+    !openPending &&
+    isBareAffirmative(text) &&
+    deps.searchMail &&
+    deps.getRecentChatSummary
+  ) {
+    const summaryForYes = await deps.getRecentChatSummary(msg.userId, {
+      ...(msg.messageId ? { excludeMessageId: msg.messageId } : {}),
+    });
+    const pendingSearch = pendingMailSearchFromChat(summaryForYes);
+    if (pendingSearch) {
+      const prepared = await prepareMailFind(msg.userId, pendingSearch, deps);
+      if (prepared.early && !prepared.hits.length) return prepared.early;
+      if (prepared.hits.length) {
+        const lines = prepared.hits.slice(0, 5).map((h, i) => {
+          const when = h.date ? ` (${h.date})` : "";
+          return `${i + 1}) ${h.subject} — ${h.from}${when}`;
+        });
+        return [
+          {
+            text: [
+              `Found ${prepared.hits.length} for “${pendingSearch.query}”:`,
+              ...lines,
+              "",
+              "Reply with a number for detail, or say summarize.",
+            ].join("\n"),
+          },
+        ];
+      }
+    }
+  }
+
   if (mailLookup && deps.searchMail) {
     const prepared = await prepareMailFind(msg.userId, mailLookup, deps);
     if (prepared.early) {

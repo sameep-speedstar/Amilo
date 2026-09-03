@@ -148,8 +148,12 @@ export function shouldShowInFocus(entry: AttentionEntry | undefined, opts: Caden
   const within48h = msLeft != null && msLeft >= 0 && msLeft <= 48 * 3600_000;
   const todayish = msLeft != null && msLeft >= 0 && msLeft <= 18 * 3600_000;
 
+  // Money/KYC (Aadhaar fail, card block, payment due) is usually handled
+  // immediately — one FOCUS slot, no extra overdue/daily repeats.
+  if (opts.moneyOrKyc && touches >= 1) return false;
+
   if (overdue) {
-    if (touches >= (opts.moneyOrKyc ? 2 : 1) || parked) return false;
+    if (touches >= 1 || parked) return false;
     return true;
   }
   if (parked) return false;

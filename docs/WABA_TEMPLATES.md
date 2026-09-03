@@ -3,17 +3,30 @@
 Submit in **Meta Business Manager → WhatsApp Manager → Message Templates**.  
 Category: **Utility**. Language: **English**.
 
-**Status: Approved (live)** — names locked in code as:
+**Status**
 
-| Role | Meta template name |
-|------|--------------------|
-| Morning | `morning_update` |
-| Evening | `evening_wrap` |
-| Alert | `priority_update` |
+| Role | Meta template name | Notes |
+|------|--------------------|--------|
+| Morning (legacy) | `morning_update` | Single `{{3}}` blob — flattens to one line (no real bullets) |
+| Evening (legacy) | `evening_wrap` | Single `{{2}}` blob — same limitation |
+| Alert | `priority_update` | Live |
+| Morning (bullets) | `morning_update_v2` | **Submit this** — static FOCUS lines + one var per item |
+| Evening (bullets) | `evening_wrap_v2` | **Submit this** — TODAY / TOMORROW / STILL OPEN |
+
+After `*_v2` are Approved, set:
+
+```
+WABA_TEMPLATE_MORNING=morning_update_v2
+WABA_TEMPLATE_EVENING=evening_wrap_v2
+```
+
+Code auto-detects `_v2` / `_bullets` / `_focus` suffix and fills six body variables.
+
+Inside the WhatsApp **24h window**, Amilo sends free-form text with real newlines (preferred). Templates are only for outside-window scheduled briefs.
 
 ---
 
-## 1. `morning_update`
+## 1. `morning_update` (legacy — live)
 
 **Body**
 
@@ -25,19 +38,41 @@ Good morning, {{1}} — {{2}}.
 Reply 1, 2 or 3 for details, M for more, or send a voice note.
 ```
 
-**Sample**
-
-- `{{1}}` = `Sameep`
-- `{{2}}` = `Tuesday, 5 August`
-- `{{3}}` = `You have 3 priorities today: [Work] Client call at 2pm needs prep. [Personal] Gift for Mom not ordered. [Work] Invoice #4021 needs reply. 12 items handled quietly.`
-
-**App usage:** Always send morning briefings as this template (not free-form), for reliability outside the 24h window.
+**App usage:** Fallback when `WABA_TEMPLATE_MORNING` is still `morning_update`. `{{3}}` is flattened (Meta forbids newlines inside variables).
 
 ---
 
+## 1b. `morning_update_v2` (submit)
 
+**Body** — bullets are static; each focus slot is its own variable (no newlines inside vars):
 
-## 2. `evening_wrap`
+```
+Good morning, {{1}} — {{2}}.
+
+FOCUS
+1) {{3}}
+2) {{4}}
+3) {{5}}
+
+{{6}}
+
+Reply 1, 2 or 3 for details, M for more, or send a voice note.
+```
+
+**Sample**
+
+- `{{1}}` = `Sameep`
+- `{{2}}` = `Thursday 3 September`
+- `{{3}}` = `Escrow addendum — Yogish`
+- `{{4}}` = `KYC update — OneCard`
+- `{{5}}` = `—`
+- `{{6}}` = `6 quieter yesterday. Reply M for more.`
+
+Empty focus slots use an em dash (`—`).
+
+---
+
+## 2. `evening_wrap` (legacy — live)
 
 **Body**
 
@@ -49,14 +84,41 @@ Evening wrap, {{1}}.
 Anything to capture before tomorrow? Send a voice note.
 ```
 
+---
+
+## 2b. `evening_wrap_v2` (submit)
+
+**Body**
+
+```
+Evening wrap, {{1}}.
+
+TODAY
+{{2}}
+
+TOMORROW
+{{3}}
+
+STILL OPEN
+1) {{4}}
+2) {{5}}
+3) {{6}}
+
+Anything to capture before tomorrow? Send a voice note.
+```
+
 **Sample**
 
 - `{{1}}` = `Sameep`
-- `{{2}}` = `Today: closed the Q3 budget review, confirmed Friday flight. Tomorrow's first meeting is at 9am with design.`
+- `{{2}}` = `10:30 Esaas TSP · 16:00 Board prep`
+- `{{3}}` = `09:00 Standup · 14:00 Client call`
+- `{{4}}` = `Send revised deck to Ameya`
+- `{{5}}` = `—`
+- `{{6}}` = `—`
+
+`{{2}}` / `{{3}}` stay single-line summaries (Meta variable rule). Vertical layout comes from the static TODAY / TOMORROW / STILL OPEN headings.
 
 ---
-
-
 
 ## 3. `priority_update`
 
@@ -68,38 +130,37 @@ Anything to capture before tomorrow? Send a voice note.
 Reply 1 to act, 2 to snooze to this evening, 3 to ignore.
 ```
 
-**Sample**
-
-- `{{1}}` = `Sameep`
-- `{{2}}` = `your flight check-in closes in 40 minutes and you haven't checked in yet`
-
-**App usage:** Free-form inside 24h window; this template only when the window is closed. Quiet hours suppress except VIP + money/deadline emergencies (M4+).
+**App usage:** Free-form inside 24h window; this template only when the window is closed.
 
 ---
-
-
 
 ## Review risk
 
 Meta Utility is meant for transactional content. Proactive AI briefings may bounce to Marketing or request revision. If rejected:
 
 1. Tighten body to sound more like an account/status update.
-2. Keep a single `{{3}}` body blob (survives review better than many variables).
-3. Re-submit; Telegram control bot keeps founder loop unblocked.
+2. Keep focus slots as separate short variables (survives review better than one giant blob with fake newlines).
+3. Re-submit; free-form on-demand `brief` still works inside 24h.
 
-
+---
 
 ## After approval
 
-Set template names in `.env` / `TEMPLATE_NAMES` to match Meta exactly (`morning_update`, `evening_wrap`, `priority_update`).
+Set template names in Azure / `.env` to match Meta exactly:
+
+```
+WABA_TEMPLATE_MORNING=morning_update_v2
+WABA_TEMPLATE_EVENING=evening_wrap_v2
+WABA_TEMPLATE_ALERT=priority_update
+```
 
 ## Founder checklist
 
 - [x] Create `morning_update` (Utility / EN)
 - [x] Create `evening_wrap` (Utility / EN)
 - [x] Create `priority_update` (Utility / EN)
-- [x] Wait for Approved
-- [x] Fill `.env` with WABA tokens
+- [ ] Create `morning_update_v2` (Utility / EN) — bullets
+- [ ] Create `evening_wrap_v2` (Utility / EN) — bullets
+- [ ] Wait for Approved → flip env vars + redeploy
 - [x] Deploy API + bind `api.amilo.io`
 - [x] Point Meta webhook to `https://api.amilo.io/webhooks/whatsapp`
-- [ ] Scheduled morning/evening cron (optional next)

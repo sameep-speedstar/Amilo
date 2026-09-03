@@ -15,6 +15,12 @@ import {
   userIsOnTo,
   type AttentionState,
 } from "./attention.js";
+import {
+  attendedMeetingLabel,
+  extractMeetingActionItems,
+  focusLabelsMatch,
+  isAttendedMeeting,
+} from "./meetingFollowup.js";
 import type { Db } from "./index.js";
 import {
   calendarLocationFromEvent,
@@ -703,6 +709,7 @@ export async function createCommitment(
     title: string;
     dueAt?: Date | null;
     reason?: string | null;
+    sourceEventId?: string | null;
   },
 ): Promise<{ id: string }> {
   const [row] = await db
@@ -713,6 +720,7 @@ export async function createCommitment(
       status: "open",
       dueAt: opts.dueAt ?? null,
       reason: opts.reason ?? "waiting_on",
+      ...(opts.sourceEventId ? { sourceEventId: opts.sourceEventId } : {}),
     })
     .returning({ id: commitments.id });
   if (!row) throw new Error("failed to create commitment");
@@ -2729,6 +2737,8 @@ export async function buildPriorityBriefPayload(
   quieterCount: number;
   moreText: string | null;
   calendarCount: number;
+  calendarLines: string[];
+  todayLines: string[];
   commitmentCount: number;
   attentionState: AttentionState;
   lastHandledDay: string | null;
@@ -2767,6 +2777,71 @@ export async function buildPriorityBriefPayload(
     briefClass?: "action" | "fyi";
   };
   const cands: Cand[] = [];
+
+  /** Evening: meetings already done today + description action lines → tomorrow. */
+  const todayAttendedLabels: string[] = [];
+  if (kind === "pm") {
+    const todayCal = await db.query.events.findMany({
+      where: and(
+        eq(events.userId, userId),
+        eq(events.source, "calendar"),
+        gte(events.occursAt, todayBounds.timeMin),
+        lte(events.occursAt, todayBounds.timeMax),
+      ),
+      orderBy: [asc(events.occursAt)],
+      limit: 20,
+    });
+    const dueTomorrow = new Date(focusBounds.timeMin.getTime() + 9 * 3600_000);
+    const openMeetingActions = await db.query.commitments.findMany({
+      where: and(
+        eq(commitments.userId, userId),
+        eq(commitments.status, "open"),
+        eq(commitments.reason, "meeting_action"),
+      ),
+      limit: 50,
+    });
+    const existingKeys = new Set(
+      openMeetingActions.map((c) => {
+        const t = c.title.toLowerCase().replace(/\s+/g, " ").slice(0, 80);
+        return `${c.sourceEventId ?? ""}|${t}`;
+      }),
+    );
+    for (const e of todayCal) {
+      const meta = (e.meta ?? {}) as Record<string, unknown>;
+      if (
+        !isAttendedMeeting(
+          { id: e.id, title: e.title, occursAt: e.occursAt, meta },
+          now,
+          todayBounds.timeMin,
+          todayBounds.timeMax,
+        )
+      ) {
+        continue;
+      }
+      const when = formatLocalHm(e.occursAt!, timezone);
+      const title = cleanCalendarDisplayTitle((e.title ?? "Meeting").trim());
+      todayAttendedLabels.push(attendedMeetingLabel(title, when));
+      const desc = typeof meta.description === "string" ? meta.description : "";
+      for (const action of extractMeetingActionItems(desc)) {
+        const norm = action.toLowerCase().replace(/\s+/g, " ").slice(0, 80);
+        const key = `${e.id}|${norm}`;
+        if (existingKeys.has(key)) continue;
+        if ([...existingKeys].some((k) => k.endsWith(`|${norm}`))) continue;
+        try {
+          await createCommitment(db, {
+            userId,
+            title: action,
+            dueAt: dueTomorrow,
+            reason: "meeting_action",
+            sourceEventId: e.id,
+          });
+          existingKeys.add(key);
+        } catch {
+          /* best-effort record */
+        }
+      }
+    }
+  }
 
   const calRows = await db.query.events.findMany({
     where: and(
@@ -2904,7 +2979,9 @@ export async function buildPriorityBriefPayload(
       (e.meta as { briefClass?: unknown } | null)?.briefClass === "fyi"
         ? ((e.meta as { briefClass: "action" | "fyi" }).briefClass)
         : undefined;
-    const moneyOrKyc = /\b(kyc|bill|payment|overdue|card block)\b/i.test(hay);
+    const moneyOrKyc =
+      /\b(kyc|bill|payment|overdue|card block|aadhaar|uidai)\b/i.test(hay) ||
+      /\bauthentication\s+failed\b/i.test(hay);
     cands.push({
       score: cachedClass === "action" ? Math.max(hardKeep ? Math.max(score, 70) : score, 70) : hardKeep ? Math.max(score, 70) : score,
       kind: "mail",
@@ -2994,13 +3071,19 @@ export async function buildPriorityBriefPayload(
     }
   }
 
-  cands.sort((a, b) => b.score - a.score);
+  cands.sort((a, b) => {
+    if (b.score !== a.score) return b.score - a.score;
+    const kindRank = (k: Cand["kind"]) =>
+      k === "commitment" ? 2 : k === "calendar" ? 1 : 0;
+    return kindRank(b.kind) - kindRank(a.kind);
+  });
   const seenLabels = new Set<string>();
   const ranked: Cand[] = [];
   for (const c of cands) {
     if (c.score <= 0) continue;
     const key = c.label.toLowerCase().replace(/\s+/g, " ").slice(0, 80);
     if (seenLabels.has(key)) continue;
+    if ([...seenLabels].some((prev) => focusLabelsMatch(prev, c.label))) continue;
     if (
       !shouldShowInFocus(attentionState[c.attentionId], {
         now,
@@ -3171,6 +3254,10 @@ export async function buildPriorityBriefPayload(
 
   const calHeading = kind === "pm" ? "TOMORROW" : "TODAY";
   const openHeading = kind === "pm" ? "STILL OPEN" : "FOCUS";
+  const todayWasLine =
+    kind === "pm" && todayAttendedLabels.length
+      ? `TODAY\n${todayAttendedLabels.map((b) => `• ${b}`).join("\n")}`
+      : null;
   const calLine =
     calUnique.length === 0
       ? null
@@ -3194,19 +3281,25 @@ export async function buildPriorityBriefPayload(
 
   const priorityLines = items.map((it) => `${it.index}) ${it.label}`);
   const digestFlat = [
+    todayAttendedLabels.length
+      ? `Today: ${todayAttendedLabels
+          .slice(0, 3)
+          .map((b) => b.replace(/^•\s*/, ""))
+          .join("; ")}${todayAttendedLabels.length > 3 ? ` (+${todayAttendedLabels.length - 3})` : ""}.`
+      : "",
     calUnique.length === 0
       ? ""
       : `${kind === "pm" ? "Tomorrow" : "Today"}: ${calUnique
           .slice(0, 4)
-          .map((b) => `• ${b}`)
-          .join(" ")}${calUnique.length > 4 ? ` (+${calUnique.length - 4})` : ""}.`,
+          .map((b) => b.replace(/^•\s*/, ""))
+          .join("; ")}${calUnique.length > 4 ? ` (+${calUnique.length - 4})` : ""}.`,
     items.length
-      ? `Focus ${items.length}: ${priorityLines.join(" · ")}.`
+      ? priorityLines.map((l) => l.replace(/\s+/g, " ").trim()).join("  ")
       : kind === "pm"
         ? "Nothing still open."
         : "No focus items.",
     doneRows.length
-      ? `Done: ${doneRows.map((d) => d.label).join(" · ")}${doneExtra ? ` +${doneExtra}` : ""}.`
+      ? `Done: ${doneRows.map((d) => d.label).join("; ")}${doneExtra ? ` +${doneExtra}` : ""}.`
       : "",
     handledBit,
   ]
@@ -3216,10 +3309,12 @@ export async function buildPriorityBriefPayload(
     .trim();
 
   const digestText = [
+    todayWasLine,
+    todayWasLine && calLine ? "" : null,
     calLine,
-    calLine ? "" : null,
+    calLine || todayWasLine ? "" : null,
     openHeading,
-    ...(items.length ? items.map((it) => `${it.index}) ${it.label}`) : ["• none needing you"]),
+    ...(items.length ? priorityLines : ["• none needing you"]),
     doneRows.length ? "" : null,
     doneRows.length
       ? `DONE\n${doneRows.map((d) => `• ${d.label}`).join("\n")}${doneExtra ? `\n+${doneExtra}` : ""}`
@@ -3228,11 +3323,12 @@ export async function buildPriorityBriefPayload(
     kind === "am" && quieterCount > 0
       ? `HANDLED\n${quieterCount} quieter yesterday. Reply M for that list.`
       : items.length
-        ? "Reply 1–3 for detail."
+        ? "\nReply 1–3 for detail."
         : null,
   ]
     .filter((l) => l != null)
     .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
     .trim();
 
   return {
@@ -3242,6 +3338,8 @@ export async function buildPriorityBriefPayload(
     quieterCount,
     moreText,
     calendarCount: calUnique.length,
+    calendarLines: calUnique,
+    todayLines: todayAttendedLabels,
     commitmentCount: commits.filter(
       (c) => c.dueAt && c.dueAt >= timeMin && c.dueAt <= timeMax,
     ).length,

@@ -94,6 +94,9 @@ export {
   mailTokenInHay,
   mailHayMatchesQuery,
   buildGmailSearchQuery,
+  isBareAffirmative,
+  mailQueryFromUserLine,
+  pendingMailSearchFromChat,
   type MailWorkingSet,
   type MailWorkingHit,
 } from "./standingCommands.js";
@@ -161,3 +164,10 @@ export {
   type ReminderKind,
   type ReminderSpec,
 } from "./time.js";
+export {
+  eveningBriefTemplateVarsV2,
+  flattenBriefLineList,
+  isStructuredBriefTemplate,
+  morningBriefTemplateVarsV2,
+  padFocusTemplateSlots,
+} from "./briefFormat.js";
