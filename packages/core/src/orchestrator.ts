@@ -1,5 +1,6 @@
 import type { BrainPort, GraphUpdate } from "@amilo/brain-contract";
 import type { ChannelPort, InboundMessage, OutboundMessage } from "./channel.js";
+import type { OnboardingState } from "./onboardingGuide.js";
 import {
   composeEmailDraft,
   emailDraftIntro,
@@ -20,11 +21,17 @@ import {
   DELETE_MENU,
   HOW_IT_WORKS,
   STANDING_HELP,
+  WHAT_I_DO,
+  welcomeMessage,
   isAboutMeCommand,
+  isCapabilitiesCommand,
   isClearMemoryCommand,
   isClearMemoryConfirmCommand,
   isDeleteMenuCommand,
   isDeletePendingCommand,
+  isGreetingCommand,
+  isSkipOnboardingCommand,
+  parseDisplayNameReply,
   isHelpCommand,
   isHowItWorksCommand,
   isStatusCommand,
@@ -67,6 +74,7 @@ import {
   formatLocalDateLong,
   isTimezoneAffirmative,
   isReminderAsk,
+  localDayBoundsUtc,
   parseCalendarCreateHint,
   parseHmInput,
   parseIsoDate,
@@ -477,7 +485,18 @@ export interface OrchestratorDeps {
       fingerprint?: string | null;
     }>;
     more: string | null;
+    moreLines: string[];
+    numberContext: "focus" | "more";
   }>;
+  setBriefNumberContext?: (
+    userId: string,
+    ctx: "focus" | "more",
+  ) => Promise<void>;
+  /** Detail for a quieter / More-list line (subject — actor). */
+  getHandledMailDetail?: (
+    userId: string,
+    line: string,
+  ) => Promise<string>;
   listCompleted?: (userId: string) => Promise<string[]>;
   listHandled?: (userId: string) => Promise<string[]>;
   closeBriefPriority?: (
@@ -603,6 +622,12 @@ export interface OrchestratorDeps {
     summary?: string,
   ) => Promise<{ ok: boolean; message: string }>;
   logEval?: (userId: string, note: string) => Promise<void>;
+  /** Days 1–7 onboarding guide. */
+  getOnboardingState?: (userId: string) => Promise<OnboardingState>;
+  setOnboardingState?: (userId: string, state: OnboardingState) => Promise<void>;
+  setUserDisplayName?: (userId: string, name: string) => Promise<void>;
+  /** Append Days 2–7 tip under morning / on-demand brief when eligible. */
+  maybeAppendOnboardingTip?: (userId: string, briefText: string) => Promise<string>;
 }
 
 function extractMutePatternFromMessage(message: string): string | null {
@@ -641,6 +666,8 @@ export function looksLikeNewActionIntent(
     Boolean(parseCancelWatchCommand(t)) ||
     Boolean(parseScheduleDayQuery(t)) ||
     isHowItWorksCommand(t) ||
+    isCapabilitiesCommand(t) ||
+    isGreetingCommand(t) ||
     parseCommitmentCloseCommand(t) ||
     parsePlaceSetCommands(t).length > 0 ||
     isPlacesListCommand(t)
@@ -994,8 +1021,78 @@ export async function handleInbound(
   if (isHelpCommand(text)) {
     return [{ text: STANDING.help! }];
   }
+  if (isCapabilitiesCommand(text)) {
+    if (deps.getOnboardingState && deps.setOnboardingState) {
+      const ob = await deps.getOnboardingState(msg.userId);
+      if (!ob.startedAt) {
+        const tz = deps.getTimezoneState
+          ? (await deps.getTimezoneState(msg.userId)).timezone
+          : "Asia/Kolkata";
+        const { day } = localDayBoundsUtc(tz);
+        await deps.setOnboardingState(msg.userId, {
+          ...ob,
+          startedAt: new Date().toISOString(),
+          startedLocalDay: day,
+        });
+      }
+    }
+    return [{ text: WHAT_I_DO }];
+  }
   if (isHowItWorksCommand(text)) {
     return [{ text: HOW_IT_WORKS }];
+  }
+  if (isSkipOnboardingCommand(text)) {
+    if (deps.getOnboardingState && deps.setOnboardingState) {
+      const ob = await deps.getOnboardingState(msg.userId);
+      await deps.setOnboardingState(msg.userId, {
+        ...ob,
+        skipped: true,
+        guideComplete: true,
+      });
+    }
+    return [{ text: "Onboarding guide off. Type Help anytime." }];
+  }
+  if (isGreetingCommand(text)) {
+    const name = await deps.resolveUserName(msg.userId);
+    if (deps.getOnboardingState && deps.setOnboardingState) {
+      const ob = await deps.getOnboardingState(msg.userId);
+      if (!ob.startedAt) {
+        const tz = deps.getTimezoneState
+          ? (await deps.getTimezoneState(msg.userId)).timezone
+          : "Asia/Kolkata";
+        const { day } = localDayBoundsUtc(tz);
+        await deps.setOnboardingState(msg.userId, {
+          ...ob,
+          startedAt: new Date().toISOString(),
+          startedLocalDay: day,
+        });
+      }
+    }
+    const placesKnown = deps.listPlacesText
+      ? (await deps.listPlacesText(msg.userId))
+          .toLowerCase()
+          .startsWith("your places:")
+      : false;
+    const lines = [
+      welcomeMessage(name, {
+        includeNameAsk: true,
+        includePlaces: !placesKnown,
+      }),
+    ];
+    if (deps.getTimezoneState) {
+      const tz = await deps.getTimezoneState(msg.userId);
+      if (!tz.tzConfirmed) {
+        lines.push("", tzConfirmPrompt(tz.timezone));
+      }
+    }
+    return [{ text: lines.join("\n") }];
+  }
+
+  // Day-1 name reply: "call me Sameep" / "my name is …"
+  const displayName = parseDisplayNameReply(text);
+  if (displayName && deps.setUserDisplayName) {
+    await deps.setUserDisplayName(msg.userId, displayName);
+    return [{ text: `Got it — I'll call you ${displayName}.` }];
   }
   if (lower === "pause") {
     await deps.setPaused(msg.userId, true);
@@ -1009,24 +1106,78 @@ export async function handleInbound(
     return [{ text: "I'm paused. Send resume to continue." }];
   }
 
-  // Brief follow-ups: 1 / 2 / 3 / M (must not go to the LLM).
-  if (/^[123]$/.test(lower) || lower === "m") {
+  // Brief follow-ups: 1 / 2 / 3 / M / quieter numbers (must not go to the LLM).
+  if (/^\d{1,2}$/.test(lower) || lower === "m") {
     if (deps.getLastBriefItems) {
       const stored = await deps.getLastBriefItems(msg.userId);
       if (lower === "m") {
         if (stored.more?.trim()) {
+          if (deps.setBriefNumberContext) {
+            await deps.setBriefNumberContext(msg.userId, "more");
+          }
+          const maxN = Math.min(stored.moreLines.length || 16, 20);
           return [
             {
-              text: ["More from your brief:", stored.more, "", "Reply 1–3 for a top item."].join(
-                "\n",
-              ),
+              text: [
+                "More from your brief:",
+                stored.more,
+                "",
+                `Reply 1–${maxN} for that quieter item (or reply to this message with the number).`,
+                "Type Help for anything else.",
+              ].join("\n"),
             },
           ];
         }
         return [{ text: "Nothing more queued from the last brief." }];
       }
-      const item = stored.items.find((i) => i.index === Number(lower));
+
+      const n = Number(lower);
+      const replyTo = (msg.replyToContent ?? "").toLowerCase();
+      const replyIsMore =
+        /\bmore from your brief\b/.test(replyTo) ||
+        /\bhandled yesterday\b/.test(replyTo) ||
+        (replyTo.includes("quieter") && /\d+\)/.test(replyTo));
+      const useMore =
+        replyIsMore ||
+        (stored.numberContext === "more" && !replyTo.includes("focus") && n >= 1);
+
+      if (useMore && stored.moreLines.length) {
+        const label = stored.moreLines[n - 1];
+        if (!label) {
+          return [
+            {
+              text: `No quieter item ${n}. Available: 1–${stored.moreLines.length}.`,
+            },
+          ];
+        }
+        const detail = deps.getHandledMailDetail
+          ? await deps.getHandledMailDetail(msg.userId, label)
+          : label;
+        return [{ text: `${n}) ${label}\n\n${detail}` }];
+      }
+
+      if (n < 1 || n > 3) {
+        if (stored.moreLines.length && (replyIsMore || stored.numberContext === "more")) {
+          return [
+            {
+              text: `No quieter item ${n}. Available: 1–${stored.moreLines.length}.`,
+            },
+          ];
+        }
+        return [
+          {
+            text: stored.items.length
+              ? `FOCUS only has ${stored.items.map((i) => i.index).join(", ")}. Reply M for quieter mail.`
+              : "No brief items stored yet — send brief (or wait for the morning update).",
+          },
+        ];
+      }
+
+      const item = stored.items.find((i) => i.index === n);
       if (item) {
+        if (deps.setBriefNumberContext) {
+          await deps.setBriefNumberContext(msg.userId, "focus");
+        }
         return [{ text: `${item.index}) ${item.label}\n\n${item.detail}` }];
       }
       if (!stored.items.length) {
@@ -1331,7 +1482,7 @@ export async function handleInbound(
         lines.push("", "COMPLETED", ...done.slice(0, 5).map((d) => `• ${d}`));
       }
     }
-    lines.push("", "Send help for all commands.");
+    lines.push("", 'Type Help for anything else.');
     return [{ text: lines.join("\n") }];
   }
 
@@ -1927,23 +2078,6 @@ export async function handleInbound(
     }
   }
 
-  if (lower === "hi" || lower === "hello" || lower === "/start") {
-    const name = await deps.resolveUserName(msg.userId);
-    const lines = [
-      `Hi${name ? ` ${name}` : ""} — I'm Amilo, your chief of staff.`,
-      "",
-      "I watch inbox + calendar, surface only what needs you,",
-      "and confirm before any Google write.",
-      "",
-      "Start: connect google personal",
-      "Then try: brief · status · about me · help",
-    ];
-    if (deps.getTimezoneState && !tzState.tzConfirmed) {
-      lines.push("", tzConfirmPrompt(tzState.timezone));
-    }
-    return [{ text: lines.join("\n") }];
-  }
-
   // Unconfirmed TZ: nudge once on first non-trivial message if they never said hi.
   if (
     deps.getTimezoneState &&
@@ -2129,7 +2263,11 @@ export async function handleInbound(
         skippedMuted ? `${skippedMuted} muted` : "",
       ].filter(Boolean);
       const footer = quietBits.length ? `\nFiltered quietly: ${quietBits.join(", ")}.` : "";
-      const textOut = `${headline}\n\n${brief.digestText}${footer}`.slice(0, 3500);
+      let textOut = `${headline}\n\n${brief.digestText}${footer}`;
+      if (kind === "am" && deps.maybeAppendOnboardingTip) {
+        textOut = await deps.maybeAppendOnboardingTip(msg.userId, textOut);
+      }
+      textOut = textOut.slice(0, 3500);
       return [{ text: textOut || "Nothing urgent — you're clear." }];
     }
 

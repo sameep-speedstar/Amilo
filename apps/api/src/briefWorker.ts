@@ -29,6 +29,10 @@ import { classifyBorderlineMail } from "@amilo/brain-grok";
 import type { GoogleOAuthConfig } from "@amilo/google";
 import { syncGoogleForUser } from "./googleSync.js";
 import {
+  appendOnboardingTipToBrief,
+  sendStandaloneOnboardingTips,
+} from "./onboardingTips.js";
+import {
   markWorkerTickError,
   markWorkerTickOk,
   markWorkerTickStart,
@@ -71,6 +75,7 @@ export function startBriefWorker(opts: {
     await patchUserPrefs(opts.db, userId, {
       lastBriefItems: brief.items,
       lastBriefMore: kind === "am" ? brief.moreText : prefs.lastBriefMore,
+      lastBriefNumberContext: "focus",
       attentionState: brief.attentionState,
       ...(kind === "am"
         ? {
@@ -84,11 +89,32 @@ export function startBriefWorker(opts: {
 
   const tick = async () => {
     if (running) return;
-    if (!opts.googleCfg) return;
     running = true;
     markWorkerTickStart("brief");
     const now = new Date();
     try {
+      // No-Google (and missed-brief) onboarding tips — does not need Google OAuth.
+      try {
+        await sendStandaloneOnboardingTips({
+          db: opts.db,
+          channel: opts.channel,
+          now,
+          fireWindowMinutes: fireWindow,
+        });
+      } catch (err) {
+        console.error(
+          JSON.stringify({
+            event: "onboarding_tips_tick_error",
+            error: err instanceof Error ? err.message : String(err),
+          }),
+        );
+      }
+
+      if (!opts.googleCfg) {
+        markWorkerTickOk("brief");
+        return;
+      }
+
       const candidates = await listUsersForScheduledBriefs(opts.db);
       for (const u of candidates) {
         if (!u.prefs.briefsEnabled) continue;
@@ -154,10 +180,15 @@ export function startBriefWorker(opts: {
             let waMessageId: string | void;
             let bodyRef: string;
             if (canFreeForm) {
-              const text = `Good morning, ${name} — ${formatLocalDateLong(now, tz)}.\n\n${brief.digestText}`.slice(
-                0,
-                3500,
+              let text = `Good morning, ${name} — ${formatLocalDateLong(now, tz)}.\n\n${brief.digestText}`;
+              text = await appendOnboardingTipToBrief(
+                opts.db,
+                u.id,
+                prefs,
+                day,
+                text,
               );
+              text = text.slice(0, 3500);
               waMessageId = await opts.channel.send(u.id, { text });
               bodyRef = text;
             } else if (isStructuredBriefTemplate(opts.morningTemplate)) {

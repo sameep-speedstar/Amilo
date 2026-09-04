@@ -57,6 +57,7 @@ import {
   getWhatsAppLastInbound,
   listGoogleAccounts,
   listHandledMailLines,
+  parseHandledMoreLines,
   logEvalEvent,
   logMessage,
   findCalendarEventMatches,
@@ -630,6 +631,7 @@ function orchestratorDeps(): OrchestratorDeps {
       await patchUserPrefs(db, userId, {
         lastBriefItems: brief.items,
         lastBriefMore: kind === "am" ? brief.moreText : prefs.lastBriefMore,
+        lastBriefNumberContext: "focus",
         attentionState: brief.attentionState,
         ...(kind === "am"
           ? {
@@ -656,7 +658,38 @@ function orchestratorDeps(): OrchestratorDeps {
       const more = moreLines.length
         ? moreLines.map((l, i) => `${i + 1}) ${l}`).join("\n")
         : null;
-      return { items: prefs.lastBriefItems, more };
+      const fromStored = parseHandledMoreLines(prefs.lastBriefMore);
+      const lines =
+        moreLines.length > 0
+          ? moreLines
+          : fromStored.length
+            ? fromStored
+            : prefs.lastHandledLines;
+      return {
+        items: prefs.lastBriefItems,
+        more: more ?? prefs.lastBriefMore,
+        moreLines: lines,
+        numberContext: prefs.lastBriefNumberContext,
+      };
+    },
+    setBriefNumberContext: async (userId, ctx) => {
+      await patchUserPrefs(db, userId, { lastBriefNumberContext: ctx });
+    },
+    getHandledMailDetail: async (userId, line) => {
+      const subject = line.split(/\s+[—–-]\s+/)[0]?.trim() || line;
+      const hits = await searchMailEvents(db, userId, {
+        query: subject.slice(0, 80),
+        lookbackDays: 5,
+      });
+      const hit = hits[0];
+      if (!hit) return `Quieter mail: ${line}`;
+      return [
+        `From: ${hit.from}`,
+        `Subject: ${hit.subject}`,
+        hit.snippet ? `Preview: ${hit.snippet}` : null,
+      ]
+        .filter(Boolean)
+        .join("\n");
     },
     listCompleted: async (userId) => {
       const prefs = await getUserPrefs(db, userId);

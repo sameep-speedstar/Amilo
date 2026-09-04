@@ -1540,6 +1540,8 @@ export type UserPrefs = {
   /** Last scheduled/on-demand brief priorities for 1/2/3/M replies. */
   lastBriefItems: BriefPriorityItem[];
   lastBriefMore: string | null;
+  /** Whether bare number replies resolve FOCUS or the More (quieter) list. */
+  lastBriefNumberContext: "focus" | "more";
   /**
    * Gmail threadId → ISO time the user closed that priority.
    * Suppressed in briefs until a newer message lands on the thread.
@@ -1583,6 +1585,7 @@ const DEFAULT_PREFS: UserPrefs = {
   lastEveningBriefDay: null,
   lastBriefItems: [],
   lastBriefMore: null,
+  lastBriefNumberContext: "focus",
   closedMailThreads: {},
   closedMailFingerprints: {},
   attentionState: {},
@@ -1642,6 +1645,7 @@ export function parseUserPrefs(raw: Record<string, unknown> | null | undefined):
       typeof raw?.lastBriefMore === "string" && raw.lastBriefMore.trim()
         ? raw.lastBriefMore.trim().slice(0, 1500)
         : null,
+    lastBriefNumberContext: raw?.lastBriefNumberContext === "more" ? "more" : "focus",
     closedMailThreads,
     closedMailFingerprints,
     attentionState: parseAttentionState(raw?.attentionState),
@@ -1770,6 +1774,15 @@ function parseBriefItems(raw: unknown): BriefPriorityItem[] {
   return out.slice(0, 8);
 }
 
+/** Parse "1) Label — Actor" lines from lastBriefMore / lastHandledLines. */
+export function parseHandledMoreLines(more: string | null | undefined): string[] {
+  if (!more?.trim()) return [];
+  return more
+    .split("\n")
+    .map((l) => l.replace(/^\d+\)\s*/, "").trim())
+    .filter(Boolean);
+}
+
 export function prefsToJson(prefs: UserPrefs): Record<string, unknown> {
   return {
     mutedPatterns: prefs.mutedPatterns,
@@ -1784,6 +1797,7 @@ export function prefsToJson(prefs: UserPrefs): Record<string, unknown> {
     lastEveningBriefDay: prefs.lastEveningBriefDay,
     lastBriefItems: prefs.lastBriefItems,
     lastBriefMore: prefs.lastBriefMore,
+    lastBriefNumberContext: prefs.lastBriefNumberContext,
     closedMailThreads: prefs.closedMailThreads,
     closedMailFingerprints: prefs.closedMailFingerprints,
     attentionState: prefs.attentionState,
