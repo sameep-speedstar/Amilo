@@ -365,4 +365,38 @@ describe("handled list dedupe", () => {
     assert.ok(school > soft, `school=${school} soft=${soft}`);
     assert.ok(school > 0);
   });
+
+  it("drops NSE/MCX trade FYI from M and ranks person/work above soft digests", () => {
+    assert.equal(
+      isPassiveTransactionalMail("Trades executed at NSE — nse-direct"),
+      true,
+    );
+    assert.equal(mailQuietRankScore("Trades executed at NSE", "nse-direct"), 0);
+    assert.equal(mailQuietRankScore("Trade Mail - MCX", "Mcxindia"), 0);
+    assert.equal(
+      mailQuietRankScore("Funds/Securities Balance", "nse_alerts"),
+      0,
+    );
+    assert.equal(
+      isPassiveTransactionalMail(
+        "Folio 23419947 - Processing of systematic Purchase in ICICI Prudential Mutual Fund",
+      ),
+      true,
+    );
+    const work = mailQuietRankScore(
+      "Re: ESAAS TSP |STP CBS PAYOUT API |UAT",
+      "Aakash Tembhare <aakash@esaas.in>",
+    );
+    const school = mailQuietRankScore(
+      "LE- G1 to G3_ Sep 12th & Sep 26th PTI Slots",
+      "Valiants Academy <valiantsacademy@gmail.com>",
+    );
+    const digest = mailQuietRankScore(
+      "Has Japan finally escaped the Lost Decades",
+      "Finshots",
+    );
+    assert.ok(work > digest, `work=${work} digest=${digest}`);
+    assert.ok(school > digest, `school=${school} digest=${digest}`);
+    assert.ok(isActionDemandingMail("e-Voting FOR GE VERNOVA starting 05-Sep"));
+  });
 });

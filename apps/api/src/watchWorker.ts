@@ -181,7 +181,7 @@ export function startWatchWorker(opts: {
         await fireWatch(opts.db, w.id, now);
         if (w.commitmentId) {
           const c = await getCommitmentById(opts.db, w.commitmentId);
-          if (c?.reason === "reminder") {
+          if (c?.reason === "reminder" || c?.reason === "waiting_on") {
             await opts.db
               .update(commitments)
               .set({ notifiedAt: now, status: "done", resolvedAt: now })

@@ -3,6 +3,7 @@ import type { GraphUpdate } from "@amilo/brain-contract";
 import { formatLocalDayShort, formatLocalHm, guessTimezoneFromPhone, localDayBoundsUtc, cleanCalendarDisplayTitle, formatLeaveByBriefLine, detectTravelConflictsFromCoords, describeTravelConflict, mailHayMatchesQuery, mailSearchTokens, mailTokenInHay, parseScheduleAttrs, briefScheduleWindowLine, type MailWorkingSet } from "@amilo/core";
 import {
   isAutomatedSender,
+  isPersonLikeSender,
   mailBriefOrgKey,
   markCompleted,
   markDoneShown,
@@ -2352,6 +2353,17 @@ export function isPassiveTransactionalMail(hay: string): boolean {
     /\bautopay\b/.test(h) && /\bactivated\b/.test(h) ||
     /\border and trade confirmation/.test(h) ||
     /\btrade confirmation/.test(h) ||
+    /\btrades?\s+executed\b/.test(h) ||
+    /\btrade\s+mail\b/.test(h) ||
+    /\bfunds?\/securities\s+balance\b/.test(h) ||
+    (/\b(nse|mcx|bse)[-_\s]?(direct|alerts?|india)?\b/.test(h) &&
+      /\b(trade|trades|executed|balance|margin|holding)\b/.test(h)) ||
+    /\bprocessing of (systematic |sip )?purchase\b/.test(h) ||
+    /\bprocessing of sip cancellation\b/.test(h) ||
+    /\bsystematic purchase\b/.test(h) ||
+    /\byour account summary is here\b/.test(h) ||
+    /\ban update from our (president|ceo|team)\b/.test(h) ||
+    /\b(finshots|morning brew|the daily|weekly digest|daily digest)\b/.test(h) ||
     /\bprovisional margin statement\b/.test(h) ||
     /\bmargin statement\b/.test(h) ||
     (/\bportfolio\b/.test(h) && /\b(update|summary|statement)\b/.test(h)) ||
@@ -2408,7 +2420,7 @@ export function isActionDemandingMail(hay: string, actor = ""): boolean {
     /\b(charges? levied|imps charges?|unauthorised|unauthorized|dispute (the )?charge)\b/.test(
       h,
     ) ||
-    /\b(e-?vote|cast your vote|vote now)\b/.test(h) ||
+    /\b(e-?vot(?:e|ing)|cast your vote|vote now)\b/.test(h) ||
     /\b(certificate|ssl|cert)\b/.test(h) && /\b(expir\w*|renew(?:al)?|key rotation)\b/.test(h)
   );
 }
@@ -2552,7 +2564,7 @@ export function mailPriorityScore(
 /**
  * Rank for HANDLED / M list (quieter than FOCUS).
  * Hard junk (passive / promo / order delivery) → 0 and should be dropped from M.
- * Soft FYI gets mid ranks so the list can sort descending by importance.
+ * Soft FYI gets low ranks; person / school / work threads rank higher so M sorts usefully.
  */
 export function mailQuietRankScore(
   title: string,
@@ -2567,13 +2579,22 @@ export function mailQuietRankScore(
   const priority = mailPriorityScore(title, actor, vipList, snippet);
   if (priority > 0 && priority < 70) return priority;
 
-  let rank = 25;
-  if (isVipMail(hay, vipList)) rank += 30;
-  if (/\b(school|parent|circular|class|teacher|fees?)\b/i.test(hay)) rank += 20;
-  if (/\b(statement|invoice|policy|renewal|insurance)\b/i.test(hay)) rank += 15;
-  if (/\b(meeting|invite|calendar|rsvp)\b/i.test(hay)) rank += 10;
+  let rank = 12;
+  if (isPersonLikeSender(actor) || /^(re|fwd|fw):\s*/i.test(title)) rank += 28;
+  if (isVipMail(hay, vipList)) rank += 25;
+  if (/\b(school|parent|circular|class|teacher|fees?|academy|pti|valiants)\b/i.test(hay)) {
+    rank += 22;
+  }
+  if (/\b(e-?vot(?:e|ing)|cast your vote|agm|postal ballot)\b/i.test(hay)) rank += 18;
+  if (/\b(statement|invoice|policy|renewal|insurance|ssl|certificate)\b/i.test(hay)) {
+    rank += 14;
+  }
+  if (/\b(meeting|invite|calendar|rsvp|escrow|tsp|payout|uat)\b/i.test(hay)) rank += 12;
+  if (/\b(security alert|sign-?in|new device)\b/i.test(hay)) rank += 8;
   // Commerce leftovers that slipped past passive — keep at the bottom of soft items.
   if (/\b(order|delivery|shipped|courier|tracking|grocery)\b/i.test(hay)) rank = Math.min(rank, 8);
+  // News / marketing leftovers without promo keywords.
+  if (/\b(newsletter|digest|finshots|bonded|partnerships)\b/i.test(hay)) rank = Math.min(rank, 6);
   return rank;
 }
 
