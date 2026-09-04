@@ -26,6 +26,7 @@ import {
 } from "@amilo/core";
 import { processVoiceNote } from "./voice/pipeline.js";
 import { writeReminderCalendarNudge } from "./calendarNudge.js";
+import { appendOnboardingTipToBrief } from "./onboardingTips.js";
 import {
   addMutedPattern,
   applyGraphUpdates,
@@ -64,6 +65,7 @@ import {
   setCursorAgentId,
   setTimezoneConfirmed,
   setUserStatus,
+  setUserDisplayName,
   setUserTimezone,
   summarizeAboutMe,
   summarizeAboutPerson,
@@ -314,6 +316,23 @@ function orchestratorDeps(): OrchestratorDeps {
     },
     setPaused: async (id, p) => {
       await setUserStatus(db, id, p ? "paused" : "active");
+    },
+    getOnboardingState: async (userId) => {
+      const prefs = await getUserPrefs(db, userId);
+      return prefs.onboarding;
+    },
+    setOnboardingState: async (userId, state) => {
+      await patchUserPrefs(db, userId, { onboarding: state });
+    },
+    setUserDisplayName: async (userId, name) => {
+      await setUserDisplayName(db, userId, name);
+    },
+    maybeAppendOnboardingTip: async (userId, briefText) => {
+      const u = await getUserById(db, userId);
+      const prefs = await getUserPrefs(db, userId);
+      const tz = u?.timezone ?? "Asia/Kolkata";
+      const { day } = localDayBoundsUtc(tz);
+      return appendOnboardingTipToBrief(db, userId, prefs, day, briefText);
     },
     getContextGraphSummary: async (id) => summarizeContextGraph(db, id),
     getAboutMeSummary: (id) => summarizeAboutMe(db, id),
@@ -632,6 +651,7 @@ function orchestratorDeps(): OrchestratorDeps {
       const moreLines = await listHandledMailLines(db, userId, {
         timezone: u?.timezone || "Asia/Kolkata",
         vipList: prefs.vipList,
+        excludeLabels: prefs.lastBriefItems.map((i) => i.label),
       });
       const more = moreLines.length
         ? moreLines.map((l, i) => `${i + 1}) ${l}`).join("\n")
@@ -648,6 +668,7 @@ function orchestratorDeps(): OrchestratorDeps {
       return listHandledMailLines(db, userId, {
         timezone: u?.timezone || "Asia/Kolkata",
         vipList: prefs.vipList,
+        excludeLabels: prefs.lastBriefItems.map((i) => i.label),
       });
     },
     closeBriefPriority: async (userId, opts) => {

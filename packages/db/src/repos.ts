@@ -2109,11 +2109,16 @@ export async function listHandledMailLines(
     vipList?: string[];
     now?: Date;
     cap?: number;
+    /** FOCUS / brief labels — never repeat these on M. */
+    excludeLabels?: string[];
   },
 ): Promise<string[]> {
   const timezone = opts?.timezone ?? "Asia/Kolkata";
   const vipList = opts?.vipList ?? [];
   const now = opts?.now ?? new Date();
+  const excludeLabels = (opts?.excludeLabels ?? [])
+    .map((l) => l.trim())
+    .filter(Boolean);
   const todayBounds = localDayBoundsUtc(timezone, now);
   const yesterday = localDayBoundsUtc(
     timezone,
@@ -2134,6 +2139,10 @@ export async function listHandledMailLines(
     const title = e.title ?? "";
     const actor = e.actor ?? "";
     const snippet = e.snippet ?? "";
+    const line = `${cleanSubject(title)} — ${shortActor(actor)}`.slice(0, 90);
+    if (excludeLabels.some((ex) => focusLabelsMatch(ex, line) || focusLabelsMatch(ex, title))) {
+      continue;
+    }
     const focusScore = mailPriorityScore(title, actor, vipList, snippet, {
       timezone,
       now,
@@ -2143,7 +2152,7 @@ export async function listHandledMailLines(
     if (score <= 0) continue; // order delivery / UPI / promo — out of M
     const threadId = gmailThreadIdFromMeta(e.meta);
     handledRaw.push({
-      line: `${cleanSubject(title)} — ${shortActor(actor)}`.slice(0, 90),
+      line,
       fingerprint: mailBriefFingerprint(actor, title),
       score,
       ...(threadId ? { threadId } : {}),
@@ -2564,7 +2573,7 @@ export function mailPriorityScore(
 /**
  * Rank for HANDLED / M list (quieter than FOCUS).
  * Hard junk (passive / promo / order delivery) → 0 and should be dropped from M.
- * Soft FYI gets low ranks; person / school / work threads rank higher so M sorts usefully.
+ * Soft FYI gets low ranks; school / personal meeting / person threads rank highest.
  */
 export function mailQuietRankScore(
   title: string,
@@ -2580,16 +2589,28 @@ export function mailQuietRankScore(
   if (priority > 0 && priority < 70) return priority;
 
   let rank = 12;
+  const school =
+    /\b(school|parent|circular|class|teacher|fees?|academy|valiants|pti\s+slots?)\b/i.test(
+      hay,
+    ) || /\bpti\b/i.test(hay);
+  if (school) rank += 48;
   if (isPersonLikeSender(actor) || /^(re|fwd|fw):\s*/i.test(title)) rank += 28;
   if (isVipMail(hay, vipList)) rank += 25;
-  if (/\b(school|parent|circular|class|teacher|fees?|academy|pti|valiants)\b/i.test(hay)) {
-    rank += 22;
+  // Dated personal meeting (e.g. PTI on September 12 at 11 AM).
+  if (
+    /\b(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec)\b/i.test(
+      hay,
+    ) && /\b(\d{1,2}(st|nd|rd|th)?|\d{1,2}:\d{2})\b/i.test(hay)
+  ) {
+    rank += 20;
   }
-  if (/\b(e-?vot(?:e|ing)|cast your vote|agm|postal ballot)\b/i.test(hay)) rank += 18;
+  if (/\b(e-?vot(?:e|ing)|cast your vote|agm|postal ballot)\b/i.test(hay)) rank += 14;
   if (/\b(statement|invoice|policy|renewal|insurance|ssl|certificate)\b/i.test(hay)) {
-    rank += 14;
+    rank += 12;
   }
-  if (/\b(meeting|invite|calendar|rsvp|escrow|tsp|payout|uat)\b/i.test(hay)) rank += 12;
+  if (/\b(meeting|invite|calendar|rsvp|escrow|tsp|payout|uat)\b/i.test(hay) && !school) {
+    rank += 10;
+  }
   if (/\b(security alert|sign-?in|new device)\b/i.test(hay)) rank += 8;
   // Commerce leftovers that slipped past passive — keep at the bottom of soft items.
   if (/\b(order|delivery|shipped|courier|tracking|grocery)\b/i.test(hay)) rank = Math.min(rank, 8);
@@ -3235,6 +3256,7 @@ export async function buildPriorityBriefPayload(
           vipList,
           now,
           cap: 16,
+          excludeLabels: top.map((c) => c.label),
         })
       : [];
   const quieterCount = handledLines.length;
