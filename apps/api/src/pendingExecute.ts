@@ -20,6 +20,10 @@ import {
   type PendingActionRow,
 } from "@amilo/db";
 import { ensureAccessToken } from "./googleSync.js";
+import {
+  lifeOpsHandoffConfirmMessage,
+  lifeOpsResearchConfirmMessage,
+} from "@amilo/core";
 
 function str(v: unknown, fallback = ""): string {
   return v == null ? fallback : String(v).trim();
@@ -58,6 +62,94 @@ export async function executePendingAction(
   const payload = (row.payload ?? {}) as Record<string, unknown>;
 
   try {
+    if (row.kind === "life_ops_research") {
+      await resolvePendingAction(db, row.id, {
+        status: "confirmed",
+        result: { locked: true, domain: payload.domain },
+      });
+      await appendAudit(db, {
+        userId: row.userId,
+        action: "life_ops_research",
+        detail: { pendingId: row.id, domain: payload.domain, query: payload.query },
+        confirmed: true,
+      });
+      await logEvalEvent(db, {
+        userId: row.userId,
+        event: "action_confirmed",
+        note: "life_ops_research",
+        meta: { pendingId: row.id },
+      });
+      return { ok: true, message: lifeOpsResearchConfirmMessage(payload) };
+    }
+
+    if (row.kind === "life_ops_handoff") {
+      // Email channel: if draft fields present, send only when explicitly marked sendOnConfirm.
+      if (
+        str(payload.channel) === "email" &&
+        payload.sendOnConfirm === true &&
+        cfg
+      ) {
+        // Fall through to email_draft path by rewriting kind-like payload.
+        const accountLabel = str(payload.accountLabel, "personal");
+        const named = await getGoogleAccount(db, row.userId, accountLabel);
+        const account = named ?? (await listGoogleAccounts(db, row.userId))[0];
+        if (!account) throw new Error("No Google account linked. Send: connect google personal");
+        if (!hasGmailSendScope(account.scopes ?? "")) {
+          return {
+            ok: false,
+            message:
+              "Gmail send isn't authorized yet. Send: reconnect google personal — then try again.",
+          };
+        }
+        const to = str(payload.to);
+        const subject = str(payload.subject, "(no subject)");
+        const body = str(payload.body ?? payload.body_draft);
+        if (!to || !to.includes("@")) throw new Error("Missing recipient email");
+        const { accessToken } = await ensureAccessToken(db, cfg, account);
+        const sent = await sendGmailMessage(accessToken, {
+          to,
+          subject,
+          body,
+          ...(account.email ? { from: account.email } : {}),
+        });
+        await resolvePendingAction(db, row.id, {
+          status: "confirmed",
+          result: { messageId: sent.id, threadId: sent.threadId },
+        });
+        await appendAudit(db, {
+          userId: row.userId,
+          action: "life_ops_handoff_email",
+          detail: { pendingId: row.id, to, subject, messageId: sent.id },
+          confirmed: true,
+        });
+        await logEvalEvent(db, {
+          userId: row.userId,
+          event: "action_confirmed",
+          note: "life_ops_handoff_email",
+          meta: { pendingId: row.id, messageId: sent.id },
+        });
+        return { ok: true, message: `Sent to ${to}: ${subject}` };
+      }
+
+      await resolvePendingAction(db, row.id, {
+        status: "confirmed",
+        result: { channel: payload.channel, domain: payload.domain },
+      });
+      await appendAudit(db, {
+        userId: row.userId,
+        action: "life_ops_handoff",
+        detail: { pendingId: row.id, channel: payload.channel, domain: payload.domain },
+        confirmed: true,
+      });
+      await logEvalEvent(db, {
+        userId: row.userId,
+        event: "action_confirmed",
+        note: "life_ops_handoff",
+        meta: { pendingId: row.id },
+      });
+      return { ok: true, message: lifeOpsHandoffConfirmMessage(payload) };
+    }
+
     if (row.kind === "email_draft" || row.kind === "email_send") {
       if (!cfg) throw new Error("Google OAuth not configured");
       const accountLabel = str(payload.accountLabel, "personal");

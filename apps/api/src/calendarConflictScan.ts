@@ -27,6 +27,7 @@ import {
   listGoogleAccounts,
   listScheduleNodes,
   listUsersWithGoogleForScan,
+  listRecentCalendarInviteAlertedIds,
   logMessage,
   markCalendarConflictAlerted,
   markCalendarInviteNotified,
@@ -88,6 +89,11 @@ export async function scanInboundCalendarConflicts(opts: {
   const accounts = await listGoogleAccounts(opts.db, opts.userId);
   if (!accounts.length) return { alerted: 0 };
 
+  const alreadyAlertedIds = await listRecentCalendarInviteAlertedIds(
+    opts.db,
+    opts.userId,
+  );
+
   const rangeStart = localDayBoundsUtc(timezone, now).timeMin;
   const rangeEnd = new Date(now.getTime() + 7 * 86_400_000);
   const blocks: InboundCalendarBlock[] = [];
@@ -128,7 +134,8 @@ export async function scanInboundCalendarConflicts(opts: {
           accountEmail,
           createdIso: ev.createdIso,
           conflictAlerted: Boolean(meta.conflictAlertedAt),
-          inviteNotified: Boolean(meta.inviteNotifiedAt),
+          inviteNotified:
+            Boolean(meta.inviteNotifiedAt) || alreadyAlertedIds.has(ev.id),
           location: ev.location,
           meetingUrl: ev.meetingUrl,
         });
@@ -360,9 +367,13 @@ export async function scanInboundCalendarConflicts(opts: {
   }
 
   // No conflict — still notify fresh inbound meetings (hard commitments).
-  const news = findNewInboundInvites(blocks, now);
+  const news = findNewInboundInvites(blocks, now).filter(
+    (b) => !alreadyAlertedIds.has(b.eventId),
+  );
   if (!news.length) return { alerted: 0 };
   const inv = news[0]!;
+  // Re-check log right before send (mark on events row may still be missing).
+  if (alreadyAlertedIds.has(inv.eventId)) return { alerted: 0 };
   const account =
     accounts.find(
       (a) => (a.email ?? "").toLowerCase() === (inv.accountEmail ?? "").toLowerCase(),

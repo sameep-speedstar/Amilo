@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
   isAboutMeCommand,
+  isCapabilitiesCommand,
   isClearMemoryConfirmCommand,
   isDeletePendingCommand,
+  isGreetingCommand,
   isHelpCommand,
   isHowItWorksCommand,
   isCompletedListCommand,
@@ -27,9 +29,16 @@ import {
   parseWaitingForMail,
   formatMailWorkingSet,
   STANDING_HELP,
+  WHAT_I_DO,
+  welcomeMessages,
   isBareAffirmative,
+  isSkipOnboardingCommand,
+  parseDisplayNameReply,
+  parseVipCommand,
+  isTrainingTipCommand,
   mailQueryFromUserLine,
   pendingMailSearchFromChat,
+  briefNumberListTarget,
 } from "./standingCommands.js";
 import {
   buildAwaitingReplyAlert,
@@ -198,8 +207,62 @@ describe("standing commands", () => {
     assert.equal(isClearMemoryConfirmCommand("clear memory yes"), true);
   });
 
+  it("recognizes Day-0 greetings and capability asks", () => {
+    assert.equal(isGreetingCommand("Hi Amilo"), true);
+    assert.equal(isGreetingCommand("hi"), true);
+    assert.equal(isGreetingCommand("hey amilo!"), true);
+    assert.equal(isGreetingCommand("what can you do"), false);
+    assert.equal(isCapabilitiesCommand("What can you do?"), true);
+    assert.equal(isCapabilitiesCommand("what do you do"), true);
+    assert.equal(isCapabilitiesCommand("how can you help"), true);
+    assert.equal(isCapabilitiesCommand("amilo what can you do"), true);
+    assert.equal(isCapabilitiesCommand("brief"), false);
+  });
+
+  it("capability copy lists uses with try examples", () => {
+    assert.match(WHAT_I_DO, /brief — morning priorities/i);
+    assert.match(WHAT_I_DO, /Try: brief/);
+    assert.match(WHAT_I_DO, /remind me Friday/i);
+    assert.match(WHAT_I_DO, /vip Priya/i);
+    assert.match(WHAT_I_DO, /book 30 min/i);
+    assert.match(WHAT_I_DO, /draft an email/i);
+    assert.match(WHAT_I_DO, /Text or voice note/i);
+    assert.doesNotMatch(WHAT_I_DO, /Type Help/i);
+    const bubbles = welcomeMessages("Nisha Sharma");
+    assert.equal(bubbles.length, 3);
+    assert.match(bubbles[0]!, /Hi Nisha — I'm Amilo/);
+    assert.match(bubbles[0]!, /Save this number in Contacts as Amilo/i);
+    assert.equal(bubbles[1], WHAT_I_DO);
+    assert.match(bubbles[2]!, /connect google personal/i);
+    assert.match(bubbles[2]!, /connect google work/i);
+    assert.match(bubbles[2]!, /training tip/i);
+  });
+
+  it("parses vip commands", () => {
+    assert.deepEqual(parseVipCommand("vip Priya"), { op: "add", name: "Priya" });
+    assert.deepEqual(parseVipCommand("add vip Rajeev"), { op: "add", name: "Rajeev" });
+    assert.deepEqual(parseVipCommand("vip list"), { op: "list" });
+    assert.equal(parseVipCommand("brief"), null);
+  });
+
+  it("parses display-name replies and skip onboarding", () => {
+    assert.equal(parseDisplayNameReply("call me Sameep"), "Sameep");
+    assert.equal(parseDisplayNameReply("my name is Priya"), "Priya");
+    assert.equal(parseDisplayNameReply("I'm Raj"), "Raj");
+    assert.equal(parseDisplayNameReply("brief please"), null);
+    assert.equal(isSkipOnboardingCommand("skip onboarding"), true);
+    assert.equal(isSkipOnboardingCommand("skip guide"), true);
+  });
+
+  it("recognizes training tip asks", () => {
+    assert.equal(isTrainingTipCommand("training tip"), true);
+    assert.equal(isTrainingTipCommand("Training Tip #2"), true);
+    assert.equal(isTrainingTipCommand("next tip"), true);
+    assert.equal(isTrainingTipCommand("brief"), false);
+  });
   it("help text names the key commands", () => {
     assert.match(STANDING_HELP, /connect google/i);
+    assert.match(STANDING_HELP, /what can you do/i);
     assert.match(STANDING_HELP, /status/i);
     assert.match(STANDING_HELP, /about me/i);
     assert.match(STANDING_HELP, /waiting on/i);
@@ -227,6 +290,38 @@ describe("standing commands", () => {
     assert.equal(
       pendingMailSearchFromChat("User: hello\nAmilo: How can I help?"),
       null,
+    );
+  });
+
+  it("routes brief number replies: reply-to morning wins over more context", () => {
+    assert.equal(
+      briefNumberListTarget({
+        replyToContent: "Good morning, Sameep.\n\nFOCUS\n1) A\n2) Cosmos overdue",
+        numberContext: "more",
+      }),
+      "focus",
+    );
+    assert.equal(
+      briefNumberListTarget({
+        replyToScheduled: "morning",
+        numberContext: "more",
+      }),
+      "focus",
+    );
+    assert.equal(
+      briefNumberListTarget({
+        replyToContent: "More from your brief:\n1) Quiet\n2) HBL AGM",
+        numberContext: "focus",
+      }),
+      "more",
+    );
+    assert.equal(
+      briefNumberListTarget({ numberContext: "more" }),
+      "more",
+    );
+    assert.equal(
+      briefNumberListTarget({ numberContext: "focus" }),
+      "focus",
     );
   });
 });

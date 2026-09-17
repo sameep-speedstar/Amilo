@@ -4,6 +4,24 @@ Friends join Amilo by scanning a QR or opening an invite link. That lands on `ap
 
 Website interest form (`amilo.io/invite.html`) posts to the API; requests sit in admin until you approve.
 
+## Days 1–7 activation guide
+
+After first chat (`Hi Amilo` / what can you do), Amilo stamps `prefs.onboarding.startedAt` and runs a **milestone-gated** guide:
+
+| Day | Tip |
+|-----|-----|
+| 1 | 3 short bubbles: hello+contact · what I do · connect Google |
+| 2–7 | **Training tip #1…#6** — pushed ≤1/day (or ask `training tip` anytime) |
+
+Rules:
+
+- Tips labeled `Training tip #N`; ask `training tip` / `next tip` to pull the next one same day
+- ≤1 automatic tip / local day; tips append under the morning brief when Google is linked
+- No-Google users get a standalone tip mid-morning **inside** the WhatsApp 24h window only
+- Google is suggested on Days 1–2 only — never nagged after
+- `skip onboarding` exits the guide
+- Collapse ahead if the user already completed milestones
+
 ## Admin login
 
 1. Set `ADMIN_EMAIL=sameep@speedstar.ai` and `ADMIN_PASSWORD` (e.g. `openssl rand -base64 24`).
@@ -60,6 +78,13 @@ Each brain turn (and STT) is metered in `usage_events`. Defaults:
 Host / operator phones are never capped: `ALLOWED_PHONES`, `HOST_PHONE`, `USAGE_CAP_EXEMPT_PHONES`, plus the product host number.
 
 Over-cap users get a short WhatsApp message instead of a brain reply. Weekly cost rollup is on the Usage tab.
+
+## LinkedIn / early-adopter beta
+
+- Production (`api.amilo.io`) is the stable beta surface — invite form → admin approve → allowlist → `wa.me` **Hi Amilo**.
+- LinkedIn CTA should point at `https://amilo.io` invite / QR (same path as friends).
+- **Freeze:** life-ops and experimental work deploy to **staging** first (`./deploy_staging.sh`); promote with `./deploy_prod.sh <sha>` only after WA smoke.
+- Monitor admin **Usage** after announce; day/week caps stay on.
 
 ## Meta Dev mode
 

@@ -151,18 +151,22 @@ export function parseScheduleIntent(message: string): ScheduleIntent | null {
     /\bno\s+meetings?\b/i.test(text) ||
     /\bdo\s+not\s+book\b/i.test(text);
   if (extend?.[1] && extend[2] && (/\bextend\b|\bpush\b|\bstretch\b/i.test(text) || wantsNoBook)) {
+    const rawClock = extend[2].trim();
+    const parsed = parseClockToken(rawClock);
     const untilClock =
-      parseClockToken(extend[2].trim()) ??
-      (() => {
-        const bare = extend[2].trim().match(/^(\d{1,2})(?::(\d{2}))?$/);
-        if (!bare) return null;
-        let h = Number(bare[1]);
-        const m = Number(bare[2] ?? 0);
-        // Bare "5" in afternoon pickup context → 5pm
-        if (h >= 1 && h <= 11) h += 12;
-        if (h > 23 || m > 59) return null;
-        return { hour: h, minute: m };
-      })();
+      parsed && !(parsed as { ambiguous12h?: boolean }).ambiguous12h
+        ? parsed
+        : (() => {
+            const bare = rawClock.match(/^(\d{1,2})(?::(\d{2}))?\s*(?:am|pm)?$/i);
+            if (!bare) return parsed;
+            let h = Number(bare[1]);
+            const m = Number(bare[2] ?? 0);
+            const hasMeridiem = /am|pm/i.test(rawClock);
+            // Bare "5" / "5 o'clock" in afternoon pickup/hold context → 5pm
+            if (!hasMeridiem && h >= 1 && h <= 11) h += 12;
+            if (h > 23 || m > 59) return null;
+            return { hour: h, minute: m };
+          })();
     if (untilClock) {
       let hint = extend[1]
         .replace(/^(my|the|a|an)\s+/i, "")

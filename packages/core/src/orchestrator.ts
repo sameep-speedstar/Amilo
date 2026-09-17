@@ -18,11 +18,18 @@ import {
   parseForwardToCalendar,
 } from "./forwardParse.js";
 import {
+  formatMoneyCapNote,
+  parseInboxErrandDraftAsk,
+  parseLifeOpsHandoffIntent,
+  parseLifeOpsResearchIntent,
+  parseMoneyCapInr,
+} from "./lifeOps.js";
+import {
   DELETE_MENU,
   HOW_IT_WORKS,
   STANDING_HELP,
   WHAT_I_DO,
-  welcomeMessage,
+  welcomeMessages,
   isAboutMeCommand,
   isCapabilitiesCommand,
   isClearMemoryCommand,
@@ -32,6 +39,8 @@ import {
   isGreetingCommand,
   isSkipOnboardingCommand,
   parseDisplayNameReply,
+  parseVipCommand,
+  isTrainingTipCommand,
   isHelpCommand,
   isHowItWorksCommand,
   isStatusCommand,
@@ -57,6 +66,7 @@ import {
   mailSearchTokens,
   isBareAffirmative,
   pendingMailSearchFromChat,
+  briefNumberListTarget,
   type MailWorkingSet,
   type MailWorkingHit,
 } from "./standingCommands.js";
@@ -66,6 +76,8 @@ import {
   parsePlaceSetCommand,
   parsePlaceSetCommands,
   extractEventLocation,
+  extractMapsShareUrl,
+  refersToSharedPlace,
 } from "./travel.js";
 import {
   formatLocalHm,
@@ -520,6 +532,8 @@ export interface OrchestratorDeps {
   addMutedPattern?: (userId: string, pattern: string) => Promise<string[]>;
   removeMutedPattern?: (userId: string, pattern: string) => Promise<string[]>;
   listMutedPatterns?: (userId: string) => Promise<string[]>;
+  addVipName?: (userId: string, name: string) => Promise<string[]>;
+  listVipNames?: (userId: string) => Promise<string[]>;
   /** Timezone + reminders. */
   getTimezoneState?: (userId: string) => Promise<{
     timezone: string;
@@ -628,6 +642,8 @@ export interface OrchestratorDeps {
   setUserDisplayName?: (userId: string, name: string) => Promise<void>;
   /** Append Days 2–7 tip under morning / on-demand brief when eligible. */
   maybeAppendOnboardingTip?: (userId: string, briefText: string) => Promise<string>;
+  /** User asked for training tip — pull next tip ignoring same-day cap. */
+  pullTrainingTip?: (userId: string) => Promise<string | null>;
 }
 
 function extractMutePatternFromMessage(message: string): string | null {
@@ -649,7 +665,7 @@ export function looksLikeNewActionIntent(
   if (/^(yes|y|yeah|yep|ok|okay|confirm|cancel|no|nope|edit|alternate)\b/i.test(t)) return false;
   if (isBriefRequest(t)) return true;
   if (
-    /^(mute|unmute|sync|google|help|commands|pause|resume|briefs|status|pending|open|delete|forget|memory|about|done|drop|snooze|places|home|office|waiting)\b/i.test(
+    /^(mute|unmute|sync|google|help|commands|pause|resume|briefs|status|pending|open|delete|forget|memory|about|done|drop|snooze|places|home|office|waiting|vip|training|tip)\b/i.test(
       t,
     )
   ) {
@@ -725,6 +741,19 @@ async function resolveAttendeesFromMessage(
     if (hit?.email) out.add(normalizeAttendeeEmail(hit.email));
   }
   return [...out];
+}
+
+/** Location from message, or maps link just shared when user says "this place". */
+async function resolveCalendarLocation(
+  userId: string,
+  text: string,
+  deps: OrchestratorDeps,
+): Promise<string | null> {
+  const direct = extractEventLocation(text) ?? extractMapsShareUrl(text);
+  if (direct) return direct;
+  if (!refersToSharedPlace(text) || !deps.getRecentChatSummary) return null;
+  const summary = await deps.getRecentChatSummary(userId);
+  return extractMapsShareUrl(summary);
 }
 
 async function proposeCalendarCreatePending(
@@ -1052,6 +1081,20 @@ export async function handleInbound(
     }
     return [{ text: "Onboarding guide off. Type Help anytime." }];
   }
+  if (isTrainingTipCommand(text)) {
+    if (!deps.pullTrainingTip) {
+      return [{ text: "Training tips aren't wired yet." }];
+    }
+    const tip = await deps.pullTrainingTip(msg.userId);
+    if (!tip) {
+      return [
+        {
+          text: "No more training tips — you're through the guide. Type Help anytime.",
+        },
+      ];
+    }
+    return [{ text: tip }];
+  }
   if (isGreetingCommand(text)) {
     const name = await deps.resolveUserName(msg.userId);
     if (deps.getOnboardingState && deps.setOnboardingState) {
@@ -1068,24 +1111,31 @@ export async function handleInbound(
         });
       }
     }
-    const placesKnown = deps.listPlacesText
-      ? (await deps.listPlacesText(msg.userId))
-          .toLowerCase()
-          .startsWith("your places:")
-      : false;
-    const lines = [
-      welcomeMessage(name, {
-        includeNameAsk: true,
-        includePlaces: !placesKnown,
-      }),
-    ];
-    if (deps.getTimezoneState) {
-      const tz = await deps.getTimezoneState(msg.userId);
-      if (!tz.tzConfirmed) {
-        lines.push("", tzConfirmPrompt(tz.timezone));
-      }
+    return welcomeMessages(name).map((t) => ({ text: t }));
+  }
+
+  const vipCmd = parseVipCommand(text);
+  if (vipCmd) {
+    if (vipCmd.op === "list") {
+      if (!deps.listVipNames) return [{ text: "VIP list isn't wired yet." }];
+      const list = await deps.listVipNames(msg.userId);
+      return [
+        {
+          text: list.length
+            ? ["VIP list:", ...list.map((n) => `• ${n}`)].join("\n")
+            : 'No VIPs yet. Try: vip Priya',
+        },
+      ];
     }
-    return [{ text: lines.join("\n") }];
+    if (!deps.addVipName || !vipCmd.name) {
+      return [{ text: 'Try: vip Priya' }];
+    }
+    const next = await deps.addVipName(msg.userId, vipCmd.name);
+    return [
+      {
+        text: `VIP: ${vipCmd.name}. Now ${next.length} on the list.`,
+      },
+    ];
   }
 
   // Day-1 name reply: "call me Sameep" / "my name is …"
@@ -1132,14 +1182,12 @@ export async function handleInbound(
       }
 
       const n = Number(lower);
-      const replyTo = (msg.replyToContent ?? "").toLowerCase();
-      const replyIsMore =
-        /\bmore from your brief\b/.test(replyTo) ||
-        /\bhandled yesterday\b/.test(replyTo) ||
-        (replyTo.includes("quieter") && /\d+\)/.test(replyTo));
-      const useMore =
-        replyIsMore ||
-        (stored.numberContext === "more" && !replyTo.includes("focus") && n >= 1);
+      const list = briefNumberListTarget({
+        ...(msg.replyToContent != null ? { replyToContent: msg.replyToContent } : {}),
+        ...(msg.replyToScheduled != null ? { replyToScheduled: msg.replyToScheduled } : {}),
+        numberContext: stored.numberContext,
+      });
+      const useMore = list === "more";
 
       if (useMore && stored.moreLines.length) {
         const label = stored.moreLines[n - 1];
@@ -1157,7 +1205,7 @@ export async function handleInbound(
       }
 
       if (n < 1 || n > 3) {
-        if (stored.moreLines.length && (replyIsMore || stored.numberContext === "more")) {
+        if (stored.moreLines.length && useMore) {
           return [
             {
               text: `No quieter item ${n}. Available: 1–${stored.moreLines.length}.`,
@@ -2371,6 +2419,91 @@ export async function handleInbound(
     }
   }
 
+  // Life ops — research shortlist (never books / spends).
+  if (deps.createPending) {
+    const research = parseLifeOpsResearchIntent(text);
+    if (research) {
+      const pending = await deps.createPending({
+        userId: msg.userId,
+        kind: "life_ops_research",
+        summary: research.summary,
+        payload: {
+          domain: research.domain,
+          query: research.query,
+          moneyCapInr: research.moneyCapInr,
+          options: research.options,
+        },
+      });
+      return [
+        {
+          text: [
+            `Proposed (${pending.kind}):`,
+            pending.summary,
+            "",
+            "I have not booked or paid anything.",
+          ].join("\n"),
+        },
+      ];
+    }
+
+    const handoff = parseLifeOpsHandoffIntent(text);
+    if (handoff) {
+      const payload: Record<string, unknown> = {
+        domain: handoff.domain,
+        channel: handoff.channel,
+        moneyCapInr: handoff.moneyCapInr,
+        summary: handoff.summary,
+        sendOnConfirm: false,
+      };
+      if (handoff.email) {
+        payload.to = handoff.email.toHint ?? "";
+        payload.subject = handoff.email.subject;
+        payload.body = handoff.email.body;
+        payload.draftOnly = true;
+        payload.accountLabel = "personal";
+      }
+      if (handoff.channel === "vendor") {
+        payload.script = [
+          `Re: ${text.replace(/\s+/g, " ").slice(0, 120)}`,
+          "Hi — checking availability for the slot we discussed. Please confirm timing and fee.",
+          formatMoneyCapNote(handoff.moneyCapInr) ?? "",
+        ]
+          .filter(Boolean)
+          .join("\n");
+      }
+      const pending = await deps.createPending({
+        userId: msg.userId,
+        kind: "life_ops_handoff",
+        summary: handoff.summary,
+        payload,
+      });
+      return [
+        {
+          text: [
+            `Proposed (${pending.kind}):`,
+            pending.summary,
+            "",
+            "Nothing sent or spent yet.",
+          ].join("\n"),
+        },
+      ];
+    }
+
+    const errand = parseInboxErrandDraftAsk(text);
+    if (errand) {
+      return proposeEmailComposePending(
+        msg,
+        deps,
+        {
+          mode: errand.mode,
+          toHint: errand.toHint,
+          about: errand.about,
+        },
+        { userName: name },
+      );
+    }
+  }
+
   // Calendar invite by name — resolve stored email, propose calendar_create (not email draft).
   if (deps.createPending && isCalendarInviteIntent(text)) {
     const hint = parseCalendarCreateHint(text, briefCtx.timezone);
@@ -2401,6 +2534,7 @@ export async function handleInbound(
           : withName
             ? `Meeting with ${withName}`
             : "Meeting";
+      const location = await resolveCalendarLocation(msg.userId, text, deps);
       return proposeCalendarCreatePending(msg, deps, briefCtx.timezone, {
         title,
         start: hint.startIso,
@@ -2408,6 +2542,23 @@ export async function handleInbound(
         startIso: hint.startIso,
         endIso: hint.endIso,
         attendees,
+        ...(location ? { location } : {}),
+      });
+    }
+  }
+
+  // Standing calendar block / meeting (before brain — avoids wrong "tomorrow" invents).
+  if (deps.createPending) {
+    const hint = parseCalendarCreateHint(text, briefCtx.timezone);
+    if (hint) {
+      const location = await resolveCalendarLocation(msg.userId, text, deps);
+      return proposeCalendarCreatePending(msg, deps, briefCtx.timezone, {
+        title: hint.title,
+        start: hint.startIso,
+        end: hint.endIso,
+        startIso: hint.startIso,
+        endIso: hint.endIso,
+        ...(location ? { location } : {}),
       });
     }
   }
@@ -2584,12 +2735,16 @@ export async function handleInbound(
       "calendar_update",
       "calendar_cancel",
       "email_draft",
+      "life_ops_research",
+      "life_ops_handoff",
       "create_event",
       "update_event",
       "cancel_event",
       "send_email",
       "email",
       "draft_email",
+      "research",
+      "handoff",
     ]);
     if (writeKinds.has(type)) {
       let kind = type;
@@ -2599,6 +2754,8 @@ export async function handleInbound(
       if (type === "send_email" || type === "email" || type === "draft_email") {
         kind = "email_draft";
       }
+      if (type === "research") kind = "life_ops_research";
+      if (type === "handoff") kind = "life_ops_handoff";
 
       const payload: Record<string, unknown> = { ...action };
       delete payload.type;
@@ -2682,7 +2839,9 @@ export async function handleInbound(
           payload.startIso = hint.startIso;
           payload.endIso = hint.endIso;
         }
-        const loc = extractEventLocation(text);
+        const loc =
+          extractEventLocation(text) ||
+          (await resolveCalendarLocation(msg.userId, text, deps));
         if (loc && !strPayload(payload.location)) payload.location = loc;
         const attendees = await resolveAttendeesFromMessage(
           msg.userId,
@@ -2825,6 +2984,20 @@ export async function handleInbound(
       let summary: string;
       if (kind === "email_draft") {
         summary = `Email draft to ${String(payload.to ?? action.to ?? "?")}: ${String(payload.subject ?? action.subject ?? "(no subject)")}`;
+      } else if (kind === "life_ops_research" || kind === "life_ops_handoff") {
+        const cap = formatMoneyCapNote(
+          typeof payload.moneyCapInr === "number"
+            ? payload.moneyCapInr
+            : parseMoneyCapInr(text),
+        );
+        summary = [
+          result.intent.summary?.trim() ||
+            String(action.summary ?? "").trim() ||
+            `${kind}: ${String(payload.query ?? payload.domain ?? "life ops")}`,
+          cap,
+        ]
+          .filter(Boolean)
+          .join("\n");
       } else if (kind.startsWith("calendar_")) {
         const attendees = Array.isArray(payload.attendees)
           ? payload.attendees.map((a) => String(a))
@@ -2853,6 +3026,19 @@ export async function handleInbound(
 
       if (kind === "email_draft") {
         return emailDraftMessages(payload, emailDraftMode(payload, parseEmailComposeAsk(text)));
+      }
+
+      if (kind === "life_ops_research" || kind === "life_ops_handoff") {
+        return [
+          {
+            text: [
+              `Proposed (${pending.kind}):`,
+              pending.summary,
+              "",
+              "Nothing booked, spent, or sent yet. Reply yes to lock, cancel to drop.",
+            ].join("\n"),
+          },
+        ];
       }
 
       if (kind === "calendar_cancel") {

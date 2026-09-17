@@ -25,6 +25,91 @@ export function isHowItWorksCommand(text: string): boolean {
   );
 }
 
+/** First-day / explore: what can you do, capabilities, etc. */
+export function isCapabilitiesCommand(text: string): boolean {
+  const t = normalizeCommandText(text);
+  if (
+    t === "what can you do" ||
+    t === "what do you do" ||
+    t === "what can amilo do" ||
+    t === "what does amilo do" ||
+    t === "how can you help" ||
+    t === "how can amilo help" ||
+    t === "what are you" ||
+    t === "who are you" ||
+    t === "capabilities" ||
+    t === "features" ||
+    t === "what is amilo" ||
+    t === "what's amilo" ||
+    t === "whats amilo" ||
+    t === "tell me about yourself" ||
+    t === "tell me about amilo"
+  ) {
+    return true;
+  }
+  // "amilo what can you do" / "hi what can you do"
+  return /^(?:(?:hi|hey|hello)\s+)?(?:amilo\s+)?what can you do$/.test(t);
+}
+
+/** Hi / Hi Amilo / hey — Day-0 welcome path. */
+export function isGreetingCommand(text: string): boolean {
+  const t = normalizeCommandText(text);
+  return (
+    t === "hi" ||
+    t === "hello" ||
+    t === "hey" ||
+    t === "/start" ||
+    t === "hi amilo" ||
+    t === "hello amilo" ||
+    t === "hey amilo" ||
+    t === "hi there" ||
+    t === "hello there" ||
+    t === "yo amilo" ||
+    t === "good morning" ||
+    t === "good morning amilo" ||
+    t === "good evening" ||
+    t === "good evening amilo"
+  );
+}
+
+export function isSkipOnboardingCommand(text: string): boolean {
+  const t = normalizeCommandText(text);
+  return (
+    t === "skip onboarding" ||
+    t === "skip guide" ||
+    t === "stop onboarding" ||
+    t === "end onboarding"
+  );
+}
+
+/** training / training tip / next tip — pull next Days 2–7 tip on demand. */
+export function isTrainingTipCommand(text: string): boolean {
+  const t = normalizeCommandText(text);
+  return (
+    t === "training" ||
+    t === "training tip" ||
+    t === "training tips" ||
+    t === "next tip" ||
+    t === "next training tip" ||
+    t === "tip" ||
+    /^training tip\s*#?\d*$/.test(t)
+  );
+}
+
+/** Call me X / my name is X / I'm X — Day-1 name reply. */
+export function parseDisplayNameReply(text: string): string | null {
+  const t = text.trim();
+  const m =
+    t.match(/^(?:call me|my name is|i(?:'m| am))\s+(.+)$/i) ??
+    t.match(/^just\s+(.+)$/i);
+  if (!m?.[1]) return null;
+  const name = m[1].replace(/[?.!]+$/g, "").trim().slice(0, 80);
+  if (!name || /^(yes|no|ok|okay|fine|that|it)$/i.test(name)) return null;
+  // Single token or short phrase only — avoid capturing full sentences.
+  if (name.split(/\s+/).length > 4) return null;
+  return name;
+}
+
 export function isCompletedListCommand(text: string): boolean {
   const t = normalizeCommandText(text);
   return (
@@ -570,6 +655,39 @@ export function isBareAffirmative(message: string): boolean {
   );
 }
 
+/**
+ * Which brief list a bare 1/2/3 reply should open.
+ * Explicit WhatsApp reply-to wins over stored lastBriefNumberContext
+ * (so quoting the morning brief still opens FOCUS even after an M).
+ */
+export function briefNumberListTarget(opts: {
+  replyToContent?: string | null;
+  replyToScheduled?: string | null;
+  numberContext: "focus" | "more";
+}): "focus" | "more" {
+  const replyTo = (opts.replyToContent ?? "").toLowerCase();
+  const scheduled = (opts.replyToScheduled ?? "").toLowerCase();
+
+  const replyIsMore =
+    /\bmore from your brief\b/.test(replyTo) ||
+    /\bhandled yesterday\b/.test(replyTo) ||
+    (replyTo.includes("quieter") && /\d+\)/.test(replyTo));
+  if (replyIsMore) return "more";
+
+  const replyIsFocus =
+    scheduled === "morning" ||
+    scheduled === "evening" ||
+    /\bfocus\b/.test(replyTo) ||
+    /\bgood morning\b/.test(replyTo) ||
+    /\bmorning brief\b/.test(replyTo) ||
+    /\bevening wrap\b/.test(replyTo) ||
+    /\bstill open\b/.test(replyTo) ||
+    /\breply m for quieter\b/.test(replyTo);
+  if (replyIsFocus) return "focus";
+
+  return opts.numberContext === "more" ? "more" : "focus";
+}
+
 const MAIL_SEARCH_OFFER_RE =
   /\b(want me to search|shall i search|should i search|i can search|search (your |the )?mail|look (it|that) up in (your )?mail|search (for )?it)\b/i;
 
@@ -625,7 +743,8 @@ export const STANDING_HELP = [
   "",
   "Basics",
   "• help / commands — this list",
-  "• how it works — what Amilo does",
+  "• what can you do — 5 uses with examples",
+  "• how it works — what Amilo does under the hood",
   "• pause / resume — stop or restart",
   "• status / pending / open — waiting proposal + open items",
   "• completed — items you marked done",
@@ -642,6 +761,8 @@ export const STANDING_HELP = [
   "",
   "Attention",
   "• mute <phrase> / unmute <phrase> / mutes",
+  "• vip <name> / vip list — people whose mail always matters",
+  "• training tip — next Days 2–7 tip (or wait for the daily push)",
   "• briefs on|off · brief morning 7:30 · brief evening 8pm",
   "• quiet hours 22:00-07:00",
   "• timezone — show or set (I'm in Dubai)",
@@ -655,6 +776,13 @@ export const STANDING_HELP = [
   "• home is <address> / office is <address>",
   "• places — list saved places",
   "• I'm at home|office — fix leave-by origin",
+  "• find flights/hotels/trains … — research shortlist (yes locks plan, never books)",
+  "• Forward flight/hotel/train tickets — propose calendar + leave-by tip",
+  "",
+  "Life ops (confirm-first)",
+  "• chase / return / subscription / bill drafts — email after yes",
+  "• handoff plumber|reservation … — script only until you confirm",
+  "• Money caps (under ₹8k) stick on the pending — no spend above without a fresh yes",
   "",
   "Writes (always confirm)",
   "• Talk normally to book / invite / cancel calendar",
@@ -689,8 +817,76 @@ export const HOW_IT_WORKS = [
   "7) Calendar/email writes need your yes first — I never invent a write.",
   "8) pause stops me; your data stays until you delete/forget.",
   "",
-  "Send help for the command list.",
+  'Type Help for anything else.',
 ].join("\n");
+
+/**
+ * Day-1 / explore: what I can do (bubble 2).
+ * Also returned for "what can you do" / "who are you".
+ */
+export const WHAT_I_DO = [
+  "I can:",
+  "a) brief — morning priorities from mail + calendar",
+  "   Try: brief",
+  "b) Reminders that land on time",
+  "   Try: remind me Friday 3pm to call the bank",
+  "c) VIP list — people whose mail always matters",
+  "   Try: vip Priya",
+  "d) Book calendars — I propose, you say yes",
+  "   Try: book 30 min with Priya tomorrow at 4",
+  "e) Draft emails — same confirm-before-send",
+  "   Try: draft an email to Priya about the deck",
+  "f) Life ops — research travel/errands/home, never book without yes",
+  "   Try: find flights to Goa under 8k",
+  "",
+  "Text or voice note — both work.",
+].join("\n");
+
+export const DAY1_GOOGLE_SETUP = [
+  "Let's start by connecting Google.",
+  "Just type: connect google personal",
+  "(or connect google work — your choice)",
+  "",
+  "Training tips land over the next week — or ask: training tip",
+].join("\n");
+
+/** Day-1 greeting as 3 short WhatsApp bubbles. */
+export function welcomeMessages(name?: string | null): string[] {
+  const first =
+    name?.trim() && name.trim().toLowerCase() !== "there"
+      ? name.trim().split(/\s+/)[0]!
+      : null;
+  const hi = first
+    ? `Hi ${first} — I'm Amilo, your chief of staff on WhatsApp.`
+    : `Hi — I'm Amilo, your chief of staff on WhatsApp.`;
+  return [
+    [
+      hi,
+      "",
+      "Save this number in Contacts as Amilo (or any name you like) so I'm easy to find.",
+    ].join("\n"),
+    WHAT_I_DO,
+    DAY1_GOOGLE_SETUP,
+  ];
+}
+
+/** @deprecated Prefer welcomeMessages — kept for scripts that join one blob. */
+export function welcomeMessage(name?: string | null): string {
+  return welcomeMessages(name).join("\n\n");
+}
+
+/** vip Priya / add vip Priya / vip list */
+export function parseVipCommand(text: string): { op: "add" | "list"; name?: string } | null {
+  const t = normalizeCommandText(text);
+  if (t === "vip" || t === "vips" || t === "vip list" || t === "list vip" || t === "list vips") {
+    return { op: "list" };
+  }
+  const m = text.trim().match(/^(?:add\s+)?vip\s+(.+)$/i);
+  if (!m?.[1]) return null;
+  const raw = m[1].replace(/[?.!]+$/g, "").trim();
+  if (!raw || /^(list|me)$/i.test(raw)) return { op: "list" };
+  return { op: "add", name: raw.slice(0, 80) };
+}
 
 export const DELETE_MENU = [
   "What you can remove:",

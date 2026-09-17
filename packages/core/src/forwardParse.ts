@@ -108,17 +108,16 @@ export function parseAppointmentForward(
   };
 }
 
-/** Bus / train booking forwards (Zingbus-style). */
-export function parseTravelForward(
+/** Bus booking forwards (Zingbus-style). */
+export function parseBusForward(
   message: string,
   timeZone: string,
   now: Date = new Date(),
 ): ForwardCalendarHint | null {
   const text = message.replace(/\r/g, "");
   if (
-    !/pickup date|pnr\s*:|bus number|seat\s*:|track your bus|zingbus|journey details/i.test(
-      text,
-    )
+    !/pickup date|bus number|seat\s*:|track your bus|zingbus|journey details/i.test(text) &&
+    !(/pnr\s*:/i.test(text) && /\bbus\b/i.test(text))
   ) {
     return null;
   }
@@ -145,6 +144,7 @@ export function parseTravelForward(
     pnr ? `PNR ${pnr}` : null,
     seat ? `Seat ${seat}` : null,
     pickup ? `Pickup: ${pickup}` : null,
+    "Leave-by: set home/office for airport/station travel alerts",
   ]
     .filter(Boolean)
     .join(" · ");
@@ -158,6 +158,174 @@ export function parseTravelForward(
   };
 }
 
+/** Flight e-ticket / boarding forwards (Indigo, airline PNR). */
+export function parseFlightForward(
+  message: string,
+  timeZone: string,
+  now: Date = new Date(),
+): ForwardCalendarHint | null {
+  const text = message.replace(/\r/g, "");
+  if (
+    !/\b(flight|boarding|e-?ticket|airline|indigo|air india|vistara|akasa|spicejet)\b/i.test(
+      text,
+    )
+  ) {
+    return null;
+  }
+  if (
+    !/\b(pnr|booking (ref|reference|id)|flight (no|number)|depart|departure|boarding)\b/i.test(
+      text,
+    )
+  ) {
+    return null;
+  }
+
+  const whenLine =
+    text.match(/(?:depart(?:ure)?|flight)\s*(?:date|time)?\s*[:=]?\s*([^\n]+)/i)?.[1]?.trim() ??
+    text.match(/\b(20\d{2}-\d{2}-\d{2}[^\n]{0,40})/)?.[1]?.trim() ??
+    text;
+  const day = parseLooseDate(whenLine) ?? parseLooseDate(text);
+  const clock = parseLooseClock(whenLine) ?? parseLooseClock(text);
+  if (!day || !clock) return null;
+
+  const flightNo =
+    text.match(/\b(?:flight(?:\s*(?:no|number))?|flt)\s*[:=]?\s*([A-Z]{1,3}\s?\d{2,4})\b/i)?.[1] ??
+    text.match(/\b([A-Z]{2}\s?\d{3,4})\b/)?.[1];
+  const route =
+    text.match(/\b([A-Z]{3})\s*(?:→|->|to|-)\s*([A-Z]{3})\b/) ??
+    text.match(/\bfrom\s+([A-Za-z .]{2,40})\s+to\s+([A-Za-z .]{2,40})\b/i);
+  const pnr = text.match(/\b(?:pnr|booking (?:ref|reference|id))\s*[:=]?\s*([A-Z0-9]{5,8})\b/i)?.[1];
+
+  const start = zonedLocalDateTime(timeZone, day, clock.hour, clock.minute);
+  if (start.getTime() < now.getTime() - 6 * 60 * 60 * 1000) return null;
+  const end = new Date(start.getTime() + 2 * 60 * 60 * 1000);
+  const routeLabel = route
+    ? `${route[1]!.replace(/\s+/g, " ").trim()} → ${route[2]!.replace(/\s+/g, " ").trim()}`
+    : "Flight";
+  const title = `Flight ${flightNo ? flightNo.replace(/\s+/g, "") + " " : ""}${routeLabel}`.slice(
+    0,
+    80,
+  );
+  const description = [
+    pnr ? `PNR ${pnr}` : null,
+    flightNo ? `Flight ${flightNo.replace(/\s+/g, "")}` : null,
+    "Leave-by: set home is <address> for airport travel alerts",
+  ]
+    .filter(Boolean)
+    .join(" · ");
+
+  return {
+    title,
+    startIso: start.toISOString(),
+    endIso: end.toISOString(),
+    ...(description ? { description } : {}),
+    source: "travel",
+  };
+}
+
+/** Hotel booking confirmation forwards. */
+export function parseHotelForward(
+  message: string,
+  timeZone: string,
+  now: Date = new Date(),
+): ForwardCalendarHint | null {
+  const text = message.replace(/\r/g, "");
+  if (!/\b(hotel|check[- ]?in|booking\.com|makemytrip|goibibo|airbnb)\b/i.test(text)) {
+    return null;
+  }
+  if (!/\b(check[- ]?in|reservation|confirmation|booking)\b/i.test(text)) return null;
+
+  const checkInLine =
+    text.match(/check[- ]?in\s*(?:date|time)?\s*[:=]?\s*([^\n]+)/i)?.[1]?.trim() ?? text;
+  const day = parseLooseDate(checkInLine) ?? parseLooseDate(text);
+  if (!day) return null;
+  const clock = parseLooseClock(checkInLine) ?? { hour: 14, minute: 0 };
+
+  const hotel =
+    text.match(/(?:hotel|property|stay)\s*[:=]?\s*([^\n]{3,60})/i)?.[1]?.trim() ??
+    text.match(/\bat\s+([A-Z][A-Za-z0-9 &.'-]{3,50})/)?.[1]?.trim() ??
+    "Hotel";
+  const conf =
+    text.match(/\b(?:confirmation|booking)\s*(?:(?:no|number|id|code)\s*)?[:=]?\s*([A-Z0-9-]{5,20})\b/i)?.[1];
+
+  const start = zonedLocalDateTime(timeZone, day, clock.hour, clock.minute);
+  if (start.getTime() < now.getTime() - 24 * 60 * 60 * 1000) return null;
+  const end = new Date(start.getTime() + 60 * 60 * 1000);
+  const title = `Hotel: ${hotel.replace(/\s+/g, " ").slice(0, 50)}`.slice(0, 80);
+  const description = [
+    conf ? `Conf ${conf}` : null,
+    "Check-in block — leave-by uses your home place when set",
+  ]
+    .filter(Boolean)
+    .join(" · ");
+
+  return {
+    title,
+    startIso: start.toISOString(),
+    endIso: end.toISOString(),
+    ...(description ? { description } : {}),
+    source: "travel",
+  };
+}
+
+/** Train / IRCTC-style forwards. */
+export function parseTrainForward(
+  message: string,
+  timeZone: string,
+  now: Date = new Date(),
+): ForwardCalendarHint | null {
+  const text = message.replace(/\r/g, "");
+  if (!/\b(train|irctc|pnr|coach|berth|railway)\b/i.test(text)) return null;
+  if (!/\b(pnr|train\s*(no|number)|departure|boarding)\b/i.test(text)) return null;
+  // Prefer bus parser when clearly a bus.
+  if (/\bbingbus|bus number|track your bus\b/i.test(text)) return null;
+
+  const whenLine =
+    text.match(/(?:departure|boarding|journey)\s*(?:date|time)?\s*[:=]?\s*([^\n]+)/i)?.[1]?.trim() ??
+    text;
+  const day = parseLooseDate(whenLine) ?? parseLooseDate(text);
+  const clock = parseLooseClock(whenLine) ?? parseLooseClock(text);
+  if (!day || !clock) return null;
+
+  const trainNo = text.match(/\b(?:train\s*(?:no|number)?)\s*[:=]?\s*(\d{3,5})\b/i)?.[1];
+  const pnr = text.match(/\bpnr\s*[:=]?\s*(\d{10})\b/i)?.[1];
+  const route =
+    text.match(/\bfrom\s+([A-Za-z .]{2,40})\s+to\s+([A-Za-z .]{2,40})\b/i) ??
+    text.match(/\b([A-Z]{2,5})\s*(?:→|->|-)\s*([A-Z]{2,5})\b/);
+
+  const start = zonedLocalDateTime(timeZone, day, clock.hour, clock.minute);
+  if (start.getTime() < now.getTime() - 6 * 60 * 60 * 1000) return null;
+  const end = new Date(start.getTime() + 60 * 60 * 1000);
+  const routeLabel = route
+    ? `${route[1]!.trim()} → ${route[2]!.trim()}`
+    : "Train";
+  const title = `Train ${trainNo ? trainNo + " " : ""}${routeLabel}`.slice(0, 80);
+  const description = [
+    pnr ? `PNR ${pnr}` : null,
+    trainNo ? `Train ${trainNo}` : null,
+    "Leave-by: set home is <address> for station travel alerts",
+  ]
+    .filter(Boolean)
+    .join(" · ");
+
+  return {
+    title,
+    startIso: start.toISOString(),
+    endIso: end.toISOString(),
+    ...(description ? { description } : {}),
+    source: "travel",
+  };
+}
+
+/** @deprecated Prefer parseBusForward — kept for callers/tests. */
+export function parseTravelForward(
+  message: string,
+  timeZone: string,
+  now: Date = new Date(),
+): ForwardCalendarHint | null {
+  return parseBusForward(message, timeZone, now);
+}
+
 export function parseForwardToCalendar(
   message: string,
   timeZone: string,
@@ -165,7 +333,10 @@ export function parseForwardToCalendar(
 ): ForwardCalendarHint | null {
   return (
     parseAppointmentForward(message, timeZone, now) ??
-    parseTravelForward(message, timeZone, now)
+    parseFlightForward(message, timeZone, now) ??
+    parseHotelForward(message, timeZone, now) ??
+    parseTrainForward(message, timeZone, now) ??
+    parseBusForward(message, timeZone, now)
   );
 }
 

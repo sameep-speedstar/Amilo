@@ -384,6 +384,20 @@ describe("handled list dedupe", () => {
       true,
     );
     assert.ok(isActionDemandingMail("e-Voting FOR GE VERNOVA starting 05-Sep"));
+    assert.ok(
+      isActionDemandingMail(
+        "Re: Agreement — draft for your review",
+        "counsel@firm.com",
+      ),
+    );
+    assert.ok(
+      mailPriorityScore(
+        "Draft for your review: SPA",
+        "lawyer@example.com",
+        [],
+        "Please find the attached draft for your review",
+      ) >= 70,
+    );
   });
 
   it("ranks school / PTI above work Re: and soft digests", () => {

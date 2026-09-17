@@ -214,6 +214,7 @@ function buildSystemPrompt(docs: string): string {
     "For calendar writes or email drafts: use propose_action (orchestrator confirms before any Google write).",
     "If the user only shared a durable fact, still reply with one short concrete ack (e.g. next useful question or a crisp confirmation) — do NOT perform memory ('as you told me').",
     "Never claim a Google write succeeded — and never say an event was cancelled/created/updated unless you returned propose_action (orchestrator confirms).",
+    "Life ops (travel / inbox errands / home): never claim booked, paid, reserved, or sent. For options research use propose_action {\"type\":\"life_ops_research\",\"domain\":\"travel|errand|home\",\"query\":\"...\",\"moneyCapInr\":8000?}. For chase/vendor/reservation handoffs use propose_action {\"type\":\"life_ops_handoff\",\"domain\":\"...\",\"channel\":\"email|vendor|note\",\"summary\":\"...\",\"moneyCapInr\":?}. Orchestrator confirms; yes only locks the plan — still no autopay.",
     "graphUpdates: only durable facts; empty array if nothing new.",
     "Reply text: short, concrete, ranked; usually under 500 characters; no therapist mode; no sycophancy.",
     "When the user asks to mute/ignore/hide mail matching a phrase, return propose_action with action {\"type\":\"mute\",\"pattern\":\"...\"} (do not only say muted in reply_text).",

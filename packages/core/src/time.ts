@@ -203,13 +203,13 @@ export function parseCalendarCreateHint(
       }
     }
 
-    // Clock: prefer "at 1pm" / "1:00 pm"; avoid treating "1 hour" as 1:00.
+    // Clock: prefer "at 1pm" / "8 o'clock" / "1:00 pm"
     const clockMatch = text.match(
-      /\b(?:at|@)\s*(\d{1,2}(?::\d{2})?\s*(?:am|pm)?|\d{1,2}:\d{2})\b/i,
+      /\b(?:at|@)\s*(\d{1,2}(?::\d{2})?\s*(?:am|pm|o['']?clock)?|\d{1,2}:\d{2})\b/i,
     );
     startClock = clockMatch?.[1] ? parseClockToken(clockMatch[1]) : null;
     if (!startClock) {
-      const bare = text.match(/\b(\d{1,2}(?::\d{2})?\s*(?:am|pm))\b/i);
+      const bare = text.match(/\b(\d{1,2}(?::\d{2})?\s*(?:am|pm|o['']?clock))\b/i);
       startClock = bare?.[1] ? parseClockToken(bare[1]) : null;
     }
     if (!startClock) {
@@ -218,6 +218,16 @@ export function parseCalendarCreateHint(
     }
   }
   if (!startClock) return null;
+
+  const resolved = resolveAmbiguousClockOnDay(
+    startClock,
+    timeZone,
+    day,
+    now,
+    text,
+  );
+  day = resolved.day;
+  startClock = { hour: resolved.hour, minute: resolved.minute };
 
   let title = text
     // Instruction verbs — not part of the event title
@@ -244,10 +254,13 @@ export function parseCalendarCreateHint(
       /\b(?:from\s+)?\d{1,2}(?::\d{2})?\s*(?:am|pm)?\s*(?:to|-|–|—)\s*\d{1,2}(?::\d{2})?\s*(?:am|pm)?\b/gi,
       "",
     )
-    .replace(/\b(?:at|@)\s*\d{1,2}(?::\d{2})?\s*(?:am|pm)?\b/gi, "")
-    .replace(/\b\d{1,2}(?::\d{2})?\s*(?:am|pm)\b/gi, "")
+    .replace(/\b(?:at|@)\s*\d{1,2}(?::\d{2})?\s*(?:am|pm|o['']?clock)?\b/gi, "")
+    .replace(/\b\d{1,2}(?::\d{2})?\s*(?:am|pm|o['']?clock)\b/gi, "")
     .replace(/\b(?:[01]?\d|2[0-3]):[0-5]\d\b/g, "")
     .replace(/\b\d{1,2}(?:\.\d+)?\s*(?:hours?|hrs?|h|minutes?|mins?|m)\b/gi, "")
+    .replace(/\bat\s+this\s+place\b/gi, "")
+    .replace(/\bat\s+that\s+place\b/gi, "")
+    .replace(/https?:\/\/\S+/gi, "")
     .replace(/\bon\s+(?:personal|work|excro|speedstar)\b/gi, "")
     // "calendar for/on/at …" is scaffolding, not a title
     .replace(/^(?:the\s+)?calendar(?:\s+(?:for|on|at|to))?\b/i, "")
@@ -526,11 +539,17 @@ function addCalendarDays(dayYmd: string, delta: number): string {
 export interface ParsedClock {
   hour: number;
   minute: number;
+  /** True when token had no am/pm (e.g. "8 o'clock") — infer from context / next future slot. */
+  ambiguous12h?: boolean;
 }
 
-/** Parse "12:30", "8pm", "8 PM", "20:00". */
+/** Parse "12:30", "8pm", "8 PM", "20:00", "8 o'clock". */
 export function parseClockToken(raw: string): ParsedClock | null {
-  const s = raw.trim().toLowerCase().replace(/\s+/g, "");
+  const s = raw
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "")
+    .replace(/o['']?clock/g, "oclock");
   const m12 = s.match(/^(\d{1,2})(?::(\d{2}))?(am|pm)$/);
   if (m12) {
     let hour = Number(m12[1]);
@@ -541,18 +560,83 @@ export function parseClockToken(raw: string): ParsedClock | null {
     else hour = hour === 12 ? 12 : hour + 12;
     return { hour, minute };
   }
+  const oclock = s.match(/^(\d{1,2})(?::(\d{2}))?oclock$/);
+  if (oclock) {
+    const hour = Number(oclock[1]);
+    const minute = Number(oclock[2] ?? 0);
+    if (hour < 1 || hour > 12 || minute > 59) return null;
+    return { hour: hour === 12 ? 0 : hour, minute, ambiguous12h: true };
+  }
   const m24 = s.match(/^(\d{1,2}):(\d{2})$/);
   if (m24) {
     const hour = Number(m24[1]);
     const minute = Number(m24[2]);
     if (hour > 23 || minute > 59) return null;
+    // Bare HH:MM without meridiem is 24h when hour>12; 1-12 stays ambiguous only if no leading zero convention — treat as 24h.
     return { hour, minute };
   }
   const bare = s.match(/^(\d{1,2})(am|pm)$/);
   if (bare) {
     return parseClockToken(`${bare[1]}:00${bare[2]}`);
   }
+  // Bare "8" from "at 8 o'clock" after stripping o'clock in the capture
+  const bareHour = s.match(/^(\d{1,2})$/);
+  if (bareHour) {
+    const hour = Number(bareHour[1]);
+    if (hour < 1 || hour > 12) return null;
+    return { hour: hour === 12 ? 0 : hour, minute: 0, ambiguous12h: true };
+  }
   return null;
+}
+
+/**
+ * For "8 o'clock" without am/pm: pick the next future local wall time on `day`
+ * (AM then PM), else roll to the following day.
+ */
+export function resolveAmbiguousClockOnDay(
+  clock: ParsedClock,
+  timeZone: string,
+  day: string,
+  now: Date,
+  message = "",
+): { day: string; hour: number; minute: number } {
+  const minute = clock.minute;
+  if (!clock.ambiguous12h) {
+    return { day, hour: clock.hour, minute };
+  }
+
+  const lower = message.toLowerCase();
+  const forcePm =
+    /\b(evening|tonight|night|afternoon|pm)\b/.test(lower) ||
+    /\b(शाम|रात|दोपहर)\b/.test(message);
+  const forceAm =
+    /\b(morning|am)\b/.test(lower) || /\b(सुबह|सवेरे)\b/.test(message);
+
+  const amHour = clock.hour; // already 0..11 from parse
+  const pmHour = clock.hour === 0 ? 12 : clock.hour + 12;
+
+  const candidates: Array<{ day: string; hour: number }> = [];
+  if (forcePm && !forceAm) {
+    candidates.push({ day, hour: pmHour }, { day: addCalendarDays(day, 1), hour: pmHour });
+  } else if (forceAm && !forcePm) {
+    candidates.push({ day, hour: amHour }, { day: addCalendarDays(day, 1), hour: amHour });
+  } else {
+    candidates.push(
+      { day, hour: amHour },
+      { day, hour: pmHour },
+      { day: addCalendarDays(day, 1), hour: amHour },
+      { day: addCalendarDays(day, 1), hour: pmHour },
+    );
+  }
+
+  for (const c of candidates) {
+    const due = zonedLocalDateTime(timeZone, c.day, c.hour, minute);
+    if (due.getTime() > now.getTime() - 60_000) {
+      return { day: c.day, hour: c.hour, minute };
+    }
+  }
+  const fallback = candidates[candidates.length - 1]!;
+  return { day: fallback.day, hour: fallback.hour, minute };
 }
 
 export type ReminderKind = "timed" | "post_brief";
@@ -597,10 +681,10 @@ export function parseReminderDay(
   const { day: today } = localDayBoundsUtc(timeZone, now);
   const lower = message.toLowerCase();
 
-  if (/\btomorr?ow\b/.test(lower) || /\btommorow\b/.test(lower)) {
+  if (/\btomorr?ow\b/.test(lower) || /\btommorow\b/.test(lower) || /(?:^|[\s,।])कल(?:[\s,।]|ना|$)/.test(message)) {
     return { day: addCalendarDays(today, 1), dateMentioned: true };
   }
-  if (/\btoday\b/.test(lower)) {
+  if (/\btoday\b/.test(lower) || /(?:^|[\s,।])आज(?:[\s,।]|$)/.test(message)) {
     return { day: today, dateMentioned: true };
   }
   const inDays = lower.match(/\bin\s+(\d+)\s+days?\b/);
@@ -687,13 +771,25 @@ export function parseReminderDay(
 export function isReminderAsk(message: string): boolean {
   const t = message.trim();
   if (/\b(don['’]?t|do not)\s+remind\b/i.test(t)) return false;
-  return /\bremind\s+me\b/i.test(t) || /^remind\b/i.test(t);
+  if (/\bremind\s+me\b/i.test(t) || /^remind\b/i.test(t)) return true;
+  // Hindi voice / text: रिमाइंड कर देना, याद दिलाना
+  if (/रिमा(?:इ|ई)ंड|याद\s*दिला/.test(t)) return true;
+  return false;
 }
 
 function stripReminderTitle(text: string): string {
+  const callHi = text.match(/([^\s,।]+)(?:\s+को)?\s*कॉल\s*कर/);
+  if (callHi?.[1] && !/^(मुझे|मेरे|को|कल|आज)$/i.test(callHi[1])) {
+    return `Call ${callHi[1]}`;
+  }
+
   let title = text
     .replace(/^(?:please\s+)?remind\s+me\s+(?:to\s+|about\s+|for\s+|of\s+)?/i, "")
+    .replace(/रिमा(?:इ|ई)ंड\s*कर\s*(?:देना|दो|दें|ना)?/gi, "")
+    .replace(/याद\s*दिला(?:ना|ओ|इए|एँ|एं)?/gi, "")
     .replace(/\b(?:today|tomorrow|tomorow|tommorow|in\s+\d+\s+days?)\b/gi, "")
+    .replace(/\b(?:कल|आज)\b/g, "")
+    .replace(/\b(?:सुबह|सवेरे|शाम|संध्या|रात|दोपहर)\b/g, "")
     .replace(
       /\b(?:on\s+)?(?:this|next)?\s*(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)s?\b/gi,
       "",
@@ -709,8 +805,10 @@ function stripReminderTitle(text: string): string {
     )
     .replace(/\b\d{1,2}:\d{2}\s*(?:am|pm)?\b/gi, "")
     .replace(/\b\d{1,2}\s*(?:am|pm)\b/gi, "")
+    .replace(/\d{1,2}\s*बजे/g, "")
+    .replace(/\bना\b/g, "")
     .replace(/\s+/g, " ")
-    .replace(/^[\s,.\-–—]+|[\s,.\-–—]+$/g, "")
+    .replace(/^[\s,.\-–—।]+|[\s,.\-–—।]+$/g, "")
     .trim();
   if (!title || /^(a |the )?(call|meeting|it)?$/i.test(title)) {
     title = title && !/^(a |the )?$/i.test(title) ? title : "Reminder";
@@ -719,9 +817,35 @@ function stripReminderTitle(text: string): string {
   return title;
 }
 
+/** Hindi "6 बजे" + सुबह/शाम/रात → 24h clock. */
+function parseHindiBajeClocks(message: string): ParsedClock[] {
+  const clocks: ParsedClock[] = [];
+  const hasSubah = /सुबह|सवेरे/.test(message);
+  const hasSham = /शाम|संध्या/.test(message);
+  const hasRaat = /रात/.test(message);
+  const hasDopahar = /दोपहर/.test(message);
+  for (const m of message.matchAll(/(\d{1,2})\s*बजे/g)) {
+    let hour = Number(m[1]);
+    if (!Number.isFinite(hour) || hour < 0 || hour > 23) continue;
+    if (hour <= 12) {
+      if (hasSubah && !hasSham && !hasRaat) {
+        hour = hour === 12 ? 0 : hour;
+      } else if (hasDopahar && hour === 12) {
+        hour = 12;
+      } else if (hasSham || hasRaat) {
+        if (hour !== 12) hour += 12;
+      }
+      // bare "N बजे" with N<=12 → keep as morning/24h hour (6 → 06:00)
+    }
+    clocks.push({ hour, minute: 0 });
+  }
+  return clocks;
+}
+
 /**
  * Parse "remind me … at 12:30" / "remind me Friday to call Raj".
  * Timed specs get a 1-minute calendar nudge; date-only waits for the morning brief.
+ * Also handles common Hindi voice forms: "कल सुबह 6 बजे … रिमाइंड कर देना".
  */
 export function parseReminderMessage(
   message: string,
@@ -741,6 +865,9 @@ export function parseReminderMessage(
     const token = match[1]!.replace(/^(?:at|@)\s*/i, "").replace(/\s+/g, "");
     const clock = parseClockToken(token);
     if (clock) clocks.push(clock);
+  }
+  if (!clocks.length) {
+    clocks.push(...parseHindiBajeClocks(text));
   }
 
   const title = stripReminderTitle(text);

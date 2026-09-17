@@ -188,16 +188,35 @@ export function parsePlaceSetCommands(
   return out;
 }
 
-/** Pull a destination from "at LITTLE PEARLS…" / "at 12 MG Road". */
+/** Pull a destination from "at LITTLE PEARLS…" / Maps share links / "at this place". */
+export function extractMapsShareUrl(message: string): string | null {
+  const m = message.match(
+    /https?:\/\/(?:share\.google\/[^\s<>"']+|maps\.app\.goo\.gl\/[^\s<>"']+|goo\.gl\/maps\/[^\s<>"']+|maps\.google\.[^\s<>"']+|www\.google\.[^\s<>"']*\/maps[^\s<>"']+)/i,
+  );
+  if (!m?.[0]) return null;
+  return m[0].replace(/[),.;]+$/, "");
+}
+
+/** Pull a destination from "at LITTLE PEARLS…" / "at 12 MG Road" / maps URLs. */
 export function extractEventLocation(message: string): string | null {
+  const mapsUrl = extractMapsShareUrl(message);
+  if (mapsUrl) return mapsUrl;
+
   const atClinic = message.match(
     /\bat\s+((?:LITTLE PEARLS|KHUSHI)[^,.\n]{0,60}|[A-Z][A-Za-z0-9 &.'-]{3,80})/i,
   );
   if (atClinic?.[1]) {
     const loc = atClinic[1].replace(/\s+/g, " ").trim();
-    if (!/^(home|office|school|am|pm|\d)/i.test(loc)) return loc.slice(0, 120);
+    if (!/^(home|office|school|am|pm|\d|this|that|the)\b/i.test(loc)) {
+      return loc.slice(0, 120);
+    }
   }
   return null;
+}
+
+/** True when the user pointed at a just-shared place without naming it. */
+export function refersToSharedPlace(message: string): boolean {
+  return /\b(?:this|that)\s+place\b/i.test(message) || /\bat\s+here\b/i.test(message);
 }
 
 export function isPlacesListCommand(text: string): boolean {

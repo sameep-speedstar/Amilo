@@ -26,9 +26,11 @@ import {
 } from "@amilo/core";
 import { processVoiceNote } from "./voice/pipeline.js";
 import { writeReminderCalendarNudge } from "./calendarNudge.js";
-import { appendOnboardingTipToBrief } from "./onboardingTips.js";
+import { appendOnboardingTipToBrief, resolveAndStampTip } from "./onboardingTips.js";
 import {
   addMutedPattern,
+  addVipName,
+  listVipNames,
   applyGraphUpdates,
   buildPriorityBriefPayload,
   closeBriefPriorityItem,
@@ -334,6 +336,26 @@ function orchestratorDeps(): OrchestratorDeps {
       const tz = u?.timezone ?? "Asia/Kolkata";
       const { day } = localDayBoundsUtc(tz);
       return appendOnboardingTipToBrief(db, userId, prefs, day, briefText);
+    },
+    pullTrainingTip: async (userId) => {
+      const u = await getUserById(db, userId);
+      const prefs = await getUserPrefs(db, userId);
+      const tz = u?.timezone ?? "Asia/Kolkata";
+      const { day } = localDayBoundsUtc(tz);
+      if (!prefs.onboarding.startedAt) {
+        await patchUserPrefs(db, userId, {
+          onboarding: {
+            ...prefs.onboarding,
+            startedAt: new Date().toISOString(),
+            startedLocalDay: day,
+          },
+        });
+      }
+      const fresh = await getUserPrefs(db, userId);
+      const hit = await resolveAndStampTip(db, userId, fresh, day, {
+        onDemand: true,
+      });
+      return hit?.tip.text ?? null;
     },
     getContextGraphSummary: async (id) => summarizeContextGraph(db, id),
     getAboutMeSummary: (id) => summarizeAboutMe(db, id),
@@ -726,6 +748,8 @@ function orchestratorDeps(): OrchestratorDeps {
       languageCode: "en",
     },
     addMutedPattern: (userId, pattern) => addMutedPattern(db, userId, pattern),
+    addVipName: (userId, name) => addVipName(db, userId, name),
+    listVipNames: (userId) => listVipNames(db, userId),
     removeMutedPattern: (userId, pattern) => removeMutedPattern(db, userId, pattern),
     listMutedPatterns: async (userId) => (await getUserPrefs(db, userId)).mutedPatterns,
     getTimezoneState: async (userId) => {
@@ -1060,11 +1084,16 @@ async function processInbound(rawJson: unknown): Promise<void> {
 
     let replyToContent: string | undefined;
     let replyToDirection: "in" | "out" | undefined;
+    let replyToScheduled: string | undefined;
     if (parsed.replyToMessageId) {
       const prior = await findMessageByWaId(db, user.id, parsed.replyToMessageId);
-      if (prior?.bodyRef) {
-        replyToContent = prior.bodyRef;
+      if (prior) {
+        if (prior.bodyRef) replyToContent = prior.bodyRef;
         replyToDirection = prior.direction === "out" ? "out" : "in";
+        const scheduled = prior.meta?.scheduled;
+        if (scheduled === "morning" || scheduled === "evening") {
+          replyToScheduled = scheduled;
+        }
       }
     }
 
@@ -1167,6 +1196,7 @@ async function processInbound(rawJson: unknown): Promise<void> {
       ...(parsed.replyToMessageId ? { replyToMessageId: parsed.replyToMessageId } : {}),
       ...(replyToContent ? { replyToContent } : {}),
       ...(replyToDirection ? { replyToDirection } : {}),
+      ...(replyToScheduled ? { replyToScheduled } : {}),
     };
 
     console.log(
@@ -1179,6 +1209,8 @@ async function processInbound(rawJson: unknown): Promise<void> {
         brain: brainLabel,
         ...(voiceHeard ? { transcript: voiceHeard.slice(0, 120) } : {}),
         ...(parsed.replyToMessageId ? { replyTo: parsed.replyToMessageId } : {}),
+        ...(replyToScheduled ? { replyToScheduled } : {}),
+        ...(replyToContent ? { replyToChars: replyToContent.length } : {}),
       }),
     );
 

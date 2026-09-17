@@ -38,6 +38,7 @@ describe("brief template formatting", () => {
     assert.equal(vars[2], "Escrow addendum — Yogish");
     assert.equal(vars[4], "—");
     assert.match(vars[5]!, /6 quieter/);
+    assert.match(vars[5]!, /Type Help for anything else/);
     for (const v of vars) assert.equal(/\n/.test(v), false);
   });
 

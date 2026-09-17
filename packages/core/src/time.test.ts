@@ -104,6 +104,21 @@ describe("timezone helpers", () => {
     assert.equal(isReminderAsk("don't remind me"), false);
   });
 
+  it("parses Hindi voice: कल सुबह 6 बजे → 06:00 local (not UTC offset mixup)", () => {
+    const now = new Date("2026-09-06T14:32:00.000Z"); // evening IST Sep 6
+    const hindi =
+      "यार मेरे को कल सुबह ना 6 बजे संदेश को कॉल करना है, रिमाइंड कर देना।";
+    assert.equal(isReminderAsk(hindi), true);
+    const specs = parseReminderMessage(hindi, "Asia/Kolkata", now);
+    assert.equal(specs.length, 1);
+    assert.equal(specs[0]!.kind, "timed");
+    assert.equal(localDayBoundsUtc("Asia/Kolkata", specs[0]!.dueAt).day, "2026-09-07");
+    assert.equal(formatLocalHm(specs[0]!.dueAt, "Asia/Kolkata"), "06:00");
+    assert.match(specs[0]!.title, /संदेश|Call/i);
+    // Regression: brain once emitted 00:30+05:30 (= 12:30 am IST) for "6 बजे"
+    assert.notEqual(formatLocalHm(specs[0]!.dueAt, "Asia/Kolkata"), "00:30");
+  });
+
   it("resolves travel updates", () => {
     assert.equal(parseTimezoneUpdateMessage("I'm in Dubai"), "Asia/Dubai");
     assert.equal(resolveTimezoneInput("Asia/Kolkata"), "Asia/Kolkata");
@@ -143,6 +158,29 @@ describe("timezone helpers", () => {
       formatLocalWhenFriendly(d, "Asia/Kolkata"),
       "Friday 7 August · 1:00 pm",
     );
+  });
+
+  it("o'clock tonight → today 8pm, not tomorrow (Shivam case)", () => {
+    // Thu 11 Sep 2026 18:34 IST
+    const now = new Date("2026-09-11T13:04:00.000Z");
+    const hint = parseCalendarCreateHint(
+      "Meeting Shivam at 8 o'clock at this place.",
+      "Asia/Kolkata",
+      now,
+    );
+    assert.ok(hint);
+    assert.match(hint!.title, /shivam/i);
+    assert.equal(
+      formatLocalWhenFriendly(new Date(hint!.startIso), "Asia/Kolkata"),
+      "Friday 11 September · 8:00 pm",
+    );
+  });
+
+  it("parses 8 o'clock token", () => {
+    const c = parseClockToken("8 o'clock");
+    assert.ok(c);
+    assert.equal(c!.ambiguous12h, true);
+    assert.equal(c!.hour, 8);
   });
 
   it("parses calendar create hint for tomorrow 1pm", () => {
