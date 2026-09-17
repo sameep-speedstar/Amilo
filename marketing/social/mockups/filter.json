@@ -1,0 +1,18 @@
+{
+  "id": "filter",
+  "kicker": "The filter",
+  "headline": "Watching 25. Three will <em>reach you.</em>",
+  "dayChip": "Friday, 17 July",
+  "beats": [
+    {
+      "id": "handled",
+      "messages": [
+        {
+          "who": "amilo",
+          "time": "10:52 am",
+          "text": "Fourteen emails just arrived.\nNone of them need you.\n**22 handled quietly** today. This is the product working."
+        }
+      ]
+    }
+  ]
+}

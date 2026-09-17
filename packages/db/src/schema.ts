@@ -418,3 +418,97 @@ export const adminSessions = pgTable(
   },
   (t) => [uniqueIndex("admin_sessions_token_hash_uidx").on(t.tokenHash)],
 );
+
+/** Speedstar social studio — products, handles, plans, queue. Not Amilo-user-scoped. */
+export const studioProducts = pgTable("studio_products", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  slug: varchar("slug", { length: 80 }).notNull(),
+  name: varchar("name", { length: 200 }).notNull(),
+  tagline: text("tagline"),
+  timezone: varchar("tz", { length: 50 }).notNull().default("Asia/Kolkata"),
+  brand: jsonb("brand").$type<Record<string, unknown>>().notNull().default({}),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [uniqueIndex("studio_products_slug_uidx").on(t.slug)]);
+
+export const studioChannels = pgTable(
+  "studio_channels",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    productId: uuid("product_id")
+      .notNull()
+      .references(() => studioProducts.id, { onDelete: "cascade" }),
+    kind: varchar("kind", { length: 20 }).notNull(),
+    handle: varchar("handle", { length: 200 }).notNull().default(""),
+    credentialsEnc: text("credentials_enc"),
+    meta: jsonb("meta").$type<Record<string, unknown>>().notNull().default({}),
+    enabled: boolean("enabled").notNull().default(true),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex("studio_channels_product_kind_uidx").on(t.productId, t.kind)],
+);
+
+export const studioPlans = pgTable("studio_plans", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  productId: uuid("product_id")
+    .notNull()
+    .references(() => studioProducts.id, { onDelete: "cascade" }),
+  title: varchar("title", { length: 200 }).notNull().default("Untitled plan"),
+  rawText: text("raw_text").notNull().default(""),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const studioPosts = pgTable(
+  "studio_posts",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    productId: uuid("product_id")
+      .notNull()
+      .references(() => studioProducts.id, { onDelete: "cascade" }),
+    planId: uuid("plan_id").references(() => studioPlans.id, { onDelete: "set null" }),
+    source: varchar("source", { length: 20 }).notNull().default("plan"),
+    hook: text("hook").notNull().default(""),
+    mockup: jsonb("mockup").$type<Record<string, unknown>>(),
+    scheduledAt: timestamp("scheduled_at", { withTimezone: true }).notNull(),
+    status: varchar("status", { length: 20 }).notNull().default("draft"),
+    error: text("error"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    postedAt: timestamp("posted_at", { withTimezone: true }),
+  },
+  (t) => [
+    index("studio_posts_due_idx").on(t.status, t.scheduledAt),
+    index("studio_posts_product_idx").on(t.productId, t.scheduledAt),
+  ],
+);
+
+export const studioTargets = pgTable(
+  "studio_targets",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    postId: uuid("post_id")
+      .notNull()
+      .references(() => studioPosts.id, { onDelete: "cascade" }),
+    channelKind: varchar("channel_kind", { length: 20 }).notNull(),
+    copy: text("copy").notNull().default(""),
+    status: varchar("status", { length: 20 }).notNull().default("pending"),
+    remoteId: varchar("remote_id", { length: 200 }),
+    error: text("error"),
+  },
+  (t) => [uniqueIndex("studio_targets_post_channel_uidx").on(t.postId, t.channelKind)],
+);
+
+export const studioAssets = pgTable(
+  "studio_assets",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    productId: uuid("product_id")
+      .notNull()
+      .references(() => studioProducts.id, { onDelete: "cascade" }),
+    postId: uuid("post_id").references(() => studioPosts.id, { onDelete: "set null" }),
+    kind: varchar("kind", { length: 20 }).notNull().default("upload"),
+    filename: varchar("filename", { length: 240 }).notNull(),
+    mime: varchar("mime", { length: 80 }).notNull().default("image/png"),
+    bytesB64: text("bytes_b64").notNull().default(""),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("studio_assets_post_idx").on(t.postId)],
+);

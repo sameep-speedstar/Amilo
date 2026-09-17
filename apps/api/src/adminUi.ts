@@ -175,6 +175,7 @@ function shell(opts: {
           )
           .join("")}
         <span class="spacer"></span>
+        <a href="/studio">Studio</a>
         <span class="muted">${escapeHtml(opts.email)}</span>
         <form method="post" action="/admin/logout" style="display:inline"><button class="ghost" type="submit">Log out</button></form>
       </nav>`
@@ -202,7 +203,8 @@ function shell(opts: {
 </html>`;
 }
 
-export function renderAdminLogin(opts: { error?: string; emailHint?: string }): string {
+export function renderAdminLogin(opts: { error?: string; emailHint?: string; next?: string }): string {
+  const next = opts.next && /^\/(studio|admin)(\/|\?|$)/.test(opts.next) ? opts.next : "/admin";
   return shell({
     title: "Amilo admin — login",
     ...(opts.error ? { error: opts.error } : {}),
@@ -210,6 +212,7 @@ export function renderAdminLogin(opts: { error?: string; emailHint?: string }): 
       <h2>Sign in</h2>
       <p class="sub">Founder access only.</p>
       <form method="post" action="/admin/login" class="row" style="flex-direction:column;align-items:stretch">
+        <input type="hidden" name="next" value="${escapeHtml(next)}" />
         <label>Email
           <input name="email" type="email" required autocomplete="username"
             value="${escapeHtml(opts.emailHint ?? "sameep@speedstar.ai")}" />

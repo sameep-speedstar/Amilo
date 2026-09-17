@@ -1,0 +1,34 @@
+{
+  "id": "pickup",
+  "kicker": "13:35",
+  "headline": "A collision no calendar could <em>see.</em>",
+  "dayChip": "Friday, 17 July",
+  "beats": [
+    {
+      "id": "heads-up",
+      "messages": [
+        {
+          "who": "amilo",
+          "time": "1:35 pm",
+          "text": "Your **2:00 review** overlaps **school pickup**.\nPickup is on no calendar. It still wins.\nMove the review to **3:30**?"
+        }
+      ]
+    },
+    {
+      "id": "moved",
+      "messages": [
+        {
+          "who": "amilo",
+          "time": "1:35 pm",
+          "text": "Your **2:00 review** overlaps **school pickup**. Move the review to **3:30**?"
+        },
+        { "who": "user", "time": "1:36 pm", "text": "OK" },
+        {
+          "who": "amilo",
+          "time": "1:36 pm",
+          "text": "Moved, logged, done. Pickup stays quiet."
+        }
+      ]
+    }
+  ]
+}

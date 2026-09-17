@@ -144,6 +144,8 @@ import {
   setAdminCookie,
   setAdminSessionCookie,
 } from "./adminUi.js";
+import { mountStudio } from "./studio/routes.js";
+import { startStudioWorker } from "./studio/worker.js";
 import { getWorkerStatuses, readGitSha } from "./workerStatus.js";
 
 loadEnv();
@@ -1407,26 +1409,34 @@ app.post("/access-requests", async (c) => {
   }
 });
 
+function safeNextPath(raw: unknown): string {
+  const s = String(raw ?? "");
+  if (/^\/(studio|admin)(\/|\?|$)/.test(s)) return s;
+  return "/admin";
+}
+
 app.get("/admin/login", async (c) => {
   const email = await requireAdminEmail(c);
-  if (email) return c.redirect("/admin");
-  return c.html(renderAdminLogin({ emailHint: settings.adminEmail }));
+  const next = safeNextPath(c.req.query("next"));
+  if (email) return c.redirect(next);
+  return c.html(renderAdminLogin({ emailHint: settings.adminEmail, next }));
 });
 
 app.post("/admin/login", async (c) => {
   const body = await c.req.parseBody();
   const email = normalizeEmail(String(body.email ?? ""));
   const password = String(body.password ?? "");
+  const next = safeNextPath(body.next);
   const allowed = settings.adminEmail;
   if (!allowed) {
     return c.html(
-      renderAdminLogin({ error: "ADMIN_EMAIL is not configured.", emailHint: email }),
+      renderAdminLogin({ error: "ADMIN_EMAIL is not configured.", emailHint: email, next }),
       503,
     );
   }
   if (email !== allowed) {
     return c.html(
-      renderAdminLogin({ error: "Unknown admin account.", emailHint: email }),
+      renderAdminLogin({ error: "Unknown admin account.", emailHint: email, next }),
       401,
     );
   }
@@ -1437,13 +1447,13 @@ app.post("/admin/login", async (c) => {
   });
   if (!ok) {
     return c.html(
-      renderAdminLogin({ error: "Wrong password.", emailHint: email }),
+      renderAdminLogin({ error: "Wrong password.", emailHint: email, next }),
       401,
     );
   }
   const session = await createAdminSession(db, email);
   c.header("Set-Cookie", setAdminSessionCookie(session.token));
-  return c.redirect("/admin");
+  return c.redirect(next);
 });
 
 app.post("/admin/logout", async (c) => {
@@ -1855,11 +1865,25 @@ app.post("/dev/chat", async (c) => {
   return c.json({ userId: user.id, brain: brainLabel, outbound });
 });
 
+mountStudio(app, {
+  db,
+  encryptionKey: settings.tokenEncryptionKey,
+  publicBaseUrl: settings.publicBaseUrl,
+  requireEmail: requireAdminEmail,
+});
+
 const port = settings.port;
 serve({ fetch: app.fetch, port, createServer }, (info) => {
   console.log(
     `Amilo API listening on :${info.port} (brain=${brainLabel}, google=${googleOk ? "on" : "off"}, maps=${settings.googleMapsApiKey ? "on" : "off"}, milestone=M5.5)`,
   );
+});
+
+startStudioWorker({
+  db,
+  encryptionKey: settings.tokenEncryptionKey,
+  publicBaseUrl: settings.publicBaseUrl,
+  intervalMs: 20_000,
 });
 
 startReminderWorker({

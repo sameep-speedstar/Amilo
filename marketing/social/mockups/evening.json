@@ -1,0 +1,34 @@
+{
+  "id": "evening",
+  "kicker": "21:00",
+  "headline": "It closes the loops it <em>opens.</em>",
+  "dayChip": "Friday, 17 July",
+  "beats": [
+    {
+      "id": "wrap",
+      "messages": [
+        {
+          "who": "amilo",
+          "time": "9:00 pm",
+          "text": "Evening wrap.\nDone: school fee.\nStill open: Priya redlines — tomorrow 10 am.\nDid the **Sharma ji** call happen?"
+        }
+      ]
+    },
+    {
+      "id": "closed",
+      "messages": [
+        {
+          "who": "amilo",
+          "time": "9:00 pm",
+          "text": "Did the **Sharma ji** call happen?"
+        },
+        { "who": "user", "time": "9:02 pm", "text": "yes" },
+        {
+          "who": "amilo",
+          "time": "9:02 pm",
+          "text": "Closed. One follow-up, then it stops. Good night."
+        }
+      ]
+    }
+  ]
+}

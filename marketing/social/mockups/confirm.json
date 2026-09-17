@@ -1,0 +1,34 @@
+{
+  "id": "confirm",
+  "kicker": "The rules it lives by",
+  "headline": "Nothing happens without your <em>OK.</em>",
+  "dayChip": "Friday, 17 July",
+  "beats": [
+    {
+      "id": "propose",
+      "messages": [
+        {
+          "who": "amilo",
+          "time": "1:35 pm",
+          "text": "Propose: move the 2:00 review to **3:30** so pickup is clear.\nReply **yes** to write it on the calendar."
+        }
+      ]
+    },
+    {
+      "id": "yes",
+      "messages": [
+        {
+          "who": "amilo",
+          "time": "1:35 pm",
+          "text": "Propose: move the 2:00 review to **3:30**. Reply **yes** to write it."
+        },
+        { "who": "user", "time": "1:36 pm", "text": "yes" },
+        {
+          "who": "amilo",
+          "time": "1:36 pm",
+          "text": "Done. Logged. It never writes without that yes."
+        }
+      ]
+    }
+  ]
+}
