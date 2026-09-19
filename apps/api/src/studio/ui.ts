@@ -62,6 +62,11 @@ th { font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: v
 .user { align-self: flex-end; background: #DCF3D0; }
 .hidden { display: none; }
 .stack { display: flex; flex-direction: column; gap: 12px; }
+.drafts { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; }
+@media (max-width: 900px) { .drafts { grid-template-columns: 1fr; } }
+.draft-card { border: 1px solid var(--line); border-radius: 12px; padding: 12px; background: var(--paper); display: flex; flex-direction: column; gap: 8px; }
+.draft-card h3 { font-size: 16px; }
+.draft-card pre { white-space: pre-wrap; font-family: 'Albert Sans', sans-serif; font-size: 13px; margin: 0; line-height: 1.45; }
 </style>
 </head>
 <body>
@@ -119,6 +124,8 @@ let tab = "queue";
 let posts = [];
 let assets = [];
 let selectedAssets = new Set();
+let adhocIdea = "";
+let draftOptions = [];
 let mockup = { kicker: "07:00", headline: "One message. Already read.", messages: [{ who: "amilo", text: "3 need you.\\n22 handled quietly.", time: "7:00 am" }] };
 
 const $ = (id) => document.getElementById(id);
@@ -180,8 +187,8 @@ const views = {
         \${posts.map(p => \`<tr>
           <td>\${fmt(p.scheduledAt)}<br><span class="muted">\${p.source}</span></td>
           <td>\${esc(p.hook)}</td>
-          <td>\${p.targets.map(t => \`<span class="badge">\${t.channelKind} · \${t.status}</span>\`).join(" ")}</td>
-          <td><span class="badge \${p.status}">\${p.status}</span>\${p.error ? \`<div class="err">\${esc(p.error)}</div>\` : ""}</td>
+          <td>\${p.targets.map(t => \`<div><span class="badge \${t.status}">\${t.channelKind} · \${t.status}</span>\${t.error ? \`<div class="err">\${esc(shortErr(t.error))}</div>\` : ""}</div>\`).join("")}</td>
+          <td><span class="badge \${p.status}">\${p.status}</span>\${p.error ? \`<div class="err">\${esc(shortErr(p.error))}</div>\` : ""}</td>
           <td>
             \${p.status === "draft" || p.status === "paused" ? \`<button class="btn ghost" data-arm="\${p.id}">Arm</button>\` : ""}
             \${p.status === "ready" || p.status === "posting" ? \`<button class="btn ghost" data-pause="\${p.id}">Pause</button>\` : ""}
@@ -209,7 +216,14 @@ const views = {
     const ch = (product.channels || []).filter(c => c.configured && c.enabled);
     return \`<div class="panel stack">
       <h2>Ad hoc post</h2>
-      <p class="muted">Over and above the plan. Goes to ready immediately — now, or at a time you pick.</p>
+      <p class="muted">Describe the idea. Studio drafts X and Instagram (hook, body, hashtags). Edit, attach a visual, then post. Instagram needs an image. X text is \$0.015; a URL is \$0.20.</p>
+      <label>Idea
+        <textarea id="adhocIdea" placeholder="e.g. School pickup isn't on the calendar — Amilo still sees it.">\${esc(adhocIdea)}</textarea>
+      </label>
+      <div class="row">
+        <button class="btn gold" id="suggestDrafts">Suggest drafts</button>
+      </div>
+      <div id="draftResults"></div>
       <label>Hook <input id="adhocHook" placeholder="Optional short label"></label>
       \${CHANNELS.map(c => \`<label>\${c.label} copy
         <textarea id="copy-\${c.kind}" \${ch.some(x => x.kind === c.kind) ? "" : "placeholder='Connect \${c.label} in Handles first'"}></textarea>
@@ -260,7 +274,7 @@ const views = {
     const chans = product.channels || [];
     return \`<div class="panel stack">
       <h2>Handles</h2>
-      <p class="muted">Keys never come back to the browser. Leave a field blank to keep the stored value.</p>
+      <p class="muted">Keys never come back to the browser. Leave a field blank to keep the stored value. Instagram Explorer tokens die in ~1 hour — exchange for a long-lived Page token before saving.</p>
       \${CHANNELS.map(c => {
         const row = chans.find(x => x.kind === c.kind);
         const fields = FIELDS[c.kind].map(([key, label, secret]) =>
@@ -287,7 +301,38 @@ function assetThumbs() {
   return assets.map(a => \`<img src="\${a.url}" data-asset="\${a.id}" class="\${selectedAssets.has(a.id) ? "on" : ""}">\`).join("");
 }
 function esc(s) { return String(s ?? "").replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;","\\"":"&quot;","'":"&#39;" }[c])); }
+function shortErr(s) {
+  const m = String(s ?? "").match(/"message":"([^"]+)"/);
+  return m ? m[1] : String(s ?? "").slice(0, 220);
+}
 function fmt(iso) { try { return new Date(iso).toLocaleString(); } catch { return iso; } }
+
+function paintDrafts() {
+  const box = $("draftResults");
+  if (!box) return;
+  if (!draftOptions.length) { box.innerHTML = ""; return; }
+  box.innerHTML = '<div class="drafts">' + draftOptions.map((o, i) => \`
+    <article class="draft-card">
+      <h3>\${esc(o.label || o.hook)}</h3>
+      <div class="muted">X</div>
+      <pre>\${esc(o.x?.copy || "")}</pre>
+      <div class="muted">Instagram</div>
+      <pre>\${esc(o.instagram?.copy || "")}</pre>
+      <button class="btn" data-use-draft="\${i}">Use this</button>
+    </article>\`).join("") + "</div>";
+  box.querySelectorAll("[data-use-draft]").forEach(b => b.onclick = () => {
+    const o = draftOptions[Number(b.dataset.useDraft)];
+    if (!o) return;
+    const hook = $("adhocHook");
+    const x = $("copy-x");
+    const ig = $("copy-instagram");
+    if (hook) hook.value = o.hook || o.x?.hook || o.label || "";
+    if (x) x.value = o.x?.copy || "";
+    if (ig) ig.value = o.instagram?.copy || "";
+    const msg = $("adhocMsg");
+    if (msg) msg.innerHTML = '<span class="ok">Loaded into the copy fields — edit, attach a visual, then post.</span>';
+  });
+}
 
 function paintMockup() {
   const thread = $("thread");
@@ -320,6 +365,7 @@ function bind() {
     tab = t;
     render();
     if (t === "mockup") paintMockup();
+    if (t === "adhoc") paintDrafts();
   };
   $("armAll")?.addEventListener("click", async () => {
     await api("/studio/api/products/" + product.id + "/arm", { method: "POST", body: "{}" });
@@ -359,11 +405,33 @@ function bind() {
     img.classList.toggle("on");
   });
 
+  $("adhocIdea")?.addEventListener("input", (e) => { adhocIdea = e.target.value; });
+  $("suggestDrafts")?.addEventListener("click", async () => {
+    adhocIdea = $("adhocIdea")?.value.trim() || "";
+    const box = $("draftResults");
+    if (!adhocIdea) { if (box) box.innerHTML = '<span class="err">Describe the idea first.</span>'; return; }
+    if (box) box.innerHTML = '<span class="muted">Drafting…</span>';
+    try {
+      const data = await api("/studio/api/products/" + product.id + "/drafts", {
+        method: "POST",
+        body: JSON.stringify({ idea: adhocIdea }),
+      });
+      draftOptions = data.options || [];
+      paintDrafts();
+    } catch (err) {
+      if (box) box.innerHTML = \`<span class="err">\${esc(err.message)}</span>\`;
+    }
+  });
+
   async function sendAdhoc(postNow) {
     const copy = {};
     for (const c of CHANNELS) {
       const v = $("copy-" + c.kind)?.value.trim();
       if (v) copy[c.kind] = v;
+    }
+    if (copy.instagram && selectedAssets.size === 0) {
+      $("adhocMsg").innerHTML = '<span class="err">Instagram needs an image. Attach one from Visuals, then post.</span>';
+      return;
     }
     const when = $("adhocWhen")?.value;
     try {
@@ -453,6 +521,7 @@ function bind() {
       $("handleMsg").innerHTML = \`<span class="err">\${esc(err.message)}</span>\`;
     }
   });
+  paintDrafts();
 }
 
 $("newProduct").onclick = async () => {

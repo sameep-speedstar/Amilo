@@ -1870,6 +1870,9 @@ mountStudio(app, {
   encryptionKey: settings.tokenEncryptionKey,
   publicBaseUrl: settings.publicBaseUrl,
   requireEmail: requireAdminEmail,
+  grok: settings.xaiApiKey
+    ? { apiKey: settings.xaiApiKey, model: settings.grokModel }
+    : null,
 });
 
 const port = settings.port;

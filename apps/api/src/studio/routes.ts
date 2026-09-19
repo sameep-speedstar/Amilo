@@ -21,6 +21,7 @@ import {
   type Db,
 } from "@amilo/db";
 import { parsePlan, zonedLocalToUtc, type StudioChannel } from "./parsePlan.js";
+import { suggestStudioDrafts } from "./draft.js";
 import { resolveLinkedInAuthor } from "./publish.js";
 import { studioPageHtml } from "./ui.js";
 
@@ -31,6 +32,7 @@ type Deps = {
   encryptionKey: string;
   publicBaseUrl: string;
   requireEmail: (c: Context) => Promise<string | null>;
+  grok: { apiKey: string; model: string } | null;
 };
 
 function publicChannel(row: {
@@ -204,6 +206,30 @@ export function mountStudio(app: Hono, deps: Deps) {
     const body = await c.req.json<{ raw?: string }>();
     const items = parsePlan(body.raw ?? "");
     return c.json({ items, count: items.length });
+  });
+
+  app.post("/studio/api/products/:id/drafts", async (c) => {
+    const product = await getStudioProduct(deps.db, c.req.param("id"));
+    if (!product) return c.json({ error: "not found" }, 404);
+    if (!deps.grok) return c.json({ error: "Drafts need XAI_API_KEY on the API" }, 503);
+    const body = await c.req.json<{ idea?: string }>();
+    const idea = body.idea?.trim() ?? "";
+    if (!idea) return c.json({ error: "Describe the idea first" }, 400);
+    try {
+      const options = await suggestStudioDrafts({
+        apiKey: deps.grok.apiKey,
+        model: deps.grok.model,
+        idea,
+        productName: product.name,
+        ...(product.tagline ? { tagline: product.tagline } : {}),
+      });
+      return c.json({ options, hook: options[0]?.hook ?? "" });
+    } catch (err) {
+      return c.json(
+        { error: err instanceof Error ? err.message : "could not draft" },
+        400,
+      );
+    }
   });
 
   app.post("/studio/api/products/:id/plans", async (c) => {
