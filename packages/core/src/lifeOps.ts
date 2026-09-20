@@ -109,13 +109,18 @@ export function resolveListedOptionVenue(
   const id = optionId.trim();
   const esc = id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const patterns = [
-    new RegExp(`(?:^|\\n)\\s*${esc}\\)\\s+\\*{0,2}([^\\n*—\\-]+)`, "i"),
-    new RegExp(`(?:^|\\n)\\s*${esc}[.:]\\s+\\*{0,2}([^\\n*—\\-]+)`, "i"),
-    new RegExp(`(?:^|\\n)\\s*${esc}\\s+[-–—]\\s+\\*{0,2}([^\\n*—\\-]+)`, "i"),
+    new RegExp(
+      `(?:^|[^0-9A-Za-z])${esc}\\)\\s+\\*{0,2}([^*\\n—\\-]+?)\\*{0,2}(?:\\s*[—\\-]|\\s*$|\\s*\\()`,
+      "i",
+    ),
+    new RegExp(
+      `(?:^|[^0-9A-Za-z])${esc}[.:]\\s+\\*{0,2}([^*\\n—\\-]+?)\\*{0,2}`,
+      "i",
+    ),
   ];
   for (const re of patterns) {
-    const hit = chat.match(re)?.[1]?.replace(/\*{1,2}/g, "").trim();
-    if (hit && hit.length >= 2) return hit.slice(0, 80);
+    const hit = chat.match(re)?.[1]?.replace(/\*+/g, "").trim();
+    if (hit && hit.length >= 2 && !isBookPlatformOnly(hit)) return hit.slice(0, 80);
   }
   return null;
 }
@@ -185,7 +190,12 @@ export function shortMapsSearchUrl(
   nameOrQuery: string,
   area?: string | null,
 ): string {
-  const q = [nameOrQuery.trim(), area?.trim(), "Bangalore"]
+  const areaBit = area?.trim() || "";
+  const hasCity =
+    /\b(bangalore|bengaluru|chandigarh|mumbai|delhi|hyderabad|chennai|pune)\b/i.test(
+      `${nameOrQuery} ${areaBit}`,
+    );
+  const q = [nameOrQuery.trim(), areaBit, hasCity ? null : "Bangalore"]
     .filter(Boolean)
     .join(" ")
     .replace(/\s+/g, " ")
@@ -205,18 +215,19 @@ export function buildDiningBookLinks(opts: {
   area?: string | null;
   city?: string;
 }): { zomato: string; dineout: string; eazydiner: string; maps: string } {
-  const city = opts.city ?? "bangalore";
+  const city = opts.city ?? diningCitySlug(opts.area) ?? "bangalore";
   const venue = opts.venue.trim().slice(0, 80);
   const qParts = [venue];
   if (opts.partySize && opts.partySize > 0) qParts.push(`table for ${opts.partySize}`);
   if (opts.whenHint?.trim()) qParts.push(opts.whenHint.trim());
   if (opts.area?.trim()) qParts.push(opts.area.trim());
   const q = qParts.join(" ").slice(0, 120);
+  const mapsArea = [opts.area, city !== "bangalore" ? city : "Bangalore"].filter(Boolean).join(" ");
   return {
     zomato: `https://www.zomato.com/${city}/restaurants?q=${encodeURIComponent(q)}`,
     dineout: `https://www.dineout.co.in/${city}-restaurants?search=${encodeURIComponent(venue)}`,
     eazydiner: `https://www.eazydiner.com/${city}/search?query=${encodeURIComponent(venue)}`,
-    maps: shortMapsSearchUrl(venue, opts.area),
+    maps: shortMapsSearchUrl(venue, mapsArea || opts.area),
   };
 }
 
@@ -237,6 +248,48 @@ const MOVIE_LINE_RE =
   /\b(bookmyshow|showtimes?|IMDb|film|films|PVR|INOX|Cinepolis|buytickets|ET\d{5,}|\bshows?\b|movie|cinema)\b/i;
 const DINING_LINE_RE =
   /\b(dinner|lunch|brunch|restaurant|dining|zomato|eazydiner|dineout|table for|rooftop|fine dining|client dinner|pubs?|brewery)\b/i;
+
+/** Prefer the latest dining ask + replies (avoids MG Road leaking into Chandigarh). */
+export function latestDiningThread(chat: string | null | undefined): string {
+  const full = (chat ?? "").trim();
+  if (!full) return "";
+  const lines = full.split("\n");
+  let start = -1;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!;
+    if (
+      /^User:/i.test(line) &&
+      /\b(dinner|lunch|brunch|restaurant|dining|table|zomato|eazydiner|dineout|family dinner|client dinner)\b/i.test(
+        line,
+      )
+    ) {
+      start = i;
+    }
+  }
+  if (start < 0) return scopeChatToDining(full);
+  return scopeChatToDining(lines.slice(start).join("\n"));
+}
+
+export function diningCitySlug(areaOrText?: string | null): string {
+  const t = (areaOrText ?? "").toLowerCase();
+  if (/chandigarh|mohali|panchkula|sector\s*\d+/i.test(t)) return "chandigarh";
+  if (/\bmumbai\b|\bbombay\b/i.test(t)) return "mumbai";
+  if (/\bdelhi\b|\bgurgaon\b|\bnoida\b|\bncr\b/i.test(t)) return "ncr";
+  if (/\bhyderabad\b/i.test(t)) return "hyderabad";
+  if (/\bchennai\b/i.test(t)) return "chennai";
+  if (/\bpune\b/i.test(t)) return "pune";
+  return "bangalore";
+}
+
+export function parsePartySize(text: string | null | undefined): number | null {
+  if (!text?.trim()) return null;
+  const n =
+    Number(text.match(/\btable for\s+(\d{1,2})\b/i)?.[1]) ||
+    Number(text.match(/\bfor\s+(\d{1,2})\s+(?:people|guests|of us|pax)\b/i)?.[1]) ||
+    Number(text.match(/\b(\d{1,2})\s+people\b/i)?.[1]) ||
+    0;
+  return n > 0 && n < 50 ? n : null;
+}
 
 /** Drop movie/cinema lines so dinner handoff never inherits showtimes / invented "today". */
 export function scopeChatToDining(chat: string | null | undefined): string {
@@ -283,6 +336,10 @@ export function extractUserStatedWhen(
 
 const BOOK_PLATFORM_ONLY_RE =
   /^(?:via|on|using|with|through)?\s*(?:zomato|eazy\s*diner|dineout|book\s*my\s*show|bms|maps)\s*$/i;
+
+export function isBookPlatformOnly(name: string | null | undefined): boolean {
+  return Boolean(name && BOOK_PLATFORM_ONLY_RE.test(name.trim()));
+}
 
 export function parseDiningResearchHints(text: string): DiningResearchHints | null {
   const t = text.trim();
@@ -655,7 +712,7 @@ export function extractLifeOpsDiningContext(
   recentChat: string | null | undefined,
   bookText?: string | null,
 ): LifeOpsDiningContext | null {
-  const chat = scopeChatToDining(recentChat);
+  const chat = latestDiningThread(recentChat);
   const book = (bookText ?? "").trim();
   if (!chat && !book) return null;
 
@@ -679,39 +736,39 @@ export function extractLifeOpsDiningContext(
   if (optionPick && chat) {
     venueFromList = resolveListedOptionVenue(chat, optionPick);
   }
-  if (!venueFromList && chat) {
-    const picks = [
-      ...chat.matchAll(/(?:^|\n)\s*([1-9A-E])\)\s+\*{0,2}([^\n*—\-]+)/gim),
-    ];
-    const last = picks[picks.length - 1]?.[2]?.replace(/\*{1,2}/g, "").trim();
-    if (last && /locked|handoff|reservation/i.test(chat.slice(-400))) {
-      venueFromList = last.slice(0, 80);
-    }
-  }
 
+  const handoffVenueRaw =
+    chat.match(/Book links:\s*([^\n·]+)/i)?.[1]?.trim() ??
+    chat.match(/Handoff \(reservation\):\s*([^\n·]+)/i)?.[1]?.trim() ??
+    null;
+  const handoffVenue =
+    handoffVenueRaw && !BOOK_PLATFORM_ONLY_RE.test(handoffVenueRaw)
+      ? handoffVenueRaw.slice(0, 80)
+      : null;
+
+  // Prefer explicit pick/list over stale handoff names (e.g. old "via Zomato").
   const venue =
     venueClean ??
-    chat.match(/Handoff \(reservation\):\s*([^\n·]+)/i)?.[1]?.trim()?.slice(0, 80) ??
-    chat.match(/\b([A-Z][A-Za-z0-9 &'.-]{2,40})\s+locked\b/i)?.[1]?.trim() ??
+    (optionPick ? venueFromList : null) ??
     venueFromList ??
+    handoffVenue ??
     null;
 
   const head =
     chat.match(
-      /(?:Pure-veg|Dining|Pubs?|Pub picks|Client dinner)[^\n]{0,140}/i,
+      /(?:Pure-veg|Dining|Pubs?|Pub picks|Client dinner|Sector\s*\d+[^\n]{0,80}dinner)[^\n]{0,140}/i,
     )?.[0] ?? chat;
   const diningHints = parseDiningResearchHints(chat) ?? parseDiningResearchHints(head);
   const partySize =
+    parsePartySize(book) ??
     diningHints?.partySize ??
-    (Number(book.match(/\btable for\s+(\d{1,2})\b/i)?.[1]) ||
-      Number(chat.match(/\btable for\s+(\d{1,2})\b/i)?.[1]) ||
-      null);
+    parsePartySize(chat);
   // When/date only if the USER said it — never from Amilo movie "today (Sun 20 Sep)" lines.
   const whenHint = extractUserStatedWhen(recentChat, book);
   const area =
+    chat.match(/\b(?:near|in)\s+((?:Sector\s*\d+[A-Za-z]?\s*)?[A-Za-z][A-Za-z0-9 .'-]{2,40})/i)?.[1]?.trim() ??
     diningHints?.area ??
-    chat.match(/\bnear\s+([A-Za-z][A-Za-z0-9 .'-]{2,40})/i)?.[1]?.trim() ??
-    book.match(/\bnear\s+([A-Za-z][A-Za-z0-9 .'-]{2,40})/i)?.[1]?.trim() ??
+    book.match(/\b(?:near|in)\s+([A-Za-z][A-Za-z0-9 .'-]{2,40})/i)?.[1]?.trim() ??
     null;
 
   if (!venue && !whenHint && !diningHints) return null;
@@ -719,7 +776,7 @@ export function extractLifeOpsDiningContext(
     venue,
     partySize: partySize && partySize > 0 ? partySize : null,
     whenHint,
-    area,
+    area: area?.slice(0, 60) ?? null,
     vegetarian: diningHints?.vegetarian ?? /\bvegetarian|pure[- ]?veg\b/i.test(chat),
     vibe: diningHints?.vibe ?? (/\bpub|bar|biergarten\b/i.test(chat) ? "pub" : "restaurant"),
   };
@@ -790,6 +847,7 @@ export function buildDiningHandoffScript(ctx: {
   whenHint?: string | null;
   area?: string | null;
   vibe?: "restaurant" | "pub";
+  city?: string;
 }): string {
   const links = buildDiningBookLinks(ctx);
   const bits = [

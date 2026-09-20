@@ -1058,8 +1058,8 @@ async function sendAndLogOutbound(
     direction: "out",
     kind: isTemplate ? "template" : "text",
     bodyRef: isTemplate
-      ? (msg.variables.join(" · ").slice(0, 500) || msg.templateName)
-      : msg.text.slice(0, 500),
+      ? (msg.variables.join(" · ").slice(0, 900) || msg.templateName)
+      : msg.text.slice(0, 1200),
     meta: {
       ...(waMessageId ? { waMessageId } : {}),
       ...(isTemplate ? { template: msg.templateName } : {}),

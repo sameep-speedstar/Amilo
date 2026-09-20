@@ -289,7 +289,8 @@ export async function getRecentChatSummary(
     .reverse()
     .map((r) => {
       const who = r.direction === "in" ? "User" : "Amilo";
-      const body = (r.bodyRef ?? "").replace(/\s+/g, " ").trim().slice(0, 280);
+      // Keep numbered option lists intact (was 280 — cut off option 4+).
+      const body = (r.bodyRef ?? "").replace(/\s+/g, " ").trim().slice(0, 900);
       return `${who}: ${body || `(${r.kind})`}`;
     })
     .join("\n");

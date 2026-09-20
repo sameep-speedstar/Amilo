@@ -20,6 +20,9 @@ import {
   parseMoneyCapInr,
   parseMovieResearchHints,
   resolveListedOptionVenue,
+  latestDiningThread,
+  diningCitySlug,
+  buildDiningBookLinks,
   shortMapsSearchUrl,
 } from "./lifeOps.js";
 
@@ -153,18 +156,30 @@ describe("lifeOps", () => {
     assert.ok(text.length < 900);
   });
 
-  it("resolves numbered pick from recent chat", () => {
+  it("resolves 4, for 3 people, 8 PM against Chandigarh list — not stale Bangalore handoff", () => {
     const chat = [
-      "Client dinner near MG Road:",
-      "1) Kai – Bar & Kitchen — rooftop",
-      "2) Rim Naam @ The Oberoi — Thai",
-      "3) Yauatcha — Michelin Chinese",
-      "Reply with a number to pick.",
+      "User: Have to take my client for a dinner near MG road",
+      "Amilo: Book links: via Zomato · near MG road",
+      "User: suggest good dinner options near Sector 35 Chandigarh for today with family",
+      "Amilo: Sector 35 Chandigarh family dinner options: 1) Pashtun — kebabs 2) Refections Cafe — multi 3) Peddlers — vibe 4) Katani Dhaba — Punjabi",
     ].join("\n");
-    assert.equal(parseLifeOpsOptionPick("2"), "2");
-    assert.equal(resolveListedOptionVenue(chat, "2"), "Rim Naam @ The Oberoi");
-    const ctx = extractLifeOpsDiningContext(chat, "2");
-    assert.equal(ctx!.venue, "Rim Naam @ The Oberoi");
+    assert.equal(parseLifeOpsOptionPick("4, for 3 people, 8 PM"), "4");
+    assert.equal(resolveListedOptionVenue(latestDiningThread(chat), "4"), "Katani Dhaba");
+    const ctx = extractLifeOpsDiningContext(chat, "4, for 3 people, 8 PM");
+    assert.equal(ctx!.venue, "Katani Dhaba");
+    assert.equal(ctx!.partySize, 3);
+    assert.match(ctx!.whenHint ?? "", /8\s*PM/i);
+    assert.doesNotMatch(ctx!.area ?? "", /MG road/i);
+    assert.match(ctx!.area ?? "", /Sector 35|Chandigarh/i);
+    assert.equal(diningCitySlug(ctx!.area), "chandigarh");
+    const links = buildDiningBookLinks({
+      venue: ctx!.venue!,
+      partySize: ctx!.partySize,
+      whenHint: ctx!.whenHint,
+      area: ctx!.area,
+    });
+    assert.match(links.zomato, /chandigarh/);
+    assert.match(links.zomato, /Katani/);
   });
 
   it("falls back to Maps search link when Places is empty", () => {

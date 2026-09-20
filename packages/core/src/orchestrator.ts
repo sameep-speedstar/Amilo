@@ -21,6 +21,8 @@ import {
   buildDiningHandoffScript,
   extractLifeOpsDiningContext,
   formatMoneyCapNote,
+  isBookPlatformOnly,
+  latestDiningThread,
   mergeLifeOpsIntoCalendarText,
   parseInboxErrandDraftAsk,
   parseLifeOpsHandoffIntent,
@@ -28,6 +30,7 @@ import {
   parseLifeOpsResearchIntent,
   parseMoneyCapInr,
   resolveListedOptionVenue,
+  diningCitySlug,
   scopeChatToDining,
   type LifeOpsResearchIntent,
 } from "./lifeOps.js";
@@ -2438,13 +2441,14 @@ export async function handleInbound(
   {
     const pickId = parseLifeOpsOptionPick(text);
     if (pickId && recentChatSummary) {
-      const diningChat = scopeChatToDining(recentChatSummary);
+      const diningChat = latestDiningThread(recentChatSummary);
       const venue =
         resolveListedOptionVenue(diningChat, pickId) ??
         extractLifeOpsDiningContext(recentChatSummary, `book ${pickId}`)?.venue ??
         null;
-      if (venue) {
+      if (venue && !isBookPlatformOnly(venue)) {
         const diningCtx = extractLifeOpsDiningContext(recentChatSummary, text);
+        const city = diningCitySlug(diningCtx?.area ?? diningChat);
         if (!diningCtx?.whenHint) {
           const needParty = diningCtx?.partySize == null;
           return [
@@ -2483,6 +2487,7 @@ export async function handleInbound(
               ...(diningCtx?.whenHint ? { whenHint: diningCtx.whenHint } : {}),
               ...(diningCtx?.area ? { area: diningCtx.area } : {}),
               ...(diningCtx?.vibe ? { vibe: diningCtx.vibe } : {}),
+              city,
             }),
             summary: [
               `Book links: ${venue}`,
@@ -2537,15 +2542,20 @@ export async function handleInbound(
   if (deps.createPending) {
       const handoff = parseLifeOpsHandoffIntent(text);
       if (handoff) {
-        const diningChat = scopeChatToDining(recentChatSummary);
+        const diningChat = latestDiningThread(recentChatSummary);
         const diningCtx = extractLifeOpsDiningContext(recentChatSummary, text);
         const venue =
-          handoff.venueHint ??
+          (handoff.venueHint && !isBookPlatformOnly(handoff.venueHint)
+            ? handoff.venueHint
+            : null) ??
           (handoff.optionId
             ? resolveListedOptionVenue(diningChat, handoff.optionId)
             : null) ??
-          diningCtx?.venue ??
+          (diningCtx?.venue && !isBookPlatformOnly(diningCtx.venue)
+            ? diningCtx.venue
+            : null) ??
           (handoff.optionId ? `option ${handoff.optionId}` : null);
+        const city = diningCitySlug(diningCtx?.area ?? diningChat);
 
         // Dining book without user-stated day/time → ask; never invent today / mix movie chat.
         const isDiningHandoff =
@@ -2590,6 +2600,7 @@ export async function handleInbound(
               ...(diningCtx?.whenHint ? { whenHint: diningCtx.whenHint } : {}),
               ...(diningCtx?.area ? { area: diningCtx.area } : {}),
               ...(diningCtx?.vibe ? { vibe: diningCtx.vibe } : {}),
+              city,
             });
             payload.summary = [
               `Book links: ${who}`,
