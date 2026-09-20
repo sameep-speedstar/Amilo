@@ -23,7 +23,7 @@
   },
   "devDependencies": {
     "@types/node": "^22.15.3",
-    "playwright-core": "^1.55.0",
+    "playwright-core": "1.63.0",
     "twitter-api-v2": "^1.24.0",
     "typescript": "^5.8.3"
   },

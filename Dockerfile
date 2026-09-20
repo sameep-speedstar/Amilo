@@ -15,8 +15,8 @@ RUN npm install
 RUN npm run build
 
 # Runtime: Playwright base so live booking can launch Chromium in-process.
-# Keep version pinned to packages/browser-agent playwright (^1.55.0).
-FROM mcr.microsoft.com/playwright:v1.55.0-jammy
+# Must match the resolved playwright npm version (see package-lock).
+FROM mcr.microsoft.com/playwright:v1.63.0-jammy
 WORKDIR /app
 ARG GIT_SHA=unknown
 ENV NODE_ENV=production

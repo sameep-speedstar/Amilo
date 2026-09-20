@@ -1,6 +1,6 @@
 # Amilo browser agent — Azure ACI / AKS
 # Includes Chromium for Playwright live mode.
-FROM mcr.microsoft.com/playwright:v1.55.0-jammy
+FROM mcr.microsoft.com/playwright:v1.63.0-jammy
 WORKDIR /app
 ENV NODE_ENV=production
 ENV BROWSER_AGENT_MODE=demo
