@@ -89,6 +89,7 @@ export {
   parseLifeOpsResearchIntent,
   parseMoneyCapInr,
   parseMovieResearchHints,
+  preferLifeOpsNumberPick,
   resolveListedOptionVenue,
   scopeChatToDining,
   latestDiningThread,

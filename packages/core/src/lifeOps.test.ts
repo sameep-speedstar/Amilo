@@ -19,6 +19,7 @@ import {
   parseLifeOpsResearchIntent,
   parseMoneyCapInr,
   parseMovieResearchHints,
+  preferLifeOpsNumberPick,
   resolveListedOptionVenue,
   latestDiningThread,
   diningCitySlug,
@@ -180,6 +181,33 @@ describe("lifeOps", () => {
     });
     assert.match(links.zomato, /chandigarh/);
     assert.match(links.zomato, /Katani/);
+  });
+
+  it("bare 4 after dinner list prefers life-ops over FOCUS mail", () => {
+    const chat = [
+      "User: suggest dinner near Sector 35 Chandigarh",
+      "Amilo: 1) Pashtun — kebabs 2) Refections Cafe — multi 3) Peddlers — vibe 4) Katani Dhaba — Punjabi",
+      "Reply with a number to lock one, then day/time.",
+    ].join("\n");
+    assert.equal(
+      preferLifeOpsNumberPick({ text: "4", recentChat: chat }),
+      true,
+    );
+    assert.equal(
+      preferLifeOpsNumberPick({
+        text: "4",
+        recentChat: chat,
+        replyToContent: "FOCUS\n1) Invoice from vendor\n2) School PTI",
+      }),
+      false,
+    );
+    assert.equal(
+      preferLifeOpsNumberPick({
+        text: "2",
+        recentChat: "User: brief\nAmilo: FOCUS\n1) Mail A\n2) Mail B",
+      }),
+      false,
+    );
   });
 
   it("falls back to Maps search link when Places is empty", () => {

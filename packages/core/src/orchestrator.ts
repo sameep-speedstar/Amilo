@@ -23,6 +23,7 @@ import {
   formatMoneyCapNote,
   isBookPlatformOnly,
   latestDiningThread,
+  preferLifeOpsNumberPick,
   mergeLifeOpsIntoCalendarText,
   parseInboxErrandDraftAsk,
   parseLifeOpsHandoffIntent,
@@ -1173,8 +1174,20 @@ export async function handleInbound(
   }
 
   // Brief follow-ups: 1 / 2 / 3 / M / quieter numbers (must not go to the LLM).
+  // Exception: bare "4" after a dinner/options list is a life-ops pick, not FOCUS mail.
   if (/^\d{1,2}$/.test(lower) || lower === "m") {
-    if (deps.getLastBriefItems) {
+    let skipBriefForLifeOps = false;
+    if (lower !== "m" && deps.getRecentChatSummary) {
+      const recentForPick = await deps.getRecentChatSummary(msg.userId, {
+        ...(msg.messageId ? { excludeMessageId: msg.messageId } : {}),
+      });
+      skipBriefForLifeOps = preferLifeOpsNumberPick({
+        text: lower,
+        recentChat: recentForPick,
+        ...(msg.replyToContent ? { replyToContent: msg.replyToContent } : {}),
+      });
+    }
+    if (!skipBriefForLifeOps && deps.getLastBriefItems) {
       const stored = await deps.getLastBriefItems(msg.userId);
       if (lower === "m") {
         if (stored.more?.trim()) {

@@ -291,6 +291,33 @@ export function parsePartySize(text: string | null | undefined): number | null {
   return n > 0 && n < 50 ? n : null;
 }
 
+/** Bare "4" after a dinner list must not steal FOCUS mail numbering. */
+export function preferLifeOpsNumberPick(opts: {
+  text: string;
+  recentChat?: string | null;
+  replyToContent?: string | null;
+}): boolean {
+  const pickId = parseLifeOpsOptionPick(opts.text);
+  if (!pickId) return false;
+  const reply = opts.replyToContent?.trim() ?? "";
+  // Quoted morning FOCUS brief → keep mail numbering.
+  if (reply && /\bFOCUS\b/i.test(reply) && !DINING_LINE_RE.test(reply)) {
+    return false;
+  }
+  if (reply && DINING_LINE_RE.test(reply) && resolveListedOptionVenue(reply, pickId)) {
+    return true;
+  }
+  const chat = opts.recentChat ?? "";
+  // FOCUS-only brief without dining → never divert digits to life-ops.
+  if (/\bFOCUS\b/i.test(chat) && !DINING_LINE_RE.test(chat)) {
+    return false;
+  }
+  if (!DINING_LINE_RE.test(chat)) return false;
+  const thread = latestDiningThread(chat);
+  if (resolveListedOptionVenue(thread, pickId)) return true;
+  return Boolean(resolveListedOptionVenue(chat, pickId));
+}
+
 /** Drop movie/cinema lines so dinner handoff never inherits showtimes / invented "today". */
 export function scopeChatToDining(chat: string | null | undefined): string {
   if (!chat?.trim()) return "";
