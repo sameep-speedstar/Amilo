@@ -12,11 +12,12 @@ export async function runTicketingSkill(opts: {
   const title = intent.movieHint ?? intent.query.slice(0, 80);
 
   if (mode === "demo") {
+    const name = intent.merchant === "bookmyshow" ? "BookMyShow" : "District";
     return {
       status: "needs_otp",
       merchant: intent.merchant,
       jobId,
-      message: `${intent.merchant === "bookmyshow" ? "BookMyShow" : "District"} sent a login code to your phone. Send that OTP to continue seat hold.`,
+      message: `Demo mode — no real ${name} SMS. Reply with any 6-digit code (e.g. 123456) to continue the dry run.`,
     };
   }
 

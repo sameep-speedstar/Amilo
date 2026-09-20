@@ -11,12 +11,12 @@ export async function runGrocerySkill(opts: {
   const { intent, jobId, mode, pool, userId } = opts;
 
   if (mode === "demo") {
-    // Instinct-like: pretend merchant sent OTP to user phone.
+    // Dry-run: no merchant SMS — any code continues the demo cart flow.
     return {
       status: "needs_otp",
       merchant: intent.merchant,
       jobId,
-      message: `${capitalize(intent.merchant)} sent a login code to your phone. Send me that one-time code and I'll finish signing in.`,
+      message: `Demo mode — no real ${capitalize(intent.merchant)} SMS. Reply with any 6-digit code (e.g. 123456) to continue the dry run.`,
     };
   }
 

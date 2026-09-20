@@ -2,10 +2,13 @@ import {
   BookingConnector,
   PARTNER_API_STUBS,
   formatBookingResultForWa,
+  getAllowlistEntry,
   parseBookingIntent,
   parseBookingOtpReply,
   type BookingIntent,
+  type BookingMerchant,
   type BookingResult,
+  type BookingVertical,
 } from "@amilo/booking";
 import {
   BrowserAgentRunner,
@@ -64,6 +67,52 @@ function pendingKindFor(result: BookingResult): PendingActionKind | null {
 
 function summaryFor(result: BookingResult): string {
   return formatBookingResultForWa(result).slice(0, 900);
+}
+
+function displayMerchant(merchant: string): string {
+  const map: Record<string, string> = {
+    bigbasket: "BigBasket",
+    bookmyshow: "BookMyShow",
+    eazydiner: "EazyDiner",
+    instamart: "Instamart",
+  };
+  return map[merchant] ?? merchant.charAt(0).toUpperCase() + merchant.slice(1);
+}
+
+function verticalLabel(vertical: BookingVertical | null | undefined): string {
+  switch (vertical) {
+    case "grocery":
+      return "Grocery";
+    case "dining":
+      return "Table";
+    case "ticketing":
+      return "Tickets";
+    default:
+      return "Order";
+  }
+}
+
+/** User-facing WA heading — never internal pending kinds like booking_otp. */
+function waBookingHeading(kind: PendingActionKind, result: BookingResult): string {
+  const merchant =
+    "merchant" in result && typeof result.merchant === "string"
+      ? (result.merchant as BookingMerchant)
+      : null;
+  const vertical = merchant ? getAllowlistEntry(merchant)?.vertical : null;
+  const v = verticalLabel(vertical);
+  const m = merchant ? displayMerchant(merchant) : null;
+
+  switch (kind) {
+    case "booking_otp":
+    case "booking_select":
+      return m ? `${v} · ${m}` : v;
+    case "booking_confirm":
+      return m ? `Confirm · ${m}` : `Confirm ${v.toLowerCase()}`;
+    case "booking_pay_link":
+      return m ? `Pay · ${m}` : "Pay to finish";
+    default:
+      return v;
+  }
 }
 
 export async function startBookingFlow(
@@ -186,13 +235,12 @@ async function afterResult(
     expiresInMs: kind === "booking_otp" ? 10 * 60_000 : 2 * 60 * 60_000,
   });
 
+  const heading = waBookingHeading(kind, result);
+
   if (kind === "booking_pay_link") {
     return [
       {
-        text: [
-          `Proposed (${pending.kind}):`,
-          pending.summary,
-        ].join("\n"),
+        text: [heading, pending.summary].join("\n"),
       },
     ];
   }
@@ -200,7 +248,7 @@ async function afterResult(
   return [
     {
       text: [
-        `Proposed (${pending.kind}):`,
+        heading,
         pending.summary,
         kind === "booking_confirm" ? "\nReply yes to place, cancel to drop." : "",
       ]

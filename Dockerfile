@@ -14,7 +14,9 @@ RUN apt-get update \
 RUN npm install
 RUN npm run build
 
-FROM node:22.14-bookworm-slim
+# Runtime: Playwright base so live booking can launch Chromium in-process.
+# Keep version pinned to packages/browser-agent playwright (^1.55.0).
+FROM mcr.microsoft.com/playwright:v1.55.0-jammy
 WORKDIR /app
 ARG GIT_SHA=unknown
 ENV NODE_ENV=production
