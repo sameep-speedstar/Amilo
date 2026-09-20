@@ -21,14 +21,11 @@ import {
   buildDiningHandoffScript,
   extractLifeOpsDiningContext,
   formatMoneyCapNote,
-  mergeFlightHintsFromChat,
   mergeLifeOpsIntoCalendarText,
-  mergeMovieHintsFromChat,
   parseInboxErrandDraftAsk,
   parseLifeOpsHandoffIntent,
   parseLifeOpsResearchIntent,
   parseMoneyCapInr,
-  parseMovieResearchHints,
   type LifeOpsResearchIntent,
 } from "./lifeOps.js";
 import {
@@ -2432,137 +2429,10 @@ export async function handleInbound(
     }
   }
 
-  // Life ops — live research immediately (never books). Handoff still confirm-first.
-  {
-    let research = parseLifeOpsResearchIntent(text);
-    if (research?.flight && recentChatSummary) {
-      research = {
-        ...research,
-        flight: mergeFlightHintsFromChat(research.flight, recentChatSummary),
-      };
-    }
-    if (research?.movie && recentChatSummary) {
-      research = {
-        ...research,
-        movie: mergeMovieHintsFromChat(research.movie, recentChatSummary),
-      };
-    }
-    // Follow-up like "option A, check morning flight" with route only in prior chat.
-    if (!research && recentChatSummary && /\b(flight|fare|morning|evening)\b/i.test(text)) {
-      const base = parseLifeOpsResearchIntent(
-        `check flights ${text}`.slice(0, 200),
-      );
-      if (base?.flight || /\bflight\b/i.test(text)) {
-        const merged = mergeFlightHintsFromChat(
-          base?.flight ?? {
-            from: null,
-            to: null,
-            whenHint: null,
-            morning: /\bmorning\b/i.test(text),
-            evening: /\bevening\b/i.test(text),
-            googleFlightsUrl: null,
-          },
-          recentChatSummary,
-        );
-        if (merged.from && merged.to) {
-          research = {
-            domain: "travel",
-            query: text.slice(0, 240),
-            moneyCapInr: parseMoneyCapInr(text),
-            options: [],
-            flight: merged,
-          };
-        }
-      }
-    }
-    // “shows for this?” — title / BMS URL only in prior chat (Instinct-style).
-    if (
-      !research &&
-      recentChatSummary &&
-      /\b(shows?\s+for|showtimes?|timings?)\b/i.test(text)
-    ) {
-      const base =
-        parseMovieResearchHints(text) ??
-        ({
-          title: null,
-          eventCode: null,
-          city: "bengaluru",
-          area: null,
-          language: null,
-          bookMyShowUrl: null,
-          mode: "showtimes" as const,
-        });
-      const merged = mergeMovieHintsFromChat(base, recentChatSummary);
-      if (merged.bookMyShowUrl || merged.title || merged.eventCode) {
-        research = {
-          domain: "home",
-          query: text.slice(0, 240),
-          moneyCapInr: null,
-          options: [],
-          movie: { ...merged, mode: "showtimes" },
-        };
-      }
-    }
-    if (research) {
-      if (deps.researchLifeOps) {
-        try {
-          const live = await deps.researchLifeOps(msg.userId, research);
-          return [{ text: live.text }];
-        } catch (err) {
-          console.error(
-            JSON.stringify({
-              event: "life_ops_research_failed",
-              error: err instanceof Error ? err.message : String(err),
-            }),
-          );
-        }
-      }
-      // No maps / runner — honest fallback, still no invented fares or venues.
-      if (research.flight) {
-        const from = research.flight.from ?? "?";
-        const to = research.flight.to ?? "?";
-        return [
-          {
-            text: [
-              `Flights ${from} → ${to}${research.flight.whenHint ? ` · ${research.flight.whenHint}` : ""}`,
-              research.flight.googleFlightsUrl ??
-                "Tell me from/to cities for a Google Flights link.",
-              research.flight.googleFlightsUrl
-                ? "Open that for live fares — I won't invent a flight number. Say book <flight> when you've picked one (still needs yes)."
-                : "I won't invent fares. Maps/research runner isn't available right now.",
-            ].join("\n"),
-          },
-        ];
-      }
-      if (research.movie) {
-        const m = research.movie;
-        const link =
-          m.bookMyShowUrl ??
-          `https://in.bookmyshow.com/explore/movies-${m.city}`;
-        return [
-          {
-            text: [
-              m.mode === "showtimes" && m.title
-                ? `${m.title} showtimes · ${m.city}`
-                : `Movies · ${m.city}`,
-              link,
-              "Open that for live times. I won't book until you say book <theatre> <time>.",
-            ].join("\n"),
-          },
-        ];
-      }
-      return [
-        {
-          text: [
-            `Research: ${research.query}`,
-            "Live Places research isn't available in this environment yet.",
-            "I won't invent restaurants or book without your yes.",
-          ].join("\n"),
-        },
-      ];
-    }
-
-    if (deps.createPending) {
+  // Life-ops research (movies/dining/flights) → Grok session + web search + this user's
+  // context graph. Deterministic Places/scrape short-circuit retired.
+  // Handoff scripts (call venue) still confirm-first below.
+  if (deps.createPending) {
       const handoff = parseLifeOpsHandoffIntent(text);
       if (handoff) {
         const diningCtx = extractLifeOpsDiningContext(recentChatSummary, text);
@@ -2673,7 +2543,6 @@ export async function handleInbound(
           { userName: name },
         );
       }
-    }
   }
 
   // Calendar invite by name — resolve stored email, propose calendar_create (not email draft).
@@ -3060,43 +2929,16 @@ export async function handleInbound(
         }
       }
 
-      // Brain proposed life_ops_research → run live research (never invent / lock-yes).
-      if (kind === "life_ops_research" && deps.researchLifeOps) {
-        try {
-          const parsed =
-            parseLifeOpsResearchIntent(text) ??
-            ({
-              domain: String(payload.domain ?? "home") as LifeOpsResearchIntent["domain"],
-              query: String(payload.query ?? text).slice(0, 240),
-              moneyCapInr:
-                typeof payload.moneyCapInr === "number"
-                  ? payload.moneyCapInr
-                  : parseMoneyCapInr(text),
-              options: [],
-            } satisfies LifeOpsResearchIntent);
-          let intent = parsed;
-          if (intent.flight && recentChatSummary) {
-            intent = {
-              ...intent,
-              flight: mergeFlightHintsFromChat(intent.flight, recentChatSummary),
-            };
-          }
-          if (intent.movie && recentChatSummary) {
-            intent = {
-              ...intent,
-              movie: mergeMovieHintsFromChat(intent.movie, recentChatSummary),
-            };
-          }
-          const live = await deps.researchLifeOps(msg.userId, intent);
-          return [{ text: live.text }];
-        } catch (err) {
-          console.error(
-            JSON.stringify({
-              event: "life_ops_research_brain_failed",
-              error: err instanceof Error ? err.message : String(err),
-            }),
-          );
-        }
+      // life_ops_research propose_action retired — prefer reply_text + web search.
+      if (kind === "life_ops_research") {
+        const reply = String(payload.summary ?? payload.query ?? "").trim();
+        return [
+          {
+            text:
+              reply ||
+              "Ask me as a normal question — e.g. which Hindi movies are playing near Arekere.",
+          },
+        ];
       }
 
       let conflictNote: string | null = null;

@@ -23,6 +23,8 @@ export const users = pgTable("users", {
   timezone: varchar("tz", { length: 50 }).notNull().default("Asia/Kolkata"),
   status: varchar("status", { length: 20 }).notNull().default("active"),
   cursorAgentId: text("cursor_agent_id"),
+  /** xAI Responses API previous_response_id — per-user Grok chat session (30d). */
+  grokResponseId: text("grok_response_id"),
   prefs: jsonb("prefs").$type<Record<string, unknown>>().notNull().default({}),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });

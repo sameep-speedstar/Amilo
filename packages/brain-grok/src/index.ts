@@ -12,6 +12,11 @@ import type {
   TriageResult,
 } from "@amilo/brain-contract";
 
+export interface GrokSessionStore {
+  get: (userId: string) => Promise<string | null>;
+  set: (userId: string, responseId: string | null) => Promise<void>;
+}
+
 export interface GrokBrainConfig {
   apiKey: string;
   /** Default: grok-4-1-fast-non-reasoning (low-latency WhatsApp chat). */
@@ -20,6 +25,10 @@ export interface GrokBrainConfig {
   baseUrl?: string;
   /** Absolute path to repo `brain/` docs. Auto-resolved if omitted. */
   brainDir?: string;
+  /** Per-user xAI previous_response_id — isolates A vs B sessions. */
+  sessionStore?: GrokSessionStore;
+  /** Enable live web_search on interpret (default true). */
+  webSearch?: boolean;
 }
 
 const NODE_KINDS: ReadonlySet<string> = new Set([
@@ -167,11 +176,37 @@ function normalizeInterpret(parsed: unknown): InterpretResult {
   return { intent };
 }
 
-async function chatCompletion(
-  cfg: Required<Pick<GrokBrainConfig, "apiKey" | "model" | "baseUrl">>,
-  system: string,
-  user: string,
-): Promise<string> {
+/** Pull assistant text from xAI Responses API payload. */
+export function extractResponsesText(payload: unknown): string {
+  if (!payload || typeof payload !== "object") return "";
+  const p = payload as Record<string, unknown>;
+  if (typeof p.output_text === "string" && p.output_text.trim()) return p.output_text.trim();
+  const output = p.output;
+  if (!Array.isArray(output)) return "";
+  const chunks: string[] = [];
+  for (const item of output) {
+    if (!item || typeof item !== "object") continue;
+    const o = item as Record<string, unknown>;
+    if (o.type === "message" && Array.isArray(o.content)) {
+      for (const c of o.content) {
+        if (!c || typeof c !== "object") continue;
+        const part = c as Record<string, unknown>;
+        if (
+          (part.type === "output_text" || part.type === "text") &&
+          typeof part.text === "string"
+        ) {
+          chunks.push(part.text);
+        }
+      }
+    }
+  }
+  return chunks.join("\n").trim();
+}
+
+type ApiCfg = Required<Pick<GrokBrainConfig, "apiKey" | "model" | "baseUrl">>;
+
+/** Legacy chat/completions — triage / brief (no web tools). */
+async function chatCompletion(cfg: ApiCfg, system: string, user: string): Promise<string> {
   const res = await fetch(`${cfg.baseUrl.replace(/\/$/, "")}/chat/completions`, {
     method: "POST",
     headers: {
@@ -200,6 +235,60 @@ async function chatCompletion(
   return content;
 }
 
+type ResponsesResult = { id: string; text: string };
+
+/**
+ * Stateful Responses API — per-user session via previous_response_id + optional web_search.
+ */
+async function responsesCompletion(
+  cfg: ApiCfg,
+  opts: {
+    system?: string;
+    user: string;
+    previousResponseId?: string | null;
+    webSearch?: boolean;
+  },
+): Promise<ResponsesResult> {
+  const input: Array<{ role: string; content: string }> = [];
+  if (opts.system && !opts.previousResponseId) {
+    input.push({ role: "system", content: opts.system });
+  }
+  input.push({ role: "user", content: opts.user });
+
+  const body: Record<string, unknown> = {
+    model: cfg.model,
+    input,
+    store: true,
+    temperature: 0.3,
+  };
+  if (opts.previousResponseId) {
+    body.previous_response_id = opts.previousResponseId;
+  }
+  if (opts.webSearch) {
+    body.tools = [{ type: "web_search" }];
+  }
+
+  const res = await fetch(`${cfg.baseUrl.replace(/\/$/, "")}/responses`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${cfg.apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(90_000),
+  });
+  if (!res.ok) {
+    const errBody = await res.text().catch(() => "");
+    throw new Error(`Grok Responses ${res.status}: ${errBody.slice(0, 500)}`);
+  }
+  const json = (await res.json()) as { id?: string };
+  const text = extractResponsesText(json);
+  const id = typeof json.id === "string" ? json.id : "";
+  if (!text) throw new Error("Grok Responses returned empty content");
+  if (!id) throw new Error("Grok Responses returned no id");
+  return { id, text };
+}
+
 function buildSystemPrompt(docs: string): string {
   return [
     "You are Amilo's IQ brain for WhatsApp.",
@@ -214,9 +303,17 @@ function buildSystemPrompt(docs: string): string {
     "For calendar writes or email drafts: use propose_action (orchestrator confirms before any Google write).",
     "If the user only shared a durable fact, still reply with one short concrete ack (e.g. next useful question or a crisp confirmation) — do NOT perform memory ('as you told me').",
     "Never claim a Google write succeeded — and never say an event was cancelled/created/updated unless you returned propose_action (orchestrator confirms).",
-    "Life ops (travel / inbox errands / home): never claim booked, paid, reserved, locked, or sent. Dining/pub/flight research is handled by the orchestrator with live Places / Flights links — do not invent venues, flight numbers, PNRs, or fares in reply_text. For book/reserve/handoff after the user picks, use propose_action {\"type\":\"life_ops_handoff\",\"domain\":\"home|travel\",\"channel\":\"vendor|note\",\"summary\":\"...\",\"venueHint\":\"...\"}. Orchestrator confirms before any contact.",
+    "LIFE OPS / SEARCH (movies, dining, pubs, flights, showtimes, 'what's on'):",
+    "- Use live web search. Prefer BookMyShow / Maps / airline / Zomato deep links.",
+    "- Never invent venues, showtimes, flight numbers, fares, or seats.",
+    "- Never claim booked, paid, reserved, locked, ordered, or tickets held.",
+    "- Browser / WhatsApp booking is OFF until partner APIs ship — end with a clear book link + one ask (e.g. Want showtimes near Arekere?).",
+    "- Rank options; stay WhatsApp-short (usually under ~700 chars). Lead with decision or next action.",
+    "- When the user says they already booked (movie/table), propose_action calendar_create for that block (use realistic duration, e.g. film ~2h).",
+    "- Upsert durable prefs into graphUpdates (Friday dinners, movies, pubs, area) — silent context for next turns.",
+    "For vendor call scripts after they pick a place (not a ticket purchase), propose_action {\"type\":\"life_ops_handoff\",...} is ok — still confirm-first; never claim reserved.",
     "graphUpdates: only durable facts; empty array if nothing new.",
-    "Reply text: short, concrete, ranked; usually under 500 characters; no therapist mode; no sycophancy.",
+    "Reply text: short, concrete, ranked; usually under 500 characters for chat, up to ~700 for search results; no therapist mode; no sycophancy.",
     "When the user asks to mute/ignore/hide mail matching a phrase, return propose_action with action {\"type\":\"mute\",\"pattern\":\"...\"} (do not only say muted in reply_text).",
     "When the user asks to be reminded at a time, return propose_action with action {\"type\":\"remind\",\"title\":\"...\",\"dueAt\":\"ISO-8601 UTC\"}. Prefer letting the orchestrator parse times. Timed reminders write a 1-minute calendar nudge at that instant (allowed to overlap meetings). Date-only reminders (no clock) get a 1-minute calendar nudge at 09:00 that day plus a separate WhatsApp after that morning's brief — not FOCUS.",
     "When the user asks to add/change/cancel a calendar event, return propose_action with action {\"type\":\"calendar_create\"|\"calendar_update\"|\"calendar_cancel\",\"accountLabel\":\"personal\",\"title\":\"clean event title only\",\"start\":\"ISO-8601 with correct year from Now line\",\"end\":\"ISO-8601\",\"eventId\":\"from Calendar today [id:…] if present\",\"attendees\":[\"email@…\"]}. Do NOT claim it was written — orchestrator will ask for yes/cancel. Prefer ISO with offset for the user timezone. For cancel/update always include eventId from Calendar today when available, and title matching the event.",
@@ -229,7 +326,8 @@ function buildSystemPrompt(docs: string): string {
     "Calendar lines include absolute dates like 'Tue 11 Aug (today)' / '(tomorrow)'. Never move a (today) event into Tomorrow — if Calendar tomorrow is none yet, say tomorrow is clear. Prefer Calendar today/tomorrow over Recent chat if they disagree on day labels.",
     "When the user is deciding, use advisor framing (tradeoffs + recommendation).",
     "If Reply-to is set, the user quoted that exact prior message — treat it as the target event/item (cancel/update/remind/clarify THAT), not a vague guess from calendar alone.",
-    "Use Recent chat for continuity across turns; do not re-ask what was just discussed.",
+    "Use Recent chat + this Grok session for continuity; do not re-ask what was just discussed.",
+    "Silent context graph is THIS user's only — never mix another person's prefs. Prefer graph prefs (Friday dinner vs movies) when ranking suggestions.",
     "Google accounts line is ground truth. Never say Google is disconnected/unlinked/not connected if that line lists accounts. Never claim disconnect/sync/send succeeded — return propose_action {type:disconnect|sync} or tell them the standing command.",
     "Mail working set (if present) is the only inbox ground truth for this thread. If it lists hits: say yes, name the mail, and extract the call-to-action for the user as the To: recipient so they need not open Gmail. Rank; one sharp block. If hits: none — say no matching mail. Never invent mail or an empty inbox. Follow-ups (action points, attachment, reply, schedule, remind) use this set — do not ask them to restate the sender. propose_action calendar_create / email_draft / remind only when they asked to act. If Mail working set is missing and they ask about a sender, return propose_action {type:search_mail, query:'...'}.",
     "Recent mail line is a brief skim only. Prefer Mail working set when both exist.",
@@ -270,17 +368,19 @@ function buildUserPayload(ctx: BrainUserContext, message: string): string {
 }
 
 /**
- * Grok BrainPort — single chat completion returns reply intent + graph deltas.
+ * Grok BrainPort — Responses API session per user + web search for live research.
  */
 export function createGrokBrain(cfg: GrokBrainConfig): BrainPort {
   const brainDir = findBrainDir(cfg.brainDir);
   const docs = loadDocs(brainDir);
   const system = buildSystemPrompt(docs);
-  const api = {
+  const api: ApiCfg = {
     apiKey: cfg.apiKey,
     model: cfg.model ?? "grok-4-1-fast-non-reasoning",
     baseUrl: cfg.baseUrl ?? "https://api.x.ai/v1",
   };
+  const webSearch = cfg.webSearch !== false;
+  const store = cfg.sessionStore;
 
   return {
     async triage(ctx: BrainUserContext, events: TriageEventInput[]): Promise<TriageResult[]> {
@@ -310,8 +410,50 @@ export function createGrokBrain(cfg: GrokBrainConfig): BrainPort {
     },
 
     async interpret(ctx: BrainUserContext, message: string): Promise<InterpretResult> {
-      const text = await chatCompletion(api, system, buildUserPayload(ctx, message));
-      return normalizeInterpret(extractJson<unknown>(text));
+      const userPayload = buildUserPayload(ctx, message);
+      let previousId = store ? await store.get(ctx.userId) : null;
+
+      const run = async (prev: string | null, withSearch: boolean) =>
+        responsesCompletion(api, {
+          ...(prev ? {} : { system }),
+          user: userPayload,
+          previousResponseId: prev,
+          webSearch: withSearch,
+        });
+
+      let result: ResponsesResult;
+      try {
+        result = await run(previousId, webSearch);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        // Stale session — start fresh
+        if (previousId && /404|not found|previous_response|invalid/i.test(msg)) {
+          if (store) await store.set(ctx.userId, null);
+          previousId = null;
+          try {
+            result = await run(null, webSearch);
+          } catch (err2) {
+            const msg2 = err2 instanceof Error ? err2.message : String(err2);
+            if (webSearch && /tool|web_search|400/i.test(msg2)) {
+              result = await run(null, false);
+            } else {
+              // Last resort: legacy chat completions
+              const text = await chatCompletion(api, system, userPayload);
+              return normalizeInterpret(extractJson<unknown>(text));
+            }
+          }
+        } else if (webSearch && /tool|web_search|400/i.test(msg)) {
+          result = await run(previousId, false);
+        } else {
+          const text = await chatCompletion(api, system, userPayload);
+          return normalizeInterpret(extractJson<unknown>(text));
+        }
+      }
+
+      if (store) {
+        await store.set(ctx.userId, result.id).catch(() => undefined);
+      }
+      return normalizeInterpret(extractJson<unknown>(result.text));
     },
   };
 }

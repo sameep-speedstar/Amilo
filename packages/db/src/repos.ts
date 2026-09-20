@@ -164,6 +164,19 @@ export async function setCursorAgentId(db: Db, userId: string, agentId: string):
   await db.update(users).set({ cursorAgentId: agentId }).where(eq(users.id, userId));
 }
 
+export async function getGrokResponseId(db: Db, userId: string): Promise<string | null> {
+  const u = await getUserById(db, userId);
+  return u?.grokResponseId ?? null;
+}
+
+export async function setGrokResponseId(
+  db: Db,
+  userId: string,
+  responseId: string | null,
+): Promise<void> {
+  await db.update(users).set({ grokResponseId: responseId }).where(eq(users.id, userId));
+}
+
 export async function getWhatsAppAddress(db: Db, userId: string): Promise<string | null> {
   const ch = await db.query.channels.findFirst({
     where: and(eq(channels.userId, userId), eq(channels.kind, "whatsapp")),

@@ -77,6 +77,8 @@ import {
   patchUserPrefs,
   removeMutedPattern,
   setCursorAgentId,
+  setGrokResponseId,
+  getGrokResponseId,
   setTimezoneConfirmed,
   setUserStatus,
   setUserDisplayName,
@@ -181,6 +183,13 @@ function createBrain(): BrainPort {
     return createGrokBrain({
       apiKey: settings.xaiApiKey,
       model: settings.grokModel,
+      webSearch: true,
+      sessionStore: {
+        get: (userId) => getGrokResponseId(db, userId),
+        set: async (userId, id) => {
+          await setGrokResponseId(db, userId, id);
+        },
+      },
     });
   }
   if (settings.cursorApiKey) {
@@ -1289,8 +1298,9 @@ async function processInbound(rawJson: unknown): Promise<void> {
         }
       }
 
-      // New booking ask (grocery / table / tickets) — before brain.
+      // Browser booking parked until partner APIs — research + deep links via Grok instead.
       if (
+        settings.browserBookingEnabled &&
         (!openBooking ||
           openBooking.kind.startsWith("booking_") === false) &&
         tryParseBookingIntent(content, parsed.phoneE164)
