@@ -334,6 +334,59 @@ export function parsePartySize(text: string | null | undefined): number | null {
   return n > 0 && n < 50 ? n : null;
 }
 
+/**
+ * Generic WhatsApp formatting for pickable life-ops lists (dinner, movie, cab, flight…).
+ * Grok often packs `A) … B) … C) …` onto one line — force one option per line.
+ * Also lifts a headline that shares the line with the first option.
+ */
+export function formatLifeOpsOptionLines(text: string): string {
+  const t = text.replace(/\r\n/g, "\n").trim();
+  if (!t) return t;
+
+  const re = /(?:^|[^A-Za-z0-9*])([A-Z]\d?|[1-9])\)\s+/g;
+  const starts: { at: number; id: string }[] = [];
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(t)) !== null) {
+    const id = m[1]!;
+    const idParen = `${id})`;
+    const at = m.index + m[0].lastIndexOf(idParen);
+    starts.push({ at, id });
+  }
+  if (starts.length < 2) return t;
+
+  const ids = starts.map((s) => s.id);
+  const allAlpha = ids.every((id) => /^[A-Z]$/.test(id));
+  const allNumeric = ids.every((id) => /^[1-9]$/.test(id));
+  const allCombo = ids.every((id) => /^[A-Z]\d$/.test(id));
+  if (!allAlpha && !allNumeric && !allCombo) return t;
+  // Require a real pick list (starts at A / 1 / A1), not random mid-prose parens.
+  if (allAlpha && ids[0] !== "A") return t;
+  if (allNumeric && ids[0] !== "1") return t;
+  if (allCombo && ids[0] !== "A1") return t;
+
+  const parts: string[] = [];
+  const headRaw = t.slice(0, starts[0]!.at).trim().replace(/[:：]\s*$/, "").trim();
+  if (headRaw) parts.push(headRaw);
+
+  for (let i = 0; i < starts.length; i++) {
+    const from = starts[i]!.at;
+    const to = i + 1 < starts.length ? starts[i + 1]!.at : t.length;
+    let chunk = t.slice(from, to).trim();
+    if (i === starts.length - 1) {
+      const replySplit = chunk.match(
+        /^(.*?)([ \t]+Reply with a (?:letter|number|code)\b[\s\S]*)$/i,
+      );
+      if (replySplit?.[1] && replySplit[2]) {
+        parts.push(replySplit[1].trim());
+        parts.push(replySplit[2].trim());
+        continue;
+      }
+    }
+    if (chunk) parts.push(chunk);
+  }
+  return parts.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+
 /** True when chat looks like a pickable life-ops list (any domain), not FOCUS mail. */
 export function isLifeOpsPickableList(text: string | null | undefined): boolean {
   const t = (text ?? "").trim();

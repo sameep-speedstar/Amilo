@@ -483,7 +483,7 @@ function buildSystemPrompt(docs: string): string {
     "- Never invent venues, showtimes, flight numbers, fares, or seats.",
     "- Never claim booked, paid, reserved, locked, ordered, or tickets held.",
     "- Browser / WhatsApp booking is OFF until partner APIs ship — end with a clear book link + one ask (e.g. Want showtimes near Arekere?).",
-    "- Format reply_text for WhatsApp: one short headline, then LETTERED options `A) Name — detail` (one per line). Prefer A) B) C) over 1) 2) 3) so picks never collide with FOCUS mail. Never bare '- ' bullets for pickable lists.",
+    "- Format reply_text for WhatsApp: one short headline, then LETTERED options `A) Name — detail` EACH ON ITS OWN LINE (newline before every A)/B)/C)). Never pack A) B) C) onto one line. Prefer A) B) C) over 1) 2) 3) so picks never collide with FOCUS mail. Never bare '- ' bullets for pickable lists. Same rule for movies, cabs, flights, dining, pubs — every pickable list.",
     "- End pickable lists with: Reply with a letter to pick. Then ask for any missing day/time/party size — NEVER invent or assume date, time, covers, or 'today'.",
     "- NEVER put today's weekday/date in research replies unless the user said today/tonight/a date.",
     "- Keep domains separate: dinner replies must not reuse movie theatres/showtimes from Recent chat (and vice versa).",
@@ -636,7 +636,7 @@ export function createGrokBrain(cfg: GrokBrainConfig): BrainPort {
 
       const userPayload = buildUserPayload(cleanCtx, message);
       const researchHint = researchAsk
-        ? "\n\nRESEARCH MODE: Use web_search. Name real films/venues from search. LETTERED options (`A) Name — detail`) — prefer letters over 1) 2) 3) so picks never collide with FOCUS mail. Never invent today's date/weekday. Never mix movie theatres into dinner (or vice versa). End with: Reply with a letter to pick. Put FULL answer in intent.text. Never explore/movies stub only."
+        ? "\n\nRESEARCH MODE: Use web_search. Name real films/venues/cabs from search. LETTERED options (`A) Name — detail`) EACH ON ITS OWN LINE — never pack A) B) C) on one line. Prefer letters over 1) 2) 3) so picks never collide with FOCUS mail. Same for movies, cabs, flights, dining. Never invent today's date/weekday. Never mix movie theatres into dinner (or vice versa). End with: Reply with a letter to pick. Put FULL answer in intent.text. Never explore/movies stub only."
         : hasImage
           ? "\n\nIMAGE MODE: An image is attached. Read it carefully and answer in intent.text. If the user only sent the image, briefly say what you see and ask what they need."
           : "";

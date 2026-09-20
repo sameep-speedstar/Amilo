@@ -28,6 +28,7 @@ import {
   lifeOpsOptionId,
   lifeOpsPickPrompt,
   LIFE_OPS_DEFAULT_SCHEME,
+  formatLifeOpsOptionLines,
 } from "./lifeOps.js";
 
 describe("lifeOps", () => {
@@ -183,6 +184,29 @@ describe("lifeOps", () => {
       resolveListedOptionVenue("A1) Pashtun — kebabs\nA2) Katani — Punjabi", "A2"),
       "Katani",
     );
+  });
+
+  it("splits inline movie/cab letter options onto WhatsApp lines", () => {
+    const movie =
+      "**Mirzapur showtimes at PVR Elante Mall (today):** A) 7:00 PM — 2h 30m, Hindi. B) 10:15 PM — 2h 30m, Hindi. Book via BookMyShow. Reply with a letter to pick.";
+    const movieOut = formatLifeOpsOptionLines(movie);
+    assert.match(movieOut, /\*\*Mirzapur showtimes/);
+    assert.match(movieOut, /\nA\) 7:00 PM/);
+    assert.match(movieOut, /\nB\) 10:15 PM/);
+    assert.match(movieOut, /\nReply with a letter to pick/);
+    assert.doesNotMatch(movieOut, /A\)[^\n]+B\)/);
+
+    const cab =
+      "**BLR airport cabs tomorrow 8 PM for 2:** A) Ola Outstation — ~₹900-1100. B) Uber Intercity — ~₹950-1200. C) Meru Cabs — ~₹1000. Reply with a letter to pick.";
+    const cabOut = formatLifeOpsOptionLines(cab);
+    assert.match(cabOut, /\nA\) Ola/);
+    assert.match(cabOut, /\nB\) Uber/);
+    assert.match(cabOut, /\nC\) Meru/);
+    assert.doesNotMatch(cabOut, /A\)[^\n]+B\)/);
+
+    // Already vertical — unchanged shape
+    const dinner = "Picks\nA) Pashtun — kebabs\nB) Peddlers — vibe\nReply with a letter to pick.";
+    assert.equal(formatLifeOpsOptionLines(dinner), dinner);
   });
 
   it("resolves 4, for 3 people, 8 PM against Chandigarh list — not stale Bangalore handoff", () => {

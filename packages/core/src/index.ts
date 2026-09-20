@@ -91,6 +91,7 @@ export {
   parseMovieResearchHints,
   preferLifeOpsNumberPick,
   isLifeOpsPickableList,
+  formatLifeOpsOptionLines,
   lifeOpsOptionId,
   lifeOpsPickPrompt,
   LIFE_OPS_DEFAULT_SCHEME,

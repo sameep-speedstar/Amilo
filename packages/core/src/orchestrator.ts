@@ -33,6 +33,7 @@ import {
   resolveListedOptionVenue,
   diningCitySlug,
   scopeChatToDining,
+  formatLifeOpsOptionLines,
   type LifeOpsResearchIntent,
 } from "./lifeOps.js";
 import {
@@ -3337,7 +3338,7 @@ export async function handleInbound(
       if (composeAsk && deps.createPending) {
         return proposeEmailComposePending(msg, deps, composeAsk, { userName: name });
       }
-      const reply = result.intent.text.trim();
+      const reply = formatLifeOpsOptionLines(result.intent.text.trim());
       if (reply) return [{ text: reply }];
       return [
         {
