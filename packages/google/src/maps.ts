@@ -14,6 +14,8 @@ export type PlaceSearchHit = {
   userRatingsTotal: number | null;
   mapsUrl: string;
   types: string[];
+  /** Present when Places returns location (used for cinema distance). */
+  location?: GeocodeResult | null;
 };
 
 function latLngFromMapsUrl(url: string): GeocodeResult | null {
@@ -171,7 +173,7 @@ export class MapsClient {
           "Content-Type": "application/json",
           "X-Goog-Api-Key": this.apiKey,
           "X-Goog-FieldMask":
-            "places.id,places.displayName,places.formattedAddress,places.rating,places.userRatingCount,places.googleMapsUri,places.types",
+            "places.id,places.displayName,places.formattedAddress,places.rating,places.userRatingCount,places.googleMapsUri,places.types,places.location",
         },
         body: JSON.stringify(body),
         signal: AbortSignal.timeout(12_000),
@@ -201,6 +203,7 @@ export class MapsClient {
           userRatingCount?: number;
           googleMapsUri?: string;
           types?: string[];
+          location?: { latitude?: number; longitude?: number };
         }>;
       };
       if (!data.places?.length) return [];
@@ -209,6 +212,8 @@ export class MapsClient {
         const name = (r.displayName?.text ?? "").trim();
         const placeId = (r.id ?? "").trim();
         if (!name) continue;
+        const lat = r.location?.latitude;
+        const lng = r.location?.longitude;
         out.push({
           name: name.slice(0, 80),
           address: (r.formattedAddress ?? "").trim().slice(0, 120),
@@ -220,6 +225,10 @@ export class MapsClient {
             (r.googleMapsUri ?? "").trim() ||
             `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(name)}`,
           types: Array.isArray(r.types) ? r.types.slice(0, 8) : [],
+          location:
+            typeof lat === "number" && typeof lng === "number"
+              ? { lat, lng }
+              : null,
         });
       }
       return out;

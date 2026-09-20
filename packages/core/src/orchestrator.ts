@@ -23,10 +23,12 @@ import {
   formatMoneyCapNote,
   mergeFlightHintsFromChat,
   mergeLifeOpsIntoCalendarText,
+  mergeMovieHintsFromChat,
   parseInboxErrandDraftAsk,
   parseLifeOpsHandoffIntent,
   parseLifeOpsResearchIntent,
   parseMoneyCapInr,
+  parseMovieResearchHints,
   type LifeOpsResearchIntent,
 } from "./lifeOps.js";
 import {
@@ -2439,6 +2441,12 @@ export async function handleInbound(
         flight: mergeFlightHintsFromChat(research.flight, recentChatSummary),
       };
     }
+    if (research?.movie && recentChatSummary) {
+      research = {
+        ...research,
+        movie: mergeMovieHintsFromChat(research.movie, recentChatSummary),
+      };
+    }
     // Follow-up like "option A, check morning flight" with route only in prior chat.
     if (!research && recentChatSummary && /\b(flight|fare|morning|evening)\b/i.test(text)) {
       const base = parseLifeOpsResearchIntent(
@@ -2465,6 +2473,34 @@ export async function handleInbound(
             flight: merged,
           };
         }
+      }
+    }
+    // “shows for this?” — title / BMS URL only in prior chat (Instinct-style).
+    if (
+      !research &&
+      recentChatSummary &&
+      /\b(shows?\s+for|showtimes?|timings?)\b/i.test(text)
+    ) {
+      const base =
+        parseMovieResearchHints(text) ??
+        ({
+          title: null,
+          eventCode: null,
+          city: "bengaluru",
+          area: null,
+          language: null,
+          bookMyShowUrl: null,
+          mode: "showtimes" as const,
+        });
+      const merged = mergeMovieHintsFromChat(base, recentChatSummary);
+      if (merged.bookMyShowUrl || merged.title || merged.eventCode) {
+        research = {
+          domain: "home",
+          query: text.slice(0, 240),
+          moneyCapInr: null,
+          options: [],
+          movie: { ...merged, mode: "showtimes" },
+        };
       }
     }
     if (research) {
@@ -2494,6 +2530,23 @@ export async function handleInbound(
               research.flight.googleFlightsUrl
                 ? "Open that for live fares — I won't invent a flight number. Say book <flight> when you've picked one (still needs yes)."
                 : "I won't invent fares. Maps/research runner isn't available right now.",
+            ].join("\n"),
+          },
+        ];
+      }
+      if (research.movie) {
+        const m = research.movie;
+        const link =
+          m.bookMyShowUrl ??
+          `https://in.bookmyshow.com/explore/movies-${m.city}`;
+        return [
+          {
+            text: [
+              m.mode === "showtimes" && m.title
+                ? `${m.title} showtimes · ${m.city}`
+                : `Movies · ${m.city}`,
+              link,
+              "Open that for live times. I won't book until you say book <theatre> <time>.",
             ].join("\n"),
           },
         ];
@@ -3026,6 +3079,12 @@ export async function handleInbound(
             intent = {
               ...intent,
               flight: mergeFlightHintsFromChat(intent.flight, recentChatSummary),
+            };
+          }
+          if (intent.movie && recentChatSummary) {
+            intent = {
+              ...intent,
+              movie: mergeMovieHintsFromChat(intent.movie, recentChatSummary),
             };
           }
           const live = await deps.researchLifeOps(msg.userId, intent);

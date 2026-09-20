@@ -7,14 +7,17 @@ import {
   formatDiningResearchReply,
   formatFlightResearchReply,
   formatMoneyCapNote,
+  formatMovieResearchReply,
   mergeFlightHintsFromChat,
   mergeLifeOpsIntoCalendarText,
+  mergeMovieHintsFromChat,
   parseDiningResearchHints,
   parseFlightResearchHints,
   parseInboxErrandDraftAsk,
   parseLifeOpsHandoffIntent,
   parseLifeOpsResearchIntent,
   parseMoneyCapInr,
+  parseMovieResearchHints,
   shortMapsSearchUrl,
 } from "./lifeOps.js";
 
@@ -59,6 +62,59 @@ describe("lifeOps", () => {
     const r = parseLifeOpsResearchIntent("which Hindi movie is running this week");
     assert.ok(r);
     assert.equal(r!.domain, "home");
+    assert.ok(r!.movie);
+    assert.equal(r!.movie!.mode, "listing");
+    assert.equal(r!.movie!.language, "hindi");
+  });
+
+  it("parses shows-for follow-up as movie showtimes research", () => {
+    const r = parseLifeOpsResearchIntent("shows for this?");
+    assert.ok(r);
+    assert.ok(r!.movie);
+  });
+
+  it("merges BMS url from prior chat for showtimes", () => {
+    const base = parseMovieResearchHints("shows for this?")!;
+    const merged = mergeMovieHintsFromChat(
+      base,
+      "https://in.bookmyshow.com/movies/bengaluru/vibe/ET00456789\nVIBE (2026)",
+    );
+    assert.equal(merged.eventCode, "ET00456789");
+    assert.match(merged.bookMyShowUrl ?? "", /vibe/i);
+    assert.equal(merged.mode, "showtimes");
+  });
+
+  it("formats movie showtimes with closest + book offer", () => {
+    const { text, options } = formatMovieResearchReply({
+      hints: {
+        title: "VIBE",
+        eventCode: "ET00456789",
+        city: "bengaluru",
+        area: "Arekere",
+        language: null,
+        bookMyShowUrl: "https://in.bookmyshow.com/movies/bengaluru/vibe/ET00456789",
+        mode: "showtimes",
+      },
+      venues: [
+        {
+          name: "PVR Vega City, Bannerghatta Road",
+          distanceKm: 5,
+          times: ["4:05 PM", "6:30 PM", "10:15 PM"],
+          url: null,
+        },
+        {
+          name: "PVR Forum Mall, Kanakapura Road",
+          distanceKm: 8,
+          times: ["4:25 PM", "6:50 PM"],
+          url: null,
+        },
+      ],
+    });
+    assert.ok(options.length >= 2);
+    assert.match(text, /Vega City/i);
+    assert.match(text, /closest/i);
+    assert.match(text, /Want me to book/i);
+    assert.doesNotMatch(text, /Reply yes to lock/i);
   });
 
   it("does not treat calendar book as research", () => {

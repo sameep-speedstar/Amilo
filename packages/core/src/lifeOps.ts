@@ -11,9 +11,10 @@ export type LifeOpsResearchIntent = {
   moneyCapInr: number | null;
   /** Filled by live research when available; stubs only as fallback. */
   options: LifeOpsOption[];
-  /** Dining / flight structured hints for the research runner. */
+  /** Dining / flight / movie structured hints for the research runner. */
   dining?: DiningResearchHints;
   flight?: FlightResearchHints;
+  movie?: MovieResearchHints;
 };
 
 export type LifeOpsOption = {
@@ -51,6 +52,25 @@ export type FlightResearchHints = {
   morning: boolean;
   evening: boolean;
   googleFlightsUrl: string | null;
+};
+
+/** Movies / showtimes — research only; booking is a separate explicit ask. */
+export type MovieResearchHints = {
+  title: string | null;
+  eventCode: string | null;
+  city: string;
+  area: string | null;
+  language: string | null;
+  bookMyShowUrl: string | null;
+  /** listing = what's playing; showtimes = times for a title/url */
+  mode: "listing" | "showtimes";
+};
+
+export type MovieShowVenue = {
+  name: string;
+  distanceKm: number | null;
+  times: string[];
+  url: string | null;
 };
 
 export type LifeOpsHandoffIntent = {
@@ -269,6 +289,244 @@ export function mergeFlightHintsFromChat(
   return { from, to, whenHint, morning, evening, googleFlightsUrl };
 }
 
+const BMS_URL_RE =
+  /https?:\/\/(?:in\.)?bookmyshow\.com\/movies\/([a-z0-9-]+)\/([a-z0-9-]+)\/(ET\d+)/i;
+
+export function parseBookMyShowUrl(text: string): {
+  city: string;
+  slug: string;
+  eventCode: string;
+  url: string;
+} | null {
+  const m = text.match(BMS_URL_RE);
+  if (!m) return null;
+  return {
+    city: m[1]!.toLowerCase(),
+    slug: m[2]!,
+    eventCode: m[3]!.toUpperCase(),
+    url: m[0]!,
+  };
+}
+
+/** Movies / showtimes research hints — never books. */
+export function parseMovieResearchHints(text: string): MovieResearchHints | null {
+  const t = text.trim();
+  if (!t) return null;
+
+  const transactional = /\b(book|buy|order|reserve)\b/i.test(
+    t.replace(/\bbook\s*my\s*show\b/gi, "BMS"),
+  );
+  if (transactional) return null;
+
+  const bms = parseBookMyShowUrl(t);
+  const showAsk =
+    /\b(shows?\s+for|showtimes?|timings?|when\s+is\s+it\s+playing)\b/i.test(t) ||
+    Boolean(bms);
+  const listingAsk =
+    (/^(which|what)\b/i.test(t) && /\b(movie|film|running|playing|showing)\b/i.test(t)) ||
+    (/\b(movie|movies|film|films|cinema|what's\s+on|whats\s+on)\b/i.test(t) &&
+      /\b(running|playing|showing|this\s+week|near)\b/i.test(t));
+
+  if (!showAsk && !listingAsk) return null;
+
+  const language =
+    t.match(/\b(hindi|english|kannada|tamil|telugu|malayalam|marathi)\b/i)?.[1]?.toLowerCase() ??
+    null;
+  const area =
+    t.match(/\bnear\s+([A-Za-z][A-Za-z0-9 &'.-]{2,40})/i)?.[1]?.trim() ??
+    t.match(/\bin\s+(Arekere|Indiranagar|Koramangala|HSR|Whitefield|Jayanagar)\b/i)?.[1] ??
+    null;
+  const cityFromText = t.match(/\b(bengaluru|bangalore|mumbai|delhi|hyderabad|chennai|pune)\b/i)?.[1];
+  const city = (bms?.city ?? cityFromText ?? "bengaluru").toLowerCase().replace("bangalore", "bengaluru");
+
+  let title: string | null = null;
+  if (bms) {
+    title = bms.slug.replace(/-/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+  } else {
+    title =
+      t.match(/\b(?:for|movie)\s+([A-Za-z0-9 :'-]{2,40})/i)?.[1]?.trim() ?? null;
+  }
+
+  return {
+    title,
+    eventCode: bms?.eventCode ?? null,
+    city,
+    area,
+    language,
+    bookMyShowUrl: bms?.url ?? null,
+    mode: showAsk && (bms || title) ? "showtimes" : "listing",
+  };
+}
+
+/** Pull BMS movie link / title from prior chat for “shows for this?”. */
+export function mergeMovieHintsFromChat(
+  hints: MovieResearchHints,
+  recentChat: string | null | undefined,
+): MovieResearchHints {
+  if (!recentChat?.trim()) return hints;
+  const fromChat = parseBookMyShowUrl(recentChat);
+  const area =
+    hints.area ??
+    recentChat.match(/\bnear\s+([A-Za-z][A-Za-z0-9 &'.-]{2,40})/i)?.[1]?.trim() ??
+    recentChat.match(/\b(Arekere|Indiranagar|Koramangala|HSR|Whitefield|Jayanagar)\b/i)?.[1] ??
+    null;
+  if (!fromChat && hints.bookMyShowUrl) {
+    return { ...hints, ...(area && !hints.area ? { area } : {}) };
+  }
+  if (!fromChat) {
+    // Title from a prior research line like "VIBE (2026)"
+    const titled =
+      recentChat.match(/\b([A-Z][A-Za-z0-9 ':-]{1,40})\s*\(20\d{2}\)/)?.[1]?.trim() ?? null;
+    if (titled && !hints.title) {
+      return { ...hints, title: titled, mode: "showtimes", ...(area ? { area } : {}) };
+    }
+    return { ...hints, ...(area && !hints.area ? { area } : {}) };
+  }
+  const title =
+    hints.title ??
+    fromChat.slug.replace(/-/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+  return {
+    ...hints,
+    title,
+    eventCode: hints.eventCode ?? fromChat.eventCode,
+    city: hints.city || fromChat.city,
+    bookMyShowUrl: hints.bookMyShowUrl ?? fromChat.url,
+    mode: "showtimes",
+    ...(area ? { area } : {}),
+  };
+}
+
+export function formatMovieResearchReply(opts: {
+  hints: MovieResearchHints;
+  venues: MovieShowVenue[];
+  listingLines?: string[];
+}): { text: string; options: LifeOpsOption[] } {
+  const { hints, venues, listingLines } = opts;
+  const bms =
+    hints.bookMyShowUrl ??
+    (hints.eventCode
+      ? `https://in.bookmyshow.com/movies/${hints.city}/${(hints.title ?? "movie").toLowerCase().replace(/\s+/g, "-")}/${hints.eventCode}`
+      : `https://in.bookmyshow.com/explore/movies-${hints.city}`);
+
+  if (hints.mode === "listing") {
+    const lines = listingLines?.length
+      ? listingLines
+      : [
+          "Open BookMyShow for what's playing (live list):",
+          bms,
+        ];
+    const options: LifeOpsOption[] = [
+      {
+        id: "A",
+        label: "Open BookMyShow movies",
+        detail: hints.city,
+        estInr: null,
+        url: bms,
+      },
+      {
+        id: "B",
+        label: "Ask showtimes",
+        detail: "Paste a movie link or say shows for <title>",
+        estInr: null,
+      },
+      {
+        id: "C",
+        label: "Book after you pick",
+        detail: "Say book <movie> at <theatre> <time> — still needs your yes",
+        estInr: null,
+      },
+    ];
+    return {
+      text: [
+        hints.language
+          ? `${hints.language[0]!.toUpperCase()}${hints.language.slice(1)} movies · ${hints.city}`
+          : `Movies · ${hints.city}`,
+        "",
+        ...lines,
+        "",
+        "Want showtimes near you? Paste the BookMyShow movie link or say shows for <title>.",
+        "I won't book until you say book <theatre> <time>.",
+      ].join("\n"),
+      options,
+    };
+  }
+
+  const title = hints.title ?? "This movie";
+  const head = `${title} shows${hints.area ? ` near ${hints.area}` : ""} · ${hints.city}`;
+  // No scrape (typical BMS 403) — closest cinemas only; times via BMS link.
+  if (!venues.length) {
+    return {
+      text: [
+        head,
+        "",
+        "Live showtimes:",
+        bms,
+        "",
+        "BookMyShow blocks automated scrape right now — open that link for today's times.",
+        hints.area ? `I can still list nearby cinemas around ${hints.area} if useful.` : null,
+        "Want me to book one? Say book <theatre> <time> (still needs your yes).",
+      ]
+        .filter(Boolean)
+        .join("\n"),
+      options: [
+        {
+          id: "A",
+          label: "Open showtimes",
+          detail: title,
+          estInr: null,
+          url: bms,
+        },
+        {
+          id: "B",
+          label: "Book after you pick",
+          detail: "Say book <theatre> <time>",
+          estInr: null,
+        },
+      ],
+    };
+  }
+
+  const sorted = [...venues].sort(
+    (a, b) => (a.distanceKm ?? 99) - (b.distanceKm ?? 99),
+  );
+  const closest = sorted[0]!;
+  const hasAnyTimes = sorted.some((v) => v.times.length > 0);
+  const body = sorted.slice(0, 4).map((v, i) => {
+    const dist = v.distanceKm != null ? ` · ~${v.distanceKm.toFixed(1)} km` : "";
+    const times = v.times.length
+      ? v.times.join(", ")
+      : hasAnyTimes
+        ? "see link"
+        : "times on BookMyShow";
+    return `${i + 1}) ${v.name}${dist}\n   ${times}`;
+  });
+  const options: LifeOpsOption[] = sorted.slice(0, 3).map((v, i) => ({
+    id: String.fromCharCode(65 + i),
+    label: v.name,
+    detail: v.times.slice(0, 3).join(", ") || "showtimes",
+    estInr: null,
+    ...(v.url ? { url: v.url } : {}),
+  }));
+
+  return {
+    text: [
+      head,
+      "",
+      ...body,
+      "",
+      !hasAnyTimes ? `Live times: ${bms}` : null,
+      closest.distanceKm != null
+        ? `${closest.name} is closest${hints.area ? ` to ${hints.area}` : ""}.`
+        : null,
+      "Want me to book one? Say book <theatre> <time> — I won't pay or lock seats without your yes.",
+      hasAnyTimes ? bms : null,
+    ]
+      .filter(Boolean)
+      .join("\n"),
+    options,
+  };
+}
+
 /** Pull dining context from research / handoff lines in recent chat. */
 export function extractLifeOpsDiningContext(
   recentChat: string | null | undefined,
@@ -422,10 +680,12 @@ export function parseLifeOpsResearchIntent(text: string): LifeOpsResearchIntent 
 
   const dining = parseDiningResearchHints(t);
   const flight = parseFlightResearchHints(t);
+  const movie = parseMovieResearchHints(t);
 
   const asksResearch =
     Boolean(dining) ||
     Boolean(flight) ||
+    Boolean(movie) ||
     /\b(find|research|look up|lookup|options? for|compare|cheapest|best|check|suggest|recommend)\b/i.test(
       t,
     ) ||
@@ -435,7 +695,8 @@ export function parseLifeOpsResearchIntent(text: string): LifeOpsResearchIntent 
     (/\b(movie|movies|film|films|cinema|showtimes?|what's\s+on|whats\s+on)\b/i.test(t) &&
       !/\b(book|buy|order|reserve)\b/i.test(t.replace(/\bbook\s*my\s*show\b/gi, "BMS"))) ||
     (/^(which|what)\b/i.test(t) &&
-      /\b(movie|film|running|playing|showing)\b/i.test(t));
+      /\b(movie|film|running|playing|showing)\b/i.test(t)) ||
+    /\b(shows?\s+for|showtimes?|timings?)\b/i.test(t);
   if (!asksResearch) return null;
 
   if (/\b(book (me |a |the )?(meeting|call|slot)|invite |add to calendar)\b/i.test(t)) {
@@ -456,6 +717,7 @@ export function parseLifeOpsResearchIntent(text: string): LifeOpsResearchIntent 
     options: [],
     ...(dining ? { dining } : {}),
     ...(flight ? { flight } : {}),
+    ...(movie ? { movie } : {}),
   };
 }
 
