@@ -38,6 +38,21 @@ describe("booking", () => {
     assert.ok(i!.destinationHint?.toLowerCase().includes("indiranagar"));
   });
 
+  it("does not treat open movie research as booking", () => {
+    assert.equal(
+      parseBookingIntent("which Hindi movie is running this week", "+919999000001"),
+      null,
+    );
+    assert.equal(parseBookingIntent("shows for this?", "+919999000001"), null);
+    assert.equal(
+      parseBookingIntent(
+        "https://in.bookmyshow.com/movies/bengaluru/vibe/ET00506465",
+        "+919999000001",
+      ),
+      null,
+    );
+  });
+
   it("parses OTP reply", () => {
     assert.equal(parseBookingOtpReply("482913"), "482913");
     assert.equal(parseBookingOtpReply("yes"), null);

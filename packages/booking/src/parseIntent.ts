@@ -37,8 +37,54 @@ function defaultPayment(vertical: BookingVertical): PaymentMode {
 }
 
 /**
+ * Open research / “what’s on” asks — never enter the booking pipeline.
+ * Instinct-style: “which Hindi movie is running” is search, not book.
+ */
+export function isBookingResearchAsk(text: string): boolean {
+  const t = text.trim();
+  if (!t) return false;
+  // Explicit transactional verb wins — this is a book ask.
+  if (hasExplicitBookingVerb(t)) return false;
+
+  if (/^(which|what|who|where|when|how|is|are|do|does|did|can|could|should)\b/i.test(t)) {
+    return true;
+  }
+  if (
+    /\b(running|playing|showing|showtimes?|what'?s\s+on|films?\s+this\s+week|movies?\s+this\s+week)\b/i.test(
+      t,
+    )
+  ) {
+    return true;
+  }
+  // “shows for this?” / BMS link follow-ups without book/buy
+  if (/\b(shows?\s+for|showtimes?|timings?)\b/i.test(t)) return true;
+  return false;
+}
+
+/** Clear intent to place/order/reserve — not mere mention of movie/merchant. */
+function hasExplicitBookingVerb(t: string): boolean {
+  if (/\b(order|buy|purchase|reserve|place\s+an?\s+order)\b/i.test(t)) return true;
+  // "book tickets/cab/table" — strip merchant brand "BookMyShow" first
+  const withoutBrand = t.replace(/\bbook\s*my\s*show\b/gi, "BMS");
+  if (/\bbook\b/i.test(withoutBrand)) return true;
+  // "get/grab X from Zepto"
+  if (
+    /\b(get|grab)\b/i.test(t) &&
+    /\b(from|on)\s+(zepto|blinkit|big\s*basket|bigbasket|instamart)\b/i.test(t)
+  ) {
+    return true;
+  }
+  // "uber to airport" / "ola to Indiranagar"
+  if (/\b(uber|ola|rapido)\s+to\b/i.test(t)) return true;
+  return false;
+}
+
+/**
  * Standing parse for life bookings. Returns null if not a booking ask.
  * Phone must be supplied by the channel layer.
+ *
+ * Research questions (what’s playing, which movie…) return null so life-ops /
+ * brain can answer — only explicit book/order/reserve enters this pipeline.
  */
 export function parseBookingIntent(
   text: string,
@@ -48,16 +94,12 @@ export function parseBookingIntent(
   if (!t || t.length > 800) return null;
   if (!phone?.trim()) return null;
 
-  const looksBooking =
-    /\b(order|buy|get|book|reserve|tickets?|grocery|milk|cheese|table for|movie|cinema|cab|taxi|ride)\b/i.test(
-      t,
-    ) || MERCHANT_ALIASES.some((a) => a.re.test(t));
-  if (!looksBooking) return null;
-
-  // Don't steal calendar / pure life-ops research.
+  // Don't steal calendar / pure life-ops research / open web asks.
   if (/\b(block calendar|invite |add to calendar|check flight|flights?\s+from)\b/i.test(t)) {
     return null;
   }
+  if (isBookingResearchAsk(t)) return null;
+  if (!hasExplicitBookingVerb(t)) return null;
 
   let merchant: BookingMerchant = "generic";
   for (const a of MERCHANT_ALIASES) {
@@ -67,11 +109,12 @@ export function parseBookingIntent(
     }
   }
   if (merchant === "generic") {
-    if (/\b(cab|taxi|ride)\b/i.test(t)) merchant = "uber";
-    else if (/\b(movie|cinema|tickets?|pvr|inox)\b/i.test(t)) merchant = "bookmyshow";
+    if (/\b(cab|taxi|ride|uber|ola|rapido)\b/i.test(t)) merchant = "uber";
+    else if (/\b(movie|cinema|tickets?|pvr|inox|bookmyshow)\b/i.test(t)) merchant = "bookmyshow";
     else if (/\b(table|reserv|dinner|lunch)\b/i.test(t) && !/\border\b/i.test(t))
       merchant = "zomato";
-    else if (/\b(order|grocery|milk|cheese|vegetables)\b/i.test(t)) merchant = "zepto";
+    else if (/\b(order|grocery|milk|cheese|vegetables|zepto|blinkit)\b/i.test(t))
+      merchant = "zepto";
   }
 
   const vertical = verticalFor(merchant, t);

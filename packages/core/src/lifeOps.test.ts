@@ -55,6 +55,12 @@ describe("lifeOps", () => {
     assert.match(r!.dining!.searchQuery, /pub/i);
   });
 
+  it("parses movie what's-playing as research not calendar", () => {
+    const r = parseLifeOpsResearchIntent("which Hindi movie is running this week");
+    assert.ok(r);
+    assert.equal(r!.domain, "home");
+  });
+
   it("does not treat calendar book as research", () => {
     assert.equal(parseLifeOpsResearchIntent("book a meeting with Priya tomorrow at 4"), null);
   });

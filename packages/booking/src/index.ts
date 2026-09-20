@@ -25,7 +25,7 @@ export {
   isHostAllowed,
   spendCapFor,
 } from "./allowlist.js";
-export { parseBookingIntent, parseBookingOtpReply } from "./parseIntent.js";
+export { parseBookingIntent, parseBookingOtpReply, isBookingResearchAsk } from "./parseIntent.js";
 export {
   BookingConnector,
   formatBookingResultForWa,

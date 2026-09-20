@@ -113,7 +113,7 @@ export function domainFromText(t: string): LifeOpsDomain {
     return "errand";
   }
   if (
-    /\b(school|pti|vendor|plumber|electrician|handyman|reservation|restaurant|table for|dinner|lunch|brunch|vegetarian|vegan|pickup|nanny|maid|pub|pubs|bar|bars|biergarten|drinks|hangout)\b/i.test(
+    /\b(school|pti|vendor|plumber|electrician|handyman|reservation|restaurant|table for|dinner|lunch|brunch|vegetarian|vegan|pickup|nanny|maid|pub|pubs|bar|bars|biergarten|drinks|hangout|movie|movies|cinema|showtimes?|film|films)\b/i.test(
       t,
     )
   ) {
@@ -430,7 +430,12 @@ export function parseLifeOpsResearchIntent(text: string): LifeOpsResearchIntent 
       t,
     ) ||
     (/\b(flight|hotel|train)s?\b/i.test(t) &&
-      /\b(to|from|under|for|tomorrow|next)\b/i.test(t));
+      /\b(to|from|under|for|tomorrow|next)\b/i.test(t)) ||
+    // Movies / showtimes — open web research, not booking (unless book/buy elsewhere)
+    (/\b(movie|movies|film|films|cinema|showtimes?|what's\s+on|whats\s+on)\b/i.test(t) &&
+      !/\b(book|buy|order|reserve)\b/i.test(t.replace(/\bbook\s*my\s*show\b/gi, "BMS"))) ||
+    (/^(which|what)\b/i.test(t) &&
+      /\b(movie|film|running|playing|showing)\b/i.test(t));
   if (!asksResearch) return null;
 
   if (/\b(book (me |a |the )?(meeting|call|slot)|invite |add to calendar)\b/i.test(t)) {
