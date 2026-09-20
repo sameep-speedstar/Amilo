@@ -18,6 +18,7 @@ import {
 } from "./attention.js";
 import {
   attendedMeetingLabel,
+  dedupeCalendarBriefLines,
   extractMeetingActionItems,
   focusLabelsMatch,
   isAttendedMeeting,
@@ -2509,7 +2510,7 @@ export function isActionDemandingMail(hay: string, actor = ""): boolean {
     /\b(charges? levied|imps charges?|unauthorised|unauthorized|dispute (the )?charge)\b/.test(
       h,
     ) ||
-    /\b(e-?vot(?:e|ing)|cast your vote|vote now)\b/.test(h) ||
+    // e-voting / AGM ballots are quieter (M list) — not FOCUS.
     /\b(certificate|ssl|cert)\b/.test(h) && /\b(expir\w*|renew(?:al)?|key rotation)\b/.test(h) ||
     // Lawyer / advisor drafts awaiting user sign-off — not soft FYI.
     /\bdraft for your review\b/.test(h) ||
@@ -3475,7 +3476,7 @@ export async function buildPriorityBriefPayload(
   }
   const calSeen = new Set<string>();
   const calUnique: string[] = [];
-  for (const bit of calBits) {
+  for (const bit of dedupeCalendarBriefLines(calBits)) {
     const k = bit.toLowerCase().replace(/\s+/g, " ");
     if (calSeen.has(k)) continue;
     calSeen.add(k);
@@ -3590,7 +3591,11 @@ export type PendingActionKind =
   | "calendar_conflict"
   | "email_draft"
   | "life_ops_research"
-  | "life_ops_handoff";
+  | "life_ops_handoff"
+  | "booking_otp"
+  | "booking_confirm"
+  | "booking_pay_link"
+  | "booking_select";
 
 export type PendingActionStatus =
   | "pending"

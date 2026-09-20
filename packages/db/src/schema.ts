@@ -512,3 +512,39 @@ export const studioAssets = pgTable(
   },
   (t) => [index("studio_assets_post_idx").on(t.postId)],
 );
+
+/** Per-user cloud browser profile metadata (cookies live encrypted in Blob/FS). */
+export const browserProfiles = pgTable("browser_profiles", {
+  userId: uuid("user_id")
+    .primaryKey()
+    .references(() => users.id, { onDelete: "cascade" }),
+  status: varchar("status", { length: 20 }).notNull().default("idle"),
+  storagePath: text("storage_path"),
+  lastActiveAt: timestamp("last_active_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/** Async browser / booking jobs. */
+export const browserJobs = pgTable(
+  "browser_jobs",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    merchant: varchar("merchant", { length: 40 }).notNull(),
+    vertical: varchar("vertical", { length: 40 }).notNull(),
+    status: varchar("status", { length: 40 }).notNull().default("queued"),
+    intent: jsonb("intent").$type<Record<string, unknown>>().notNull().default({}),
+    result: jsonb("result").$type<Record<string, unknown>>().notNull().default({}),
+    error: text("error"),
+    pendingKind: varchar("pending_kind", { length: 40 }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("browser_jobs_user_status_idx").on(t.userId, t.status),
+    index("browser_jobs_created_idx").on(t.createdAt),
+  ],
+);

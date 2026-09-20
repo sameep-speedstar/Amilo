@@ -26,6 +26,14 @@ import {
 } from "@amilo/core";
 import { processVoiceNote } from "./voice/pipeline.js";
 import { writeReminderCalendarNudge } from "./calendarNudge.js";
+import { runLifeOpsResearch } from "./lifeOpsResearch.js";
+import {
+  continueBookingOtp,
+  continueBookingSelect,
+  parseBookingOtpReply,
+  startBookingFlow,
+  tryParseBookingIntent,
+} from "./bookingService.js";
 import { appendOnboardingTipToBrief, resolveAndStampTip } from "./onboardingTips.js";
 import {
   addMutedPattern,
@@ -54,6 +62,7 @@ import {
   listPlaces,
   rememberPersonEmail,
   resolveCommitmentByHint,
+  resolvePendingAction,
   resolvePersonEmail,
   getWhatsAppAddress,
   getWhatsAppLastInbound,
@@ -437,10 +446,14 @@ function orchestratorDeps(): OrchestratorDeps {
           message: `Saved ${label}, but couldn't geocode that address yet — leave-by may wait until Maps resolves it.`,
         };
       }
-      return {
-        ok: true,
-        message: `Saved ${label}: ${address}. I'll use it for leave-by times.`,
-      };
+      return { ok: true, message: `Saved ${label}: ${address}. I'll use it for leave-by times.` };
+    },
+    researchLifeOps: async (_userId, intent) => {
+      const result = await runLifeOpsResearch({
+        intent,
+        mapsApiKey: settings.googleMapsApiKey,
+      });
+      return { text: result.text, options: result.options };
     },
     listPlacesText: async (userId) => {
       const rows = await listPlaces(db, userId);
@@ -1217,6 +1230,59 @@ async function processInbound(rawJson: unknown): Promise<void> {
     );
 
     try {
+      // Cloud browser bookings — OTP / select continue before generic orchestrator.
+      const openBooking = await getOpenPendingAction(db, user.id);
+      if (openBooking?.kind === "booking_otp") {
+        const otp = parseBookingOtpReply(content);
+        if (otp) {
+          const jobId = String(openBooking.payload.jobId ?? "");
+          await resolvePendingAction(db, openBooking.id, {
+            status: "confirmed",
+            result: { otpRelayed: true },
+          });
+          const outbound = await continueBookingOtp(db, {
+            userId: user.id,
+            jobId,
+            otp,
+          });
+          for (const msg of outbound) await sendAndLogOutbound(user.id, msg);
+          continue;
+        }
+      }
+      if (openBooking?.kind === "booking_select") {
+        if (!/^(cancel|no|nope)$/i.test(content.trim())) {
+          const jobId = String(openBooking.payload.jobId ?? "");
+          await resolvePendingAction(db, openBooking.id, {
+            status: "confirmed",
+            result: { selection: content.slice(0, 200) },
+          });
+          const outbound = await continueBookingSelect(db, {
+            userId: user.id,
+            jobId,
+            selection: content,
+          });
+          for (const msg of outbound) await sendAndLogOutbound(user.id, msg);
+          continue;
+        }
+      }
+
+      // New booking ask (grocery / table / tickets) — before brain.
+      if (
+        (!openBooking ||
+          openBooking.kind.startsWith("booking_") === false) &&
+        tryParseBookingIntent(content, parsed.phoneE164)
+      ) {
+        const outbound = await startBookingFlow(db, {
+          userId: user.id,
+          phone: parsed.phoneE164,
+          text: content,
+        });
+        if (outbound?.length) {
+          for (const msg of outbound) await sendAndLogOutbound(user.id, msg);
+          continue;
+        }
+      }
+
       let outbound = await handleInbound(inbound, orchestratorDeps());
       // LifeOS lesson: echo Heard in the first reply — no separate transcript confirm.
       if (voiceHeard && outbound.length) {

@@ -52,6 +52,7 @@ See `docs/API_SUBDOMAIN.md` for DNS, WABA, OAuth, and promote checklist.
 
 - Set places: `home is <address>` / `office is <address>` (multi-line in one message supported)
 - Requires `GOOGLE_MAPS_API_KEY`; Routes capped ~200/day; geocode cache permanent
+- **Life ops dining:** Places API (New) `places:searchText` must be allowed on that key for named restaurant picks; otherwise Amilo returns a live Maps search link (no invented venues). Flights: Google Flights deep link only — no invented fares. Book/reserve still needs yes.
 - Briefs show leave-by + haversine travel conflicts (no Routes on render)
 - Forward flight/hotel/train/bus confirmations → calendar propose with leave-by tip
 

@@ -16,8 +16,9 @@ import {
   type InboundCalendarBlock,
   type ScheduleNodeLike,
 } from "@amilo/core";
-import { and, eq } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import {
+  commitments,
   countWatcherAlertsToday,
   createCommitment,
   createPendingAction,
@@ -485,6 +486,21 @@ async function trackCalendarInviteCommitment(
   inv: InboundCalendarBlock,
 ): Promise<string | null> {
   try {
+    // Reuse an open invite commitment for the same meeting (title + start).
+    const existing = await db.query.commitments.findFirst({
+      where: and(
+        eq(commitments.userId, userId),
+        eq(commitments.status, "open"),
+        eq(commitments.reason, "calendar_invite"),
+        eq(commitments.title, inv.title.slice(0, 200)),
+      ),
+      orderBy: [desc(commitments.createdAt)],
+    });
+    if (existing?.dueAt && Math.abs(existing.dueAt.getTime() - inv.start.getTime()) < 120_000) {
+      return existing.id;
+    }
+    if (existing && !existing.dueAt) return existing.id;
+
     const { id } = await createCommitment(db, {
       userId,
       title: inv.title.slice(0, 200),

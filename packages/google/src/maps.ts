@@ -2,9 +2,19 @@
 
 const GEOCODE_BASE = "https://maps.googleapis.com/maps/api/geocode/json";
 const ROUTES_BASE = "https://routes.googleapis.com/directions/v2:computeRoutes";
+const PLACES_SEARCH_TEXT = "https://places.googleapis.com/v1/places:searchText";
 
 export type GeocodeResult = { lat: number; lng: number };
 export type RouteResult = { durationMins: number; distanceMeters: number };
+export type PlaceSearchHit = {
+  name: string;
+  address: string;
+  placeId: string;
+  rating: number | null;
+  userRatingsTotal: number | null;
+  mapsUrl: string;
+  types: string[];
+};
 
 function latLngFromMapsUrl(url: string): GeocodeResult | null {
   const at = url.match(/@(-?\d+\.\d+),(-?\d+\.\d+)/);
@@ -124,6 +134,97 @@ export class MapsClient {
       };
     } catch {
       return null;
+    }
+  }
+
+  /**
+   * Places API (New) Text Search — dining / local research (no OAuth).
+   * Returns [] on any failure so life-ops can degrade quietly.
+   * Requires Places API (New) enabled for the Maps API key (SearchText).
+   */
+  async searchPlaces(
+    query: string,
+    opts?: { location?: GeocodeResult; radiusMeters?: number; limit?: number },
+  ): Promise<PlaceSearchHit[]> {
+    try {
+      const q = query.trim().slice(0, 200);
+      if (!q) return [];
+      const body: Record<string, unknown> = {
+        textQuery: q,
+        maxResultCount: Math.min(Math.max(opts?.limit ?? 5, 1), 10),
+        languageCode: "en",
+      };
+      if (opts?.location) {
+        body.locationBias = {
+          circle: {
+            center: {
+              latitude: opts.location.lat,
+              longitude: opts.location.lng,
+            },
+            radius: Math.min(Math.max(opts.radiusMeters ?? 5000, 500), 20_000),
+          },
+        };
+      }
+      const res = await fetch(PLACES_SEARCH_TEXT, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Goog-Api-Key": this.apiKey,
+          "X-Goog-FieldMask":
+            "places.id,places.displayName,places.formattedAddress,places.rating,places.userRatingCount,places.googleMapsUri,places.types",
+        },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(12_000),
+      });
+      if (!res.ok) {
+        // Surface once in logs for ops (key restrictions / API not enabled).
+        try {
+          const errBody = await res.text();
+          console.error(
+            JSON.stringify({
+              event: "places_search_text_failed",
+              status: res.status,
+              body: errBody.slice(0, 300),
+            }),
+          );
+        } catch {
+          /* ignore */
+        }
+        return [];
+      }
+      const data = (await res.json()) as {
+        places?: Array<{
+          id?: string;
+          displayName?: { text?: string };
+          formattedAddress?: string;
+          rating?: number;
+          userRatingCount?: number;
+          googleMapsUri?: string;
+          types?: string[];
+        }>;
+      };
+      if (!data.places?.length) return [];
+      const out: PlaceSearchHit[] = [];
+      for (const r of data.places) {
+        const name = (r.displayName?.text ?? "").trim();
+        const placeId = (r.id ?? "").trim();
+        if (!name) continue;
+        out.push({
+          name: name.slice(0, 80),
+          address: (r.formattedAddress ?? "").trim().slice(0, 120),
+          placeId: placeId || name,
+          rating: typeof r.rating === "number" ? r.rating : null,
+          userRatingsTotal:
+            typeof r.userRatingCount === "number" ? r.userRatingCount : null,
+          mapsUrl:
+            (r.googleMapsUri ?? "").trim() ||
+            `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(name)}`,
+          types: Array.isArray(r.types) ? r.types.slice(0, 8) : [],
+        });
+      }
+      return out;
+    } catch {
+      return [];
     }
   }
 }

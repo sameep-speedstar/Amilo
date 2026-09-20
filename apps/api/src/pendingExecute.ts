@@ -1,4 +1,10 @@
-import { formatLocalIsoWall, parseIsoDate } from "@amilo/core";
+import {
+  formatCalendarProposalSummary,
+  formatLocalIsoWall,
+  lifeOpsHandoffConfirmMessage,
+  lifeOpsResearchConfirmMessage,
+  parseIsoDate,
+} from "@amilo/core";
 import {
   cancelCalendarEvent,
   createCalendarEvent,
@@ -10,6 +16,7 @@ import {
 } from "@amilo/google";
 import {
   appendAudit,
+  createPendingAction,
   deleteCalendarEventByGoogleId,
   getGoogleAccount,
   listGoogleAccounts,
@@ -20,10 +27,6 @@ import {
   type PendingActionRow,
 } from "@amilo/db";
 import { ensureAccessToken } from "./googleSync.js";
-import {
-  lifeOpsHandoffConfirmMessage,
-  lifeOpsResearchConfirmMessage,
-} from "@amilo/core";
 
 function str(v: unknown, fallback = ""): string {
   return v == null ? fallback : String(v).trim();
@@ -147,7 +150,106 @@ export async function executePendingAction(
         note: "life_ops_handoff",
         meta: { pendingId: row.id },
       });
-      return { ok: true, message: lifeOpsHandoffConfirmMessage(payload) };
+
+      let message = lifeOpsHandoffConfirmMessage(payload);
+      const hold = payload.calendarHold;
+      if (hold && typeof hold === "object") {
+        const h = hold as Record<string, unknown>;
+        const title = str(h.title, "Dinner");
+        const startIso = str(h.startIso || h.start);
+        const endIso = str(h.endIso || h.end);
+        const location = str(h.location);
+        if (startIso && endIso) {
+          const calPayload: Record<string, unknown> = {
+            accountLabel: str(h.accountLabel, "personal"),
+            title,
+            start: startIso,
+            end: endIso,
+            startIso,
+            endIso,
+            ...(location ? { location } : {}),
+          };
+          const summary = formatCalendarProposalSummary({
+            kind: "calendar_create",
+            title,
+            startIso,
+            endIso,
+            timeZone: timezone,
+            attendees: [],
+          });
+          const calPending = await createPendingAction(db, {
+            userId: row.userId,
+            kind: "calendar_create",
+            summary,
+            payload: calPayload,
+          });
+          message = [
+            message,
+            "",
+            `Proposed (${calPending.kind}):`,
+            calPending.summary,
+            "",
+            "Reply yes to put it on your calendar (still confirm-first).",
+          ].join("\n");
+        }
+      }
+      return { ok: true, message };
+    }
+
+    if (row.kind === "booking_confirm") {
+      const jobId = str(payload.jobId);
+      if (!jobId) throw new Error("Missing booking job");
+      const { confirmBookingPlace } = await import("./bookingService.js");
+      const placed = await confirmBookingPlace(db, {
+        userId: row.userId,
+        jobId,
+      });
+      await resolvePendingAction(db, row.id, {
+        status: placed.ok ? "confirmed" : "failed",
+        result: { message: placed.message },
+      });
+      await appendAudit(db, {
+        userId: row.userId,
+        action: "booking_confirm",
+        detail: { pendingId: row.id, jobId },
+        confirmed: true,
+      });
+      await logEvalEvent(db, {
+        userId: row.userId,
+        event: "action_confirmed",
+        note: "booking_confirm",
+        meta: { pendingId: row.id, jobId },
+      });
+      return { ok: placed.ok, message: placed.message };
+    }
+
+    if (row.kind === "booking_pay_link") {
+      // User acknowledging they will pay / paid — no Amilo card entry.
+      await resolvePendingAction(db, row.id, {
+        status: "confirmed",
+        result: { payUrl: payload.payUrl, acknowledged: true },
+      });
+      await appendAudit(db, {
+        userId: row.userId,
+        action: "booking_pay_link",
+        detail: { pendingId: row.id },
+        confirmed: true,
+      });
+      return {
+        ok: true,
+        message:
+          "When you've paid, forward the ticket/receipt or say done. Amilo never enters UPI or card details.",
+      };
+    }
+
+    if (row.kind === "booking_otp" || row.kind === "booking_select") {
+      return {
+        ok: false,
+        message:
+          row.kind === "booking_otp"
+            ? "Send the one-time code from your phone (digits only), or cancel."
+            : "Send your picks (e.g. Milk 3; Cheese A), or cancel.",
+      };
     }
 
     if (row.kind === "email_draft" || row.kind === "email_send") {

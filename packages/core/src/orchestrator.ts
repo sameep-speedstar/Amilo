@@ -18,11 +18,16 @@ import {
   parseForwardToCalendar,
 } from "./forwardParse.js";
 import {
+  buildDiningHandoffScript,
+  extractLifeOpsDiningContext,
   formatMoneyCapNote,
+  mergeFlightHintsFromChat,
+  mergeLifeOpsIntoCalendarText,
   parseInboxErrandDraftAsk,
   parseLifeOpsHandoffIntent,
   parseLifeOpsResearchIntent,
   parseMoneyCapInr,
+  type LifeOpsResearchIntent,
 } from "./lifeOps.js";
 import {
   DELETE_MENU,
@@ -622,6 +627,11 @@ export interface OrchestratorDeps {
     userId: string,
     opts: { label: string; email: string },
   ) => Promise<void>;
+  /** Live life-ops research (Places / flight links). Returns grounded text; never books. */
+  researchLifeOps?: (
+    userId: string,
+    intent: LifeOpsResearchIntent,
+  ) => Promise<{ text: string; options: Array<Record<string, unknown>> }>;
   createPending?: (opts: {
     userId: string;
     kind: string;
@@ -697,6 +707,7 @@ export function looksLikeNewActionIntent(
   if (isCalendarInviteIntent(t)) return true;
   if (parseReminderMessage(t, timeZone, now).length > 0) return true;
   if (isReminderAsk(t)) return true;
+  if (parseLifeOpsResearchIntent(t) || parseLifeOpsHandoffIntent(t)) return true;
   if (/\b(send|draft)\b/i.test(t) && /\b(email|mail|invite)\b/i.test(t)) return true;
   if (/\bcalendar invite\b/i.test(t)) return true;
   if (/\binvite\b/i.test(t) && /@|\bspeedstar\b|\brajeev\b|\brajiv\b/i.test(t)) return true;
@@ -2419,141 +2430,267 @@ export async function handleInbound(
     }
   }
 
-  // Life ops — research shortlist (never books / spends).
-  if (deps.createPending) {
-    const research = parseLifeOpsResearchIntent(text);
-    if (research) {
-      const pending = await deps.createPending({
-        userId: msg.userId,
-        kind: "life_ops_research",
-        summary: research.summary,
-        payload: {
-          domain: research.domain,
-          query: research.query,
-          moneyCapInr: research.moneyCapInr,
-          options: research.options,
-        },
-      });
-      return [
-        {
-          text: [
-            `Proposed (${pending.kind}):`,
-            pending.summary,
-            "",
-            "I have not booked or paid anything.",
-          ].join("\n"),
-        },
-      ];
-    }
-
-    const handoff = parseLifeOpsHandoffIntent(text);
-    if (handoff) {
-      const payload: Record<string, unknown> = {
-        domain: handoff.domain,
-        channel: handoff.channel,
-        moneyCapInr: handoff.moneyCapInr,
-        summary: handoff.summary,
-        sendOnConfirm: false,
+  // Life ops — live research immediately (never books). Handoff still confirm-first.
+  {
+    let research = parseLifeOpsResearchIntent(text);
+    if (research?.flight && recentChatSummary) {
+      research = {
+        ...research,
+        flight: mergeFlightHintsFromChat(research.flight, recentChatSummary),
       };
-      if (handoff.email) {
-        payload.to = handoff.email.toHint ?? "";
-        payload.subject = handoff.email.subject;
-        payload.body = handoff.email.body;
-        payload.draftOnly = true;
-        payload.accountLabel = "personal";
+    }
+    // Follow-up like "option A, check morning flight" with route only in prior chat.
+    if (!research && recentChatSummary && /\b(flight|fare|morning|evening)\b/i.test(text)) {
+      const base = parseLifeOpsResearchIntent(
+        `check flights ${text}`.slice(0, 200),
+      );
+      if (base?.flight || /\bflight\b/i.test(text)) {
+        const merged = mergeFlightHintsFromChat(
+          base?.flight ?? {
+            from: null,
+            to: null,
+            whenHint: null,
+            morning: /\bmorning\b/i.test(text),
+            evening: /\bevening\b/i.test(text),
+            googleFlightsUrl: null,
+          },
+          recentChatSummary,
+        );
+        if (merged.from && merged.to) {
+          research = {
+            domain: "travel",
+            query: text.slice(0, 240),
+            moneyCapInr: parseMoneyCapInr(text),
+            options: [],
+            flight: merged,
+          };
+        }
       }
-      if (handoff.channel === "vendor") {
-        payload.script = [
-          `Re: ${text.replace(/\s+/g, " ").slice(0, 120)}`,
-          "Hi — checking availability for the slot we discussed. Please confirm timing and fee.",
-          formatMoneyCapNote(handoff.moneyCapInr) ?? "",
-        ]
-          .filter(Boolean)
-          .join("\n");
+    }
+    if (research) {
+      if (deps.researchLifeOps) {
+        try {
+          const live = await deps.researchLifeOps(msg.userId, research);
+          return [{ text: live.text }];
+        } catch (err) {
+          console.error(
+            JSON.stringify({
+              event: "life_ops_research_failed",
+              error: err instanceof Error ? err.message : String(err),
+            }),
+          );
+        }
       }
-      const pending = await deps.createPending({
-        userId: msg.userId,
-        kind: "life_ops_handoff",
-        summary: handoff.summary,
-        payload,
-      });
+      // No maps / runner — honest fallback, still no invented fares or venues.
+      if (research.flight) {
+        const from = research.flight.from ?? "?";
+        const to = research.flight.to ?? "?";
+        return [
+          {
+            text: [
+              `Flights ${from} → ${to}${research.flight.whenHint ? ` · ${research.flight.whenHint}` : ""}`,
+              research.flight.googleFlightsUrl ??
+                "Tell me from/to cities for a Google Flights link.",
+              research.flight.googleFlightsUrl
+                ? "Open that for live fares — I won't invent a flight number. Say book <flight> when you've picked one (still needs yes)."
+                : "I won't invent fares. Maps/research runner isn't available right now.",
+            ].join("\n"),
+          },
+        ];
+      }
       return [
         {
           text: [
-            `Proposed (${pending.kind}):`,
-            pending.summary,
-            "",
-            "Nothing sent or spent yet.",
+            `Research: ${research.query}`,
+            "Live Places research isn't available in this environment yet.",
+            "I won't invent restaurants or book without your yes.",
           ].join("\n"),
         },
       ];
     }
 
-    const errand = parseInboxErrandDraftAsk(text);
-    if (errand) {
-      return proposeEmailComposePending(
-        msg,
-        deps,
-        {
-          mode: errand.mode,
-          toHint: errand.toHint,
-          about: errand.about,
-        },
-        { userName: name },
-      );
+    if (deps.createPending) {
+      const handoff = parseLifeOpsHandoffIntent(text);
+      if (handoff) {
+        const diningCtx = extractLifeOpsDiningContext(recentChatSummary, text);
+        const venue =
+          handoff.venueHint ??
+          diningCtx?.venue ??
+          (handoff.optionId ? `option ${handoff.optionId}` : null);
+        const payload: Record<string, unknown> = {
+          domain: handoff.domain,
+          channel: handoff.channel,
+          moneyCapInr: handoff.moneyCapInr,
+          summary: handoff.summary,
+          sendOnConfirm: false,
+          ...(handoff.optionId ? { optionId: handoff.optionId } : {}),
+          ...(venue ? { venueHint: venue } : {}),
+        };
+        if (handoff.email) {
+          payload.to = handoff.email.toHint ?? "";
+          payload.subject = handoff.email.subject;
+          payload.body = handoff.email.body;
+          payload.draftOnly = true;
+          payload.accountLabel = "personal";
+        }
+        if (handoff.channel === "vendor") {
+          if (handoff.domain === "home" || diningCtx || venue) {
+            const who = venue ?? "the venue";
+            payload.domain = "home";
+            payload.script = buildDiningHandoffScript({
+              venue: who,
+              ...(diningCtx?.partySize != null ? { partySize: diningCtx.partySize } : {}),
+              ...(diningCtx?.whenHint ? { whenHint: diningCtx.whenHint } : {}),
+              ...(diningCtx?.area ? { area: diningCtx.area } : {}),
+              ...(diningCtx?.vibe ? { vibe: diningCtx.vibe } : {}),
+            });
+            payload.summary = [
+              `Handoff (reservation): ${who}`,
+              diningCtx?.partySize ? `table for ${diningCtx.partySize}` : null,
+              diningCtx?.whenHint ?? null,
+              diningCtx?.area ? `near ${diningCtx.area}` : null,
+              formatMoneyCapNote(handoff.moneyCapInr),
+              "Reply yes for the call/Zomato script — I won't book or pay without that.",
+            ]
+              .filter(Boolean)
+              .join(" · ");
+            // Calendar hold for asked time/place — proposed after handoff yes.
+            if (diningCtx?.whenHint || diningCtx?.venue || venue) {
+              const calMerged = mergeLifeOpsIntoCalendarText(
+                `schedule ${diningCtx?.vibe === "pub" ? "drinks" : "dinner"} at ${who} ${diningCtx?.whenHint ?? "tomorrow 8pm"}`,
+                recentChatSummary ??
+                  `Dining · ${diningCtx?.whenHint ?? "tomorrow 8pm"} · table for ${diningCtx?.partySize ?? 2}`,
+              );
+              const calHint = parseCalendarCreateHint(calMerged, briefCtx.timezone);
+              if (calHint) {
+                payload.calendarHold = {
+                  title: calHint.title.includes(who)
+                    ? calHint.title
+                    : `${diningCtx?.vibe === "pub" ? "Drinks" : "Dinner"} at ${who}`,
+                  start: calHint.startIso,
+                  end: calHint.endIso,
+                  startIso: calHint.startIso,
+                  endIso: calHint.endIso,
+                  location: who,
+                  accountLabel: "personal",
+                };
+              }
+            }
+          } else {
+            const who =
+              venue ??
+              (handoff.optionId ? `option ${handoff.optionId}` : "the venue");
+            payload.script = [
+              `Re: reservation / booking — ${who}`,
+              `Hi — looking for ${handoff.domain === "travel" ? "this travel option" : "a table"} as discussed (${text.replace(/\s+/g, " ").slice(0, 100)}). Please confirm availability.`,
+              formatMoneyCapNote(handoff.moneyCapInr) ?? "",
+            ]
+              .filter(Boolean)
+              .join("\n");
+          }
+        }
+        const pending = await deps.createPending({
+          userId: msg.userId,
+          kind: "life_ops_handoff",
+          summary: String(payload.summary ?? handoff.summary),
+          payload,
+        });
+        return [
+          {
+            text: [
+              `Proposed (${pending.kind}):`,
+              pending.summary,
+              "",
+              "Nothing sent or spent yet.",
+            ].join("\n"),
+          },
+        ];
+      }
+
+      const errand = parseInboxErrandDraftAsk(text);
+      if (errand) {
+        return proposeEmailComposePending(
+          msg,
+          deps,
+          {
+            mode: errand.mode,
+            toHint: errand.toHint,
+            about: errand.about,
+          },
+          { userName: name },
+        );
+      }
     }
   }
 
   // Calendar invite by name — resolve stored email, propose calendar_create (not email draft).
-  if (deps.createPending && isCalendarInviteIntent(text)) {
-    const hint = parseCalendarCreateHint(text, briefCtx.timezone);
-    if (hint) {
-      const attendees = await resolveAttendeesFromMessage(msg.userId, text, deps);
-      if (!attendees.length) {
-        const names = extractInviteeNames(text);
-        return [
-          {
-            text: names.length
-              ? `I don't have an email for ${names.join(", ")} yet. Say e.g. invite ${names[0]} <email@domain> for that slot.`
-              : "Who should I invite? Include a name I know, or an email address.",
-          },
-        ];
-      }
-      for (const email of attendees) {
-        if (deps.rememberContactEmail) {
-          const label =
-            extractInviteeNames(text)[0] ??
-            (email.startsWith("rajeev@") ? "Rajeev" : email.split("@")[0] ?? "Contact");
-          await deps.rememberContactEmail(msg.userId, { label, email });
+  {
+    const calText = mergeLifeOpsIntoCalendarText(text, recentChatSummary);
+    if (deps.createPending && isCalendarInviteIntent(calText)) {
+      const hint = parseCalendarCreateHint(calText, briefCtx.timezone);
+      if (hint) {
+        const attendees = await resolveAttendeesFromMessage(msg.userId, calText, deps);
+        if (!attendees.length) {
+          const names = extractInviteeNames(calText);
+          return [
+            {
+              text: names.length
+                ? `I don't have an email for ${names.join(", ")} yet. Say e.g. invite ${names[0]} <email@domain> for that slot.`
+                : "Who should I invite? Include a name I know, or an email address.",
+            },
+          ];
         }
+        for (const email of attendees) {
+          if (deps.rememberContactEmail) {
+            const label =
+              extractInviteeNames(calText)[0] ??
+              (email.startsWith("rajeev@") ? "Rajeev" : email.split("@")[0] ?? "Contact");
+            await deps.rememberContactEmail(msg.userId, { label, email });
+          }
+        }
+        const withName = extractInviteeNames(calText)[0];
+        const diningCtx = extractLifeOpsDiningContext(recentChatSummary, calText);
+        const title =
+          hint.title && !/^(busy|event|meeting)$/i.test(hint.title)
+            ? hint.title
+            : diningCtx?.venue
+              ? `${diningCtx.vibe === "pub" ? "Drinks" : "Dinner"} at ${diningCtx.venue}${withName ? ` · ${withName}` : ""}`
+              : withName
+                ? `Meeting with ${withName}`
+                : "Meeting";
+        const location =
+          (await resolveCalendarLocation(msg.userId, calText, deps)) ??
+          diningCtx?.venue ??
+          null;
+        return proposeCalendarCreatePending(msg, deps, briefCtx.timezone, {
+          title,
+          start: hint.startIso,
+          end: hint.endIso,
+          startIso: hint.startIso,
+          endIso: hint.endIso,
+          attendees,
+          ...(location ? { location } : {}),
+        });
       }
-      const withName = extractInviteeNames(text)[0];
-      const title =
-        hint.title && !/^(busy|event|meeting)$/i.test(hint.title)
-          ? hint.title
-          : withName
-            ? `Meeting with ${withName}`
-            : "Meeting";
-      const location = await resolveCalendarLocation(msg.userId, text, deps);
-      return proposeCalendarCreatePending(msg, deps, briefCtx.timezone, {
-        title,
-        start: hint.startIso,
-        end: hint.endIso,
-        startIso: hint.startIso,
-        endIso: hint.endIso,
-        attendees,
-        ...(location ? { location } : {}),
-      });
     }
   }
 
   // Standing calendar block / meeting (before brain — avoids wrong "tomorrow" invents).
   if (deps.createPending) {
-    const hint = parseCalendarCreateHint(text, briefCtx.timezone);
+    const calText = mergeLifeOpsIntoCalendarText(text, recentChatSummary);
+    const hint = parseCalendarCreateHint(calText, briefCtx.timezone);
     if (hint) {
-      const location = await resolveCalendarLocation(msg.userId, text, deps);
+      const diningCtx = extractLifeOpsDiningContext(recentChatSummary, calText);
+      const location =
+        (await resolveCalendarLocation(msg.userId, calText, deps)) ??
+        diningCtx?.venue ??
+        null;
+      const title =
+        diningCtx?.venue && /^(busy|event|meeting|calendar)$/i.test(hint.title.trim())
+          ? `${diningCtx.vibe === "pub" ? "Drinks" : "Dinner"} at ${diningCtx.venue}`
+          : hint.title;
       return proposeCalendarCreatePending(msg, deps, briefCtx.timezone, {
-        title: hint.title,
+        title,
         start: hint.startIso,
         end: hint.endIso,
         startIso: hint.startIso,
@@ -2831,21 +2968,29 @@ export async function handleInbound(
 
       // Prefer local parse of the user message over model ISO (avoids wrong year/raw stamps).
       if (kind === "calendar_create") {
-        const hint = parseCalendarCreateHint(text, briefCtx.timezone);
+        const calText = mergeLifeOpsIntoCalendarText(text, recentChatSummary);
+        const hint = parseCalendarCreateHint(calText, briefCtx.timezone);
         if (hint) {
-          payload.title = hint.title;
+          const diningCtx = extractLifeOpsDiningContext(recentChatSummary, calText);
+          payload.title =
+            diningCtx?.venue && /^(busy|event|meeting|calendar)$/i.test(hint.title.trim())
+              ? `${diningCtx.vibe === "pub" ? "Drinks" : "Dinner"} at ${diningCtx.venue}`
+              : hint.title;
           payload.start = hint.startIso;
           payload.end = hint.endIso;
           payload.startIso = hint.startIso;
           payload.endIso = hint.endIso;
+          if (diningCtx?.venue && !strPayload(payload.location)) {
+            payload.location = diningCtx.venue;
+          }
         }
         const loc =
-          extractEventLocation(text) ||
-          (await resolveCalendarLocation(msg.userId, text, deps));
+          extractEventLocation(calText) ||
+          (await resolveCalendarLocation(msg.userId, calText, deps));
         if (loc && !strPayload(payload.location)) payload.location = loc;
         const attendees = await resolveAttendeesFromMessage(
           msg.userId,
-          text,
+          calText,
           deps,
           payload.attendees,
         );
@@ -2854,11 +2999,44 @@ export async function handleInbound(
           for (const email of attendees) {
             if (deps.rememberContactEmail) {
               const label =
-                extractInviteeNames(text)[0] ??
+                extractInviteeNames(calText)[0] ??
                 (email.startsWith("rajeev@") ? "Rajeev" : email.split("@")[0] ?? "Contact");
               await deps.rememberContactEmail(msg.userId, { label, email });
             }
           }
+        }
+      }
+
+      // Brain proposed life_ops_research → run live research (never invent / lock-yes).
+      if (kind === "life_ops_research" && deps.researchLifeOps) {
+        try {
+          const parsed =
+            parseLifeOpsResearchIntent(text) ??
+            ({
+              domain: String(payload.domain ?? "home") as LifeOpsResearchIntent["domain"],
+              query: String(payload.query ?? text).slice(0, 240),
+              moneyCapInr:
+                typeof payload.moneyCapInr === "number"
+                  ? payload.moneyCapInr
+                  : parseMoneyCapInr(text),
+              options: [],
+            } satisfies LifeOpsResearchIntent);
+          let intent = parsed;
+          if (intent.flight && recentChatSummary) {
+            intent = {
+              ...intent,
+              flight: mergeFlightHintsFromChat(intent.flight, recentChatSummary),
+            };
+          }
+          const live = await deps.researchLifeOps(msg.userId, intent);
+          return [{ text: live.text }];
+        } catch (err) {
+          console.error(
+            JSON.stringify({
+              event: "life_ops_research_brain_failed",
+              error: err instanceof Error ? err.message : String(err),
+            }),
+          );
         }
       }
 

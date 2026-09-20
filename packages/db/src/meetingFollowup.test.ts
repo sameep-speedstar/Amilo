@@ -2,10 +2,12 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
   attendedMeetingLabel,
+  dedupeCalendarBriefLines,
   extractMeetingActionItems,
   focusDedupeKey,
   focusLabelsMatch,
   isAttendedMeeting,
+  labelTokenOverlap,
 } from "./meetingFollowup.js";
 
 describe("isAttendedMeeting", () => {
@@ -143,5 +145,18 @@ describe("focusLabelsMatch", () => {
       ),
       false,
     );
+  });
+
+  it("collapses paraphrased [Reminder] calendar holds", () => {
+    const a =
+      "09:00 [Reminder] Review and verify security parameters in the code to ensure client data is not readable by any internal team members and is not exposed externally.";
+    const b =
+      "09:00 [Reminder] Review and verify security parameters in the code to ensure client data is not accessible by internal teams and is not exposed externally.";
+    assert.ok(labelTokenOverlap(a, b) >= 0.72);
+    assert.equal(focusLabelsMatch(a, b), true);
+    assert.deepEqual(dedupeCalendarBriefLines([a, b, "14:00 Other Escrow"]), [
+      a,
+      "14:00 Other Escrow",
+    ]);
   });
 });
