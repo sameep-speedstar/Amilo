@@ -25,6 +25,9 @@ import {
   diningCitySlug,
   buildDiningBookLinks,
   shortMapsSearchUrl,
+  lifeOpsOptionId,
+  lifeOpsPickPrompt,
+  LIFE_OPS_DEFAULT_SCHEME,
 } from "./lifeOps.js";
 
 describe("lifeOps", () => {
@@ -117,9 +120,11 @@ describe("lifeOps", () => {
       ],
     });
     assert.ok(options.length >= 2);
-    assert.match(text, /Vega City/i);
+    assert.equal(options[0]!.id, "A");
+    assert.match(text, /A\)\s+PVR Vega City/i);
     assert.match(text, /closest/i);
-    assert.match(text, /Want me to book/i);
+    assert.match(text, /Reply with a letter/i);
+    assert.match(text, /book <theatre>/i);
     assert.doesNotMatch(text, /Reply yes to lock/i);
   });
 
@@ -148,13 +153,36 @@ describe("lifeOps", () => {
       ],
     });
     assert.equal(options.length, 2);
-    assert.equal(options[0]!.id, "1");
-    assert.match(text, /1\)\s+Plente/);
-    assert.match(text, /Reply with a number/i);
+    assert.equal(options[0]!.id, "A");
+    assert.equal(options[1]!.id, "B");
+    assert.match(text, /A\)\s+Plente/);
+    assert.match(text, /Reply with a letter/i);
     assert.doesNotMatch(text, /Reply yes to lock/i);
     assert.doesNotMatch(text, /cid=/);
     assert.match(text, /Maps: https:\/\/www\.google\.com\/maps\/search/);
     assert.ok(text.length < 900);
+  });
+
+  it("supports numeric, alpha, and combo option id schemes", () => {
+    assert.equal(LIFE_OPS_DEFAULT_SCHEME, "alpha");
+    assert.equal(lifeOpsOptionId(0, "numeric"), "1");
+    assert.equal(lifeOpsOptionId(3, "numeric"), "4");
+    assert.equal(lifeOpsOptionId(0, "alpha"), "A");
+    assert.equal(lifeOpsOptionId(3, "alpha"), "D");
+    assert.equal(lifeOpsOptionId(0, "combo"), "A1");
+    assert.equal(lifeOpsOptionId(9, "combo"), "B1");
+    assert.match(lifeOpsPickPrompt("alpha", 4), /A–D/);
+    assert.equal(parseLifeOpsOptionPick("D"), "D");
+    assert.equal(parseLifeOpsOptionPick("a1"), "A1");
+    assert.equal(parseLifeOpsOptionPick("option B"), "B");
+    assert.equal(
+      resolveListedOptionVenue("A) Pashtun — kebabs\nD) Katani Dhaba — Punjabi", "D"),
+      "Katani Dhaba",
+    );
+    assert.equal(
+      resolveListedOptionVenue("A1) Pashtun — kebabs\nA2) Katani — Punjabi", "A2"),
+      "Katani",
+    );
   });
 
   it("resolves 4, for 3 people, 8 PM against Chandigarh list — not stale Bangalore handoff", () => {
@@ -183,14 +211,28 @@ describe("lifeOps", () => {
     assert.match(links.zomato, /Katani/);
   });
 
-  it("bare 4 after dinner list prefers life-ops over FOCUS mail", () => {
+  it("letter D after dinner list prefers life-ops; FOCUS digits stay mail", () => {
     const chat = [
       "User: suggest dinner near Sector 35 Chandigarh",
-      "Amilo: 1) Pashtun — kebabs 2) Refections Cafe — multi 3) Peddlers — vibe 4) Katani Dhaba — Punjabi",
-      "Reply with a number to lock one, then day/time.",
+      "Amilo: A) Pashtun — kebabs B) Refections Cafe — multi C) Peddlers — vibe D) Katani Dhaba — Punjabi",
+      "Reply with a letter to lock one, then day/time.",
     ].join("\n");
+    assert.equal(parseLifeOpsOptionPick("D"), "D");
+    assert.equal(resolveListedOptionVenue(chat, "D"), "Katani Dhaba");
     assert.equal(
-      preferLifeOpsNumberPick({ text: "4", recentChat: chat }),
+      preferLifeOpsNumberPick({ text: "D", recentChat: chat }),
+      true,
+    );
+    // Legacy numeric lists still divert away from FOCUS.
+    assert.equal(
+      preferLifeOpsNumberPick({
+        text: "4",
+        recentChat: [
+          "User: dinner options",
+          "Amilo: 1) A 2) B 3) C 4) Katani Dhaba — Punjabi",
+          "Reply with a number to pick.",
+        ].join("\n"),
+      }),
       true,
     );
     assert.equal(

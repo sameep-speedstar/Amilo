@@ -1174,7 +1174,8 @@ export async function handleInbound(
   }
 
   // Brief follow-ups: 1 / 2 / 3 / M / quieter numbers (must not go to the LLM).
-  // Exception: bare "4" after a dinner/options list is a life-ops pick, not FOCUS mail.
+  // Life-ops pickable lists prefer A–E (letters never enter this block). Digits still
+  // divert here when recent chat has a life-ops numbered list (legacy / Grok).
   if (/^\d{1,2}$/.test(lower) || lower === "m") {
     let skipBriefForLifeOps = false;
     if (lower !== "m" && deps.getRecentChatSummary) {

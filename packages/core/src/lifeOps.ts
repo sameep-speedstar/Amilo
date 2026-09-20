@@ -25,6 +25,44 @@ export type LifeOpsOption = {
   url?: string;
 };
 
+/**
+ * How pickable life-ops lists are labeled.
+ * - numeric: 1) 2) 3) — can collide with FOCUS mail 1–3
+ * - alpha:   A) B) C) — preferred; never hits the brief digit handler
+ * - combo:   A1) A2) B1) — for longer menus without recycling letters
+ */
+export type LifeOpsOptionScheme = "numeric" | "alpha" | "combo";
+
+/** Default for dining/movie/travel picks — letters avoid FOCUS 1–3 / M. */
+export const LIFE_OPS_DEFAULT_SCHEME: LifeOpsOptionScheme = "alpha";
+
+/** 0-based index → option id for the chosen scheme. */
+export function lifeOpsOptionId(
+  index0: number,
+  scheme: LifeOpsOptionScheme = LIFE_OPS_DEFAULT_SCHEME,
+): string {
+  if (index0 < 0) return "A";
+  if (scheme === "numeric") return String((index0 % 9) + 1);
+  if (scheme === "alpha") return String.fromCharCode(65 + (index0 % 26));
+  const letter = String.fromCharCode(65 + Math.floor(index0 / 9) % 26);
+  const n = (index0 % 9) + 1;
+  return `${letter}${n}`;
+}
+
+export function lifeOpsPickPrompt(
+  scheme: LifeOpsOptionScheme = LIFE_OPS_DEFAULT_SCHEME,
+  count = 5,
+): string {
+  if (scheme === "numeric") {
+    return `Reply with a number (1–${Math.min(count, 9)}) to pick.`;
+  }
+  if (scheme === "combo") {
+    return "Reply with a code (e.g. A1) to pick.";
+  }
+  const last = lifeOpsOptionId(Math.max(0, Math.min(count, 26) - 1), "alpha");
+  return `Reply with a letter (A–${last}) to pick.`;
+}
+
 export type DiningResearchHints = {
   area: string | null;
   partySize: number | null;
@@ -84,21 +122,26 @@ export type LifeOpsHandoffIntent = {
   venueHint?: string;
 };
 
-/** Resolve "2" / "option 2" / "book 2" against a numbered or A–E list in recent chat. */
+/** Resolve "2" / "B" / "A1" / "option 2" against a numbered or lettered list in recent chat. */
 export function parseLifeOpsOptionPick(text: string): string | null {
   const t = text.trim();
   if (!t || t.length > 40) return null;
-  const m =
-    t.match(/^(?:option|pick|choose|book|reserve|handoff|hand\s*off)\s*([1-9A-Ea-e])\b/i)?.[1] ??
-    t.match(/^([1-9A-Ea-e])\s*[).:\-]?\s*$/i)?.[1] ??
-    t.match(/^([1-9])\b/i)?.[1];
-  if (!m) return null;
-  return /^[1-9]$/.test(m) ? m : m.toUpperCase();
+  const raw =
+    t.match(
+      /^(?:option|pick|choose|book|reserve|handoff|hand\s*off)\s*([1-9]|[A-Za-z]\d?)\b/i,
+    )?.[1] ??
+    t.match(/^([1-9]|[A-Za-z]\d?)\s*[).:\-]?\s*$/i)?.[1] ??
+    t.match(/^([1-9]|[A-Za-z]\d?)\b/i)?.[1];
+  if (!raw) return null;
+  if (/^[1-9]$/.test(raw)) return raw;
+  if (/^[A-Za-z]\d$/.test(raw)) return raw.toUpperCase();
+  if (/^[A-Za-z]$/.test(raw)) return raw.toUpperCase();
+  return null;
 }
 
 /**
- * Pull venue label from Amilo's numbered / lettered option list in recent chat.
- * Supports: `1) Name`, `1. **Name**`, `A) Name — detail`
+ * Pull venue/label from Amilo's numbered / lettered / combo option list in recent chat.
+ * Supports: `1) Name`, `A) Name — detail`, `A1) Name`, `1. **Name**`
  */
 export function resolveListedOptionVenue(
   recentChat: string | null | undefined,
@@ -291,7 +334,33 @@ export function parsePartySize(text: string | null | undefined): number | null {
   return n > 0 && n < 50 ? n : null;
 }
 
-/** Bare "4" after a dinner list must not steal FOCUS mail numbering. */
+/** True when chat looks like a pickable life-ops list (any domain), not FOCUS mail. */
+export function isLifeOpsPickableList(text: string | null | undefined): boolean {
+  const t = (text ?? "").trim();
+  if (!t) return false;
+  if (
+    /\bFOCUS\b/i.test(t) &&
+    !DINING_LINE_RE.test(t) &&
+    !MOVIE_LINE_RE.test(t) &&
+    !/\b(flight|flights|hotel|hotels)\b/i.test(t) &&
+    !/Reply with a (?:number|letter|code)\b/i.test(t)
+  ) {
+    return false;
+  }
+  return (
+    DINING_LINE_RE.test(t) ||
+    MOVIE_LINE_RE.test(t) ||
+    /\b(flight|flights|hotel|hotels)\b/i.test(t) ||
+    /Reply with a (?:number|letter|code)\b/i.test(t) ||
+    /(?:^|[^0-9A-Za-z])[A-Z]\d?\)\s+\S/i.test(t)
+  );
+}
+
+/**
+ * Bare digit/letter after a life-ops options list must not steal FOCUS mail numbering.
+ * Architecture: FOCUS owns 1–3 + M; life-ops prefers A–E (or combo) and still accepts
+ * numeric when Grok/legacy lists used 1).
+ */
 export function preferLifeOpsNumberPick(opts: {
   text: string;
   recentChat?: string | null;
@@ -300,19 +369,29 @@ export function preferLifeOpsNumberPick(opts: {
   const pickId = parseLifeOpsOptionPick(opts.text);
   if (!pickId) return false;
   const reply = opts.replyToContent?.trim() ?? "";
-  // Quoted morning FOCUS brief → keep mail numbering.
-  if (reply && /\bFOCUS\b/i.test(reply) && !DINING_LINE_RE.test(reply)) {
+  // Quoted morning FOCUS brief → keep mail numbering (digits only).
+  if (
+    reply &&
+    /\bFOCUS\b/i.test(reply) &&
+    !isLifeOpsPickableList(reply) &&
+    /^[1-9]$/.test(pickId)
+  ) {
     return false;
   }
-  if (reply && DINING_LINE_RE.test(reply) && resolveListedOptionVenue(reply, pickId)) {
+  if (reply && isLifeOpsPickableList(reply) && resolveListedOptionVenue(reply, pickId)) {
     return true;
   }
   const chat = opts.recentChat ?? "";
-  // FOCUS-only brief without dining → never divert digits to life-ops.
-  if (/\bFOCUS\b/i.test(chat) && !DINING_LINE_RE.test(chat)) {
+  if (!isLifeOpsPickableList(chat)) return false;
+  // Digit 1–3 on a FOCUS-only thread → mail wins.
+  if (
+    /^[1-3]$/.test(pickId) &&
+    /\bFOCUS\b/i.test(chat) &&
+    !DINING_LINE_RE.test(chat) &&
+    !MOVIE_LINE_RE.test(chat)
+  ) {
     return false;
   }
-  if (!DINING_LINE_RE.test(chat)) return false;
   const thread = latestDiningThread(chat);
   if (resolveListedOptionVenue(thread, pickId)) return true;
   return Boolean(resolveListedOptionVenue(chat, pickId));
@@ -699,16 +778,17 @@ export function formatMovieResearchReply(opts: {
   const closest = sorted[0]!;
   const hasAnyTimes = sorted.some((v) => v.times.length > 0);
   const body = sorted.slice(0, 4).map((v, i) => {
+    const id = lifeOpsOptionId(i, LIFE_OPS_DEFAULT_SCHEME);
     const dist = v.distanceKm != null ? ` · ~${v.distanceKm.toFixed(1)} km` : "";
     const times = v.times.length
       ? v.times.join(", ")
       : hasAnyTimes
         ? "see link"
         : "times on BookMyShow";
-    return `${i + 1}) ${v.name}${dist}\n   ${times}`;
+    return `${id}) ${v.name}${dist}\n   ${times}`;
   });
   const options: LifeOpsOption[] = sorted.slice(0, 3).map((v, i) => ({
-    id: String.fromCharCode(65 + i),
+    id: lifeOpsOptionId(i, LIFE_OPS_DEFAULT_SCHEME),
     label: v.name,
     detail: v.times.slice(0, 3).join(", ") || "showtimes",
     estInr: null,
@@ -725,7 +805,7 @@ export function formatMovieResearchReply(opts: {
       closest.distanceKm != null
         ? `${closest.name} is closest${hints.area ? ` to ${hints.area}` : ""}.`
         : null,
-      "Want me to book one? Say book <theatre> <time> — I won't pay or lock seats without your yes.",
+      `${lifeOpsPickPrompt(LIFE_OPS_DEFAULT_SCHEME, options.length)} Or say book <theatre> <time> — I won't pay or lock seats without your yes.`,
       hasAnyTimes ? bms : null,
     ]
       .filter(Boolean)
@@ -1074,7 +1154,7 @@ export function formatDiningResearchReply(opts: {
     };
   }
   const options: LifeOpsOption[] = places.slice(0, 5).map((p, i) => {
-    const id = String(i + 1);
+    const id = lifeOpsOptionId(i, LIFE_OPS_DEFAULT_SCHEME);
     const rating =
       p.rating != null && Number.isFinite(p.rating) ? `★${p.rating.toFixed(1)}` : null;
     return {
@@ -1086,13 +1166,13 @@ export function formatDiningResearchReply(opts: {
     };
   });
 
-  // Short lines for WhatsApp — one Maps search link at the bottom (not per-option cid URLs).
+  // Short lines for WhatsApp — letters avoid FOCUS mail 1–3 collision.
   const lines = [
     head || (hints.vibe === "pub" ? "Pub picks" : "Dining picks"),
     ...options.map((o) => `${o.id}) ${o.label} — ${o.detail}`),
     "",
     `Maps: ${mapsSearchUrl}`,
-    "Reply with a number to pick — I'll ask for day/time (and party size) if missing. Never assume.",
+    `${lifeOpsPickPrompt(LIFE_OPS_DEFAULT_SCHEME, options.length)} I'll ask for day/time (and party size) if missing. Never assume.`,
   ];
   return { text: lines.join("\n"), options };
 }
