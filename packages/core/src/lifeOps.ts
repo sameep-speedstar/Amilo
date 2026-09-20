@@ -291,6 +291,29 @@ const MOVIE_LINE_RE =
   /\b(bookmyshow|showtimes?|IMDb|film|films|PVR|INOX|Cinepolis|buytickets|ET\d{5,}|\bshows?\b|movie|cinema)\b/i;
 const DINING_LINE_RE =
   /\b(dinner|lunch|brunch|restaurant|dining|zomato|eazydiner|dineout|table for|rooftop|fine dining|client dinner|pubs?|brewery)\b/i;
+const CAB_LINE_RE =
+  /\b(uber|ola|meru|gozo|rapido|taxi|cabs?|airport\s+(?:cab|taxi|transfer)|outstation)\b/i;
+
+const DOMAIN_SWITCH_USER_RE =
+  /\b(cab|uber|ola|meru|gozo|taxi|airport|movie|movies|film|cinema|showtimes?|flight|flights|hotel|gilt|yield|chart|bond)\b/i;
+
+/** Cut a domain thread before the user pivots to another topic. */
+function threadUntilDomainSwitch(lines: string[], start: number, keepDomain: RegExp): string {
+  let end = lines.length;
+  for (let i = start + 1; i < lines.length; i++) {
+    const line = lines[i]!;
+    if (!/^User:/i.test(line)) continue;
+    if (keepDomain.test(line)) {
+      // same domain continue
+      continue;
+    }
+    if (DOMAIN_SWITCH_USER_RE.test(line) && !keepDomain.test(line)) {
+      end = i;
+      break;
+    }
+  }
+  return lines.slice(start, end).join("\n");
+}
 
 /** Prefer the latest dining ask + replies (avoids MG Road leaking into Chandigarh). */
 export function latestDiningThread(chat: string | null | undefined): string {
@@ -310,7 +333,52 @@ export function latestDiningThread(chat: string | null | undefined): string {
     }
   }
   if (start < 0) return scopeChatToDining(full);
-  return scopeChatToDining(lines.slice(start).join("\n"));
+  return scopeChatToDining(
+    threadUntilDomainSwitch(
+      lines,
+      start,
+      /\b(dinner|lunch|brunch|restaurant|dining|table|zomato|family dinner|client dinner)\b/i,
+    ),
+  );
+}
+
+/** Latest cab / airport-transfer thread only. */
+export function latestCabThread(chat: string | null | undefined): string {
+  const full = (chat ?? "").trim();
+  if (!full) return "";
+  const lines = full.split("\n");
+  let start = -1;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!;
+    if (/^User:/i.test(line) && CAB_LINE_RE.test(line)) start = i;
+  }
+  if (start < 0) {
+    return full
+      .split("\n")
+      .filter((l) => CAB_LINE_RE.test(l) || /Reply with a letter/i.test(l))
+      .join("\n");
+  }
+  return threadUntilDomainSwitch(lines, start, CAB_LINE_RE);
+}
+
+/** Latest movie / showtimes thread only. */
+export function latestMovieThread(chat: string | null | undefined): string {
+  const full = (chat ?? "").trim();
+  if (!full) return "";
+  const lines = full.split("\n");
+  let start = -1;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!;
+    if (/^User:/i.test(line) && MOVIE_LINE_RE.test(line) && !DINING_LINE_RE.test(line)) {
+      start = i;
+    }
+  }
+  if (start < 0) return "";
+  return threadUntilDomainSwitch(
+    lines,
+    start,
+    /\b(movie|movies|film|cinema|showtimes?|bookmyshow|theater|theatre|shows?)\b/i,
+  );
 }
 
 export function diningCitySlug(areaOrText?: string | null): string {
@@ -498,6 +566,181 @@ const BOOK_PLATFORM_ONLY_RE =
 
 export function isBookPlatformOnly(name: string | null | undefined): boolean {
   return Boolean(name && BOOK_PLATFORM_ONLY_RE.test(name.trim()));
+}
+
+export type VendorHandoffKind = "dining" | "cab" | "movie" | "travel" | "other";
+
+/** Strip timing/party/flight clauses from "Book Uber, flight is at 11 PM". */
+export function cleanBookVenueName(raw: string | null | undefined): string | null {
+  if (!raw?.trim()) return null;
+  let v = raw.trim();
+  v = v.replace(
+    /[,;]?\s*(?:flight\s+is\s+at|flight\s+at|table\s+for|for\s+\d+|party\s+of|today|tomorrow|tonight)\b.*$/i,
+    "",
+  );
+  v = v.replace(/\s+at\s+\d{1,2}(?::\d{2})?\s*[ap]m\b.*$/i, "");
+  v = v.replace(/\s+/g, " ").trim();
+  if (!v || BOOK_PLATFORM_ONLY_RE.test(v)) return null;
+  return v.slice(0, 80);
+}
+
+export function parseCabProvider(text: string | null | undefined): string | null {
+  if (!text?.trim()) return null;
+  const t = text.trim();
+  const fromBook = cleanBookVenueName(t.match(/^(?:book|reserve)\s+(.+)$/i)?.[1] ?? null);
+  const hit = t.match(/\b(uber|ola|meru|gozo|rapido)\b/i)?.[1] ?? fromBook;
+  if (!hit) return null;
+  const name = hit.trim();
+  if (/^(uber|ola|meru|gozo|rapido)$/i.test(name)) {
+    return name[0]!.toUpperCase() + name.slice(1).toLowerCase();
+  }
+  return CAB_LINE_RE.test(name) ? name.slice(0, 40) : null;
+}
+
+/**
+ * Classify vendor handoff so cab/movie never get Zomato dining scripts.
+ * "Book Uber, flight is at 11 PM" → cab (flight time = pickup context).
+ */
+export function classifyVendorHandoffKind(
+  text: string,
+  recentChat?: string | null,
+): VendorHandoffKind {
+  const t = text.trim();
+  const cabThread = latestCabThread(recentChat);
+  const diningThread = latestDiningThread(recentChat);
+  const movieThread = latestMovieThread(recentChat);
+
+  if (CAB_LINE_RE.test(t) || parseCabProvider(t)) return "cab";
+  if (
+    /\b(flight|indigo|air\s*india|spicejet|hotel|train)\b/i.test(t) &&
+    !CAB_LINE_RE.test(t) &&
+    !DINING_LINE_RE.test(t)
+  ) {
+    return "travel";
+  }
+  if (
+    (MOVIE_LINE_RE.test(t) || /\bbook\s+(?:tickets?|seats?)\b/i.test(t)) &&
+    !DINING_LINE_RE.test(t) &&
+    !CAB_LINE_RE.test(t)
+  ) {
+    return "movie";
+  }
+  if (DINING_LINE_RE.test(t) || /\b(table|reserve|restaurant|dinner|lunch|brunch)\b/i.test(t)) {
+    return "dining";
+  }
+
+  const pick = parseLifeOpsOptionPick(t);
+  if (pick) {
+    if (cabThread && resolveListedOptionVenue(cabThread, pick)) return "cab";
+    if (movieThread && resolveListedOptionVenue(movieThread, pick)) return "movie";
+    if (diningThread && resolveListedOptionVenue(diningThread, pick)) return "dining";
+  }
+  if (/^(?:book|reserve)\b/i.test(t)) {
+    if (cabThread && CAB_LINE_RE.test(cabThread)) return "cab";
+    if (diningThread && DINING_LINE_RE.test(diningThread)) return "dining";
+    if (movieThread && MOVIE_LINE_RE.test(movieThread)) return "movie";
+    // Named place book with no other domain cue → dining (restaurants/pubs).
+    if (cleanBookVenueName(t.match(/^(?:book|reserve)\s+(.+)$/i)?.[1] ?? null)) {
+      return "dining";
+    }
+  }
+  return "other";
+}
+
+/** Day/time (+ optional party) follow-up after a venue was locked — not a fresh "book X". */
+export function isWhenPartyFollowUp(text: string): boolean {
+  const t = text.trim();
+  if (!t || t.length > 80) return false;
+  if (/^(?:book|reserve|handoff|hand\s*off)\b/i.test(t)) return false;
+  const hasWhen =
+    /\b(today|tomorrow|tonight)\b/i.test(t) ||
+    /\b\d{1,2}(?::\d{2})?\s*[ap]m\b/i.test(t) ||
+    /\b\d{1,2}\s*[ap]m\b/i.test(t);
+  const hasParty = parsePartySize(t) != null || /\btable for\s+\d/i.test(t);
+  return hasWhen || hasParty;
+}
+
+export function buildCabHandoffScript(ctx: {
+  provider: string;
+  whenHint?: string | null;
+  partySize?: number | null;
+  routeHint?: string | null;
+}): string {
+  const p = ctx.provider.trim();
+  const link =
+    /^uber$/i.test(p)
+      ? "https://m.uber.com/"
+      : /^ola$/i.test(p)
+        ? "https://book.olacabs.com/"
+        : /^meru$/i.test(p)
+          ? "https://www.merucabs.com/"
+          : /^gozo$/i.test(p)
+            ? "https://www.gozocabs.com/"
+            : `https://www.google.com/search?q=${encodeURIComponent(`${p} cab book`)}`;
+  const bits = [
+    p,
+    ctx.routeHint?.trim() || null,
+    ctx.whenHint?.trim() || null,
+    ctx.partySize && ctx.partySize > 0 ? `${ctx.partySize} riders` : null,
+  ].filter(Boolean);
+  return [
+    `Open to finish the cab booking (Amilo did not reserve or pay):`,
+    `· ${bits.join(" · ")}`,
+    `${p}: ${link}`,
+    "Use the app for live fare — Amilo won't book or pay.",
+  ].join("\n");
+}
+
+export function extractCabContext(
+  recentChat: string | null | undefined,
+  bookText?: string | null,
+): {
+  provider: string | null;
+  partySize: number | null;
+  whenHint: string | null;
+  routeHint: string | null;
+} | null {
+  const chat = latestCabThread(recentChat);
+  const book = (bookText ?? "").trim();
+  if (!chat && !book) return null;
+  if (!CAB_LINE_RE.test(book) && !CAB_LINE_RE.test(chat)) return null;
+
+  const pickId = parseLifeOpsOptionPick(book);
+  const provider =
+    parseCabProvider(book) ??
+    (pickId ? resolveListedOptionVenue(chat, pickId) : null) ??
+    parseCabProvider(chat);
+
+  const routeHint =
+    book.match(/\bfrom\s+.+?\s+to\s+.+?(?:\s+at\b|,|$)/i)?.[0]?.trim() ??
+    chat.match(/\bfrom\s+.+?\s+to\s+.+?(?:\s+at\b|,|$)/i)?.[0]?.trim() ??
+    chat.match(/\b(?:Home|L&T)[^\n]{0,80}(?:airport|BLR)/i)?.[0]?.trim() ??
+    null;
+
+  const whenHint =
+    extractUserStatedWhen(recentChat, book) ??
+    book.match(/\bflight\s+is\s+at\s+(\d{1,2}(?::\d{2})?\s*[ap]m)\b/i)?.[1]?.trim() ??
+    null;
+
+  const partyFromChat = Number(chat.match(/\bfor\s+(\d{1,2})\s+people\b/i)?.[1]) || 0;
+  const partySize =
+    parsePartySize(book) ?? parsePartySize(chat) ?? (partyFromChat > 0 ? partyFromChat : null);
+
+  return {
+    provider: provider && !isBookPlatformOnly(provider) ? provider.slice(0, 40) : null,
+    partySize: partySize && partySize > 0 && partySize < 20 ? partySize : null,
+    whenHint: whenHint?.slice(0, 80) ?? null,
+    routeHint: routeHint?.slice(0, 100) ?? null,
+  };
+}
+
+export function isWeakLifeOpsHandoffSummary(summary: string | null | undefined): boolean {
+  const s = (summary ?? "").trim();
+  if (!s) return true;
+  if (/^life[_\s-]?ops([_\s-]?handoff)?$/i.test(s)) return true;
+  if (/^life[_\s-]?ops[_\s-]?handoff:\s*life\s*ops$/i.test(s)) return true;
+  if (s.length < 12) return true;
+  return false;
 }
 
 export function parseDiningResearchHints(text: string): DiningResearchHints | null {
@@ -875,17 +1118,18 @@ export function extractLifeOpsDiningContext(
   const chat = latestDiningThread(recentChat);
   const book = (bookText ?? "").trim();
   if (!chat && !book) return null;
+  // Cab / rideshare books are not dining — never feed Uber into Zomato context.
+  if (book && (CAB_LINE_RE.test(book) || parseCabProvider(book))) return null;
 
   const venueFromBook =
-    book.match(/^(?:book|reserve)\s+(.+)$/i)?.[1]?.trim() ??
-    book.match(/\bbook\s+(?:a\s+table\s+at\s+|at\s+)(.+)$/i)?.[1]?.trim() ??
-    null;
+    cleanBookVenueName(
+      book.match(/^(?:book|reserve)\s+(.+)$/i)?.[1]?.trim() ??
+        book.match(/\bbook\s+(?:a\s+table\s+at\s+|at\s+)(.+)$/i)?.[1]?.trim() ??
+        null,
+    );
   const venueClean =
-    venueFromBook &&
-    !/^[A-Ea-e]$/.test(venueFromBook) &&
-    !/^[1-9]$/.test(venueFromBook) &&
-    !BOOK_PLATFORM_ONLY_RE.test(venueFromBook)
-      ? venueFromBook.replace(/\s+/g, " ").slice(0, 80)
+    venueFromBook && !/^[A-Ea-e]$/.test(venueFromBook) && !/^[1-9]$/.test(venueFromBook)
+      ? venueFromBook
       : null;
 
   const optionPick =
@@ -1289,8 +1533,7 @@ export function parseLifeOpsHandoffIntent(text: string): LifeOpsHandoffIntent | 
   const bookNamedRaw =
     t.match(/^(?:book|reserve)\s+(.+)$/i)?.[1]?.trim() ??
     t.match(/\bbook\s+(?:a\s+table\s+at\s+|at\s+)(.+)$/i)?.[1]?.trim();
-  const bookNamed =
-    bookNamedRaw && !BOOK_PLATFORM_ONLY_RE.test(bookNamedRaw) ? bookNamedRaw : null;
+  const bookNamed = cleanBookVenueName(bookNamedRaw ?? null);
 
   // "book via Zomato" with no venue — not a handoff yet.
   if (bookNamedRaw && !bookNamed && BOOK_PLATFORM_ONLY_RE.test(bookNamedRaw)) {
@@ -1306,6 +1549,7 @@ export function parseLifeOpsHandoffIntent(text: string): LifeOpsHandoffIntent | 
     /\b(return (this|the|my)|request (a )?refund|cancel (my |the )?subscription)\b/i.test(t);
   if (!wantsHandoff) return null;
 
+  const vendorKind = classifyVendorHandoffKind(t);
   const domainRaw = domainFromText(t);
   const moneyCapInr = parseMoneyCapInr(t);
   const venueHint =
@@ -1316,10 +1560,15 @@ export function parseLifeOpsHandoffIntent(text: string): LifeOpsHandoffIntent | 
       : optionPick.toUpperCase()
     : undefined;
   // Named restaurant/pub book must never become "flight option".
+  // Cab book with "flight is at 11 PM" stays home/cab, not travel.
   const domain: LifeOpsDomain =
-    venueHint && domainRaw === "travel" && !/\b(flight|hotel|train|indigo)\b/i.test(t)
+    vendorKind === "cab"
       ? "home"
-      : domainRaw;
+      : venueHint && domainRaw === "travel" && !/\b(flight|hotel|train|indigo)\b/i.test(t)
+        ? "home"
+        : vendorKind === "travel"
+          ? "travel"
+          : domainRaw;
 
   if (/\b(return|refund|chase|subscription|bill|invoice)\b/i.test(t) && !optionId && !venueHint) {
     const about = t.replace(/\s+/g, " ").slice(0, 200);
@@ -1356,9 +1605,17 @@ export function parseLifeOpsHandoffIntent(text: string): LifeOpsHandoffIntent | 
     };
   }
 
-  if (optionId || venueHint || /\b(table|reservation|restaurant|pub|bar|flight)\b/i.test(t)) {
+  if (optionId || venueHint || /\b(table|reservation|restaurant|pub|bar|flight|uber|ola|cab)\b/i.test(t)) {
     const who = venueHint ?? (optionId ? `option ${optionId}` : t.replace(/\s+/g, " ").slice(0, 120));
-    const isTravel = domain === "travel" && /\b(flight|hotel|train|indigo)\b/i.test(t);
+    const isTravel = vendorKind === "travel" || (domain === "travel" && /\b(flight|hotel|train|indigo)\b/i.test(t));
+    const linkHint =
+      vendorKind === "cab"
+        ? "Reply yes for the cab app link — Amilo won't reserve or pay."
+        : vendorKind === "movie"
+          ? "Reply yes for BookMyShow link — Amilo won't reserve or pay."
+          : vendorKind === "dining"
+            ? "Reply yes for Zomato/Dineout/EazyDiner links — Amilo won't reserve or pay."
+            : "Reply yes for platform book links — Amilo won't reserve or pay.";
     return {
       domain: isTravel ? "travel" : "home",
       channel: "vendor",
@@ -1366,9 +1623,9 @@ export function parseLifeOpsHandoffIntent(text: string): LifeOpsHandoffIntent | 
       ...(optionId ? { optionId } : {}),
       ...(venueHint ? { venueHint } : {}),
       summary: [
-        `Book links: ${who}`,
+        vendorKind === "cab" ? `Cab: ${who}` : `Book links: ${who}`,
         formatMoneyCapNote(moneyCapInr),
-        "Reply yes for platform book links — Amilo won't reserve or pay.",
+        linkHint,
       ]
         .filter(Boolean)
         .join("\n"),

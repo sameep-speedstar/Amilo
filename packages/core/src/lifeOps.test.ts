@@ -24,11 +24,18 @@ import {
   latestDiningThread,
   diningCitySlug,
   buildDiningBookLinks,
+  buildCabHandoffScript,
   shortMapsSearchUrl,
   lifeOpsOptionId,
   lifeOpsPickPrompt,
   LIFE_OPS_DEFAULT_SCHEME,
   formatLifeOpsOptionLines,
+  classifyVendorHandoffKind,
+  cleanBookVenueName,
+  extractCabContext,
+  isWhenPartyFollowUp,
+  isWeakLifeOpsHandoffSummary,
+  parseCabProvider,
 } from "./lifeOps.js";
 
 describe("lifeOps", () => {
@@ -322,6 +329,53 @@ describe("lifeOps", () => {
     assert.equal(h!.domain, "home");
     assert.equal(h!.venueHint, "Burma Burma");
     assert.notEqual(domainFromText("Book Burma Burma"), "travel");
+  });
+
+  it("cab book never becomes Zomato dining handoff", () => {
+    assert.equal(cleanBookVenueName("Uber, flight is at 11 PM"), "Uber");
+    assert.equal(parseCabProvider("Book Uber, flight is at 11 PM"), "Uber");
+    assert.equal(
+      classifyVendorHandoffKind("Book Uber, flight is at 11 PM"),
+      "cab",
+    );
+    const chat = [
+      "User: suggest dinner near Sector 35",
+      "Amilo: D) Katani Dhaba — Punjabi",
+      "User: 8 PM today for 3 people",
+      "User: need cab from Home to Bangalore airport at 8 PM",
+      "Amilo: A) Ola B) Uber Intercity",
+      "User: for tomorrow for 2 people",
+    ].join("\n");
+    assert.equal(classifyVendorHandoffKind("Book Uber, flight is at 11 PM", chat), "cab");
+    const cab = extractCabContext(chat, "Book Uber, flight is at 11 PM");
+    assert.ok(cab);
+    assert.equal(cab!.provider, "Uber");
+    assert.equal(cab!.partySize, 2);
+    assert.match(cab!.whenHint ?? "", /11\s*PM/i);
+    assert.doesNotMatch(cab!.routeHint ?? "", /Katani|Sector 35/i);
+
+    const dining = extractLifeOpsDiningContext(chat, "Book Uber, flight is at 11 PM");
+    // Dining thread must not claim Uber as a restaurant venue for Zomato.
+    if (dining?.venue) {
+      assert.doesNotMatch(dining.venue, /Uber|flight/i);
+    }
+
+    const script = buildCabHandoffScript({
+      provider: "Uber",
+      whenHint: "11 PM",
+      partySize: 2,
+      routeHint: "Home to Bangalore airport",
+    });
+    assert.match(script, /m\.uber\.com/i);
+    assert.doesNotMatch(script, /zomato|dineout|eazydiner/i);
+    assert.doesNotMatch(script, /table for/i);
+  });
+
+  it("when/party follow-up detected for dining pending", () => {
+    assert.equal(isWhenPartyFollowUp("8 PM today for 3 people"), true);
+    assert.equal(isWhenPartyFollowUp("Book Uber"), false);
+    assert.equal(isWeakLifeOpsHandoffSummary("life_ops_handoff: life ops"), true);
+    assert.equal(isWeakLifeOpsHandoffSummary("Cab: Uber · 2 riders"), false);
   });
 
   it("builds dining handoff script with table/time", () => {

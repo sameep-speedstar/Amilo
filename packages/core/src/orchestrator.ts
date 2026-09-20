@@ -19,9 +19,17 @@ import {
 } from "./forwardParse.js";
 import {
   buildDiningHandoffScript,
+  buildCabHandoffScript,
+  classifyVendorHandoffKind,
+  cleanBookVenueName,
+  extractCabContext,
   extractLifeOpsDiningContext,
   formatMoneyCapNote,
+  formatLifeOpsOptionLines,
   isBookPlatformOnly,
+  isWhenPartyFollowUp,
+  isWeakLifeOpsHandoffSummary,
+  latestCabThread,
   latestDiningThread,
   preferLifeOpsNumberPick,
   mergeLifeOpsIntoCalendarText,
@@ -30,10 +38,11 @@ import {
   parseLifeOpsOptionPick,
   parseLifeOpsResearchIntent,
   parseMoneyCapInr,
+  parseCabProvider,
   resolveListedOptionVenue,
   diningCitySlug,
   scopeChatToDining,
-  formatLifeOpsOptionLines,
+  extractUserStatedWhen,
   type LifeOpsResearchIntent,
 } from "./lifeOps.js";
 import {
@@ -2553,15 +2562,185 @@ export async function handleInbound(
     }
   }
 
-  // Handoff scripts (call venue) still confirm-first below.
+  // Handoff scripts still confirm-first. Domain-scoped: dining ≠ cab ≠ movie.
   if (deps.createPending) {
+      // Day/time follow-up after venue locked (e.g. "8 PM today for 3") → create dining pending.
+      if (
+        isWhenPartyFollowUp(text) &&
+        !parseLifeOpsHandoffIntent(text) &&
+        classifyVendorHandoffKind(text, recentChatSummary) !== "cab"
+      ) {
+        const diningCtx = extractLifeOpsDiningContext(recentChatSummary, text);
+        if (diningCtx?.venue && diningCtx.whenHint && !isBookPlatformOnly(diningCtx.venue)) {
+          const city = diningCitySlug(diningCtx.area ?? latestDiningThread(recentChatSummary));
+          const who = diningCtx.venue;
+          const payload: Record<string, unknown> = {
+            domain: "home",
+            channel: "vendor",
+            vendorKind: "dining",
+            moneyCapInr: null,
+            sendOnConfirm: false,
+            venueHint: who,
+            script: buildDiningHandoffScript({
+              venue: who,
+              ...(diningCtx.partySize != null ? { partySize: diningCtx.partySize } : {}),
+              whenHint: diningCtx.whenHint,
+              ...(diningCtx.area ? { area: diningCtx.area } : {}),
+              ...(diningCtx.vibe ? { vibe: diningCtx.vibe } : {}),
+              city,
+            }),
+            summary: [
+              `Book links: ${who}`,
+              diningCtx.partySize ? `table for ${diningCtx.partySize}` : null,
+              diningCtx.whenHint,
+              diningCtx.area ? `near ${diningCtx.area}` : null,
+              "Reply yes for Zomato/Dineout/EazyDiner links — Amilo won't reserve or pay.",
+            ]
+              .filter(Boolean)
+              .join(" · "),
+          };
+          const pending = await deps.createPending({
+            userId: msg.userId,
+            kind: "life_ops_handoff",
+            summary: String(payload.summary),
+            payload,
+          });
+          return [
+            {
+              text: [
+                `Proposed (${pending.kind}):`,
+                pending.summary,
+                "",
+                "Nothing sent or spent yet.",
+              ].join("\n"),
+            },
+          ];
+        }
+      }
+
       const handoff = parseLifeOpsHandoffIntent(text);
       if (handoff) {
+        const vendorKind = classifyVendorHandoffKind(text, recentChatSummary);
         const diningChat = latestDiningThread(recentChatSummary);
-        const diningCtx = extractLifeOpsDiningContext(recentChatSummary, text);
+        const cabChat = latestCabThread(recentChatSummary);
+        const diningCtx =
+          vendorKind === "dining" || vendorKind === "other"
+            ? extractLifeOpsDiningContext(recentChatSummary, text)
+            : null;
+        const cabCtx =
+          vendorKind === "cab" ? extractCabContext(recentChatSummary, text) : null;
+
+        if (vendorKind === "cab") {
+          const provider =
+            parseCabProvider(text) ??
+            cabCtx?.provider ??
+            cleanBookVenueName(handoff.venueHint) ??
+            (handoff.optionId ? resolveListedOptionVenue(cabChat, handoff.optionId) : null);
+          if (!provider) {
+            return [
+              {
+                text: "Which cab? Reply e.g. Book Uber — or pick a letter from the cab list.",
+              },
+            ];
+          }
+          const whenHint = cabCtx?.whenHint ?? extractUserStatedWhen(recentChatSummary, text);
+          const payload: Record<string, unknown> = {
+            domain: "home",
+            channel: "vendor",
+            vendorKind: "cab",
+            moneyCapInr: handoff.moneyCapInr,
+            sendOnConfirm: false,
+            venueHint: provider,
+            script: buildCabHandoffScript({
+              provider,
+              ...(whenHint ? { whenHint } : {}),
+              ...(cabCtx?.partySize != null ? { partySize: cabCtx.partySize } : {}),
+              ...(cabCtx?.routeHint ? { routeHint: cabCtx.routeHint } : {}),
+            }),
+            summary: [
+              `Cab: ${provider}`,
+              cabCtx?.routeHint ?? null,
+              whenHint ?? null,
+              cabCtx?.partySize ? `${cabCtx.partySize} riders` : null,
+              formatMoneyCapNote(handoff.moneyCapInr),
+              "Reply yes for the cab app link — Amilo won't reserve or pay.",
+            ]
+              .filter(Boolean)
+              .join(" · "),
+          };
+          const pending = await deps.createPending({
+            userId: msg.userId,
+            kind: "life_ops_handoff",
+            summary: String(payload.summary),
+            payload,
+          });
+          return [
+            {
+              text: [
+                `Proposed (${pending.kind}):`,
+                pending.summary,
+                "",
+                "Nothing sent or spent yet.",
+              ].join("\n"),
+            },
+          ];
+        }
+
+        if (vendorKind === "movie") {
+          return [
+            {
+              text: [
+                "For movie tickets, open the BookMyShow link from the showtimes list (or say book <theatre> <time>).",
+                "Amilo won't buy seats — partner booking comes later.",
+              ].join("\n"),
+            },
+          ];
+        }
+
+        if (vendorKind === "travel" && /\b(flight|hotel|train|indigo)\b/i.test(text)) {
+          const who = handoff.venueHint ?? "that travel option";
+          const payload: Record<string, unknown> = {
+            domain: "travel",
+            channel: "vendor",
+            vendorKind: "travel",
+            moneyCapInr: handoff.moneyCapInr,
+            sendOnConfirm: false,
+            venueHint: who,
+            script: [
+              `Open to finish booking (Amilo did not reserve or pay):`,
+              `· ${who}`,
+              handoff.summary,
+            ].join("\n"),
+            summary: [
+              `Travel: ${who}`,
+              formatMoneyCapNote(handoff.moneyCapInr),
+              "Reply yes for the booking link — Amilo won't reserve or pay.",
+            ]
+              .filter(Boolean)
+              .join(" · "),
+          };
+          const pending = await deps.createPending({
+            userId: msg.userId,
+            kind: "life_ops_handoff",
+            summary: String(payload.summary),
+            payload,
+          });
+          return [
+            {
+              text: [
+                `Proposed (${pending.kind}):`,
+                pending.summary,
+                "",
+                "Nothing sent or spent yet.",
+              ].join("\n"),
+            },
+          ];
+        }
+
+        // Dining (default vendor home) — never for cab/movie.
         const venue =
           (handoff.venueHint && !isBookPlatformOnly(handoff.venueHint)
-            ? handoff.venueHint
+            ? cleanBookVenueName(handoff.venueHint) ?? handoff.venueHint
             : null) ??
           (handoff.optionId
             ? resolveListedOptionVenue(diningChat, handoff.optionId)
@@ -2572,11 +2751,12 @@ export async function handleInbound(
           (handoff.optionId ? `option ${handoff.optionId}` : null);
         const city = diningCitySlug(diningCtx?.area ?? diningChat);
 
-        // Dining book without user-stated day/time → ask; never invent today / mix movie chat.
         const isDiningHandoff =
           handoff.channel === "vendor" &&
-          (handoff.domain === "home" || Boolean(diningCtx) || Boolean(venue)) &&
+          vendorKind === "dining" &&
+          Boolean(venue) &&
           !/\b(flight|hotel|train|indigo)\b/i.test(text);
+
         if (isDiningHandoff && venue && !diningCtx?.whenHint) {
           return [
             {
@@ -2592,6 +2772,7 @@ export async function handleInbound(
         const payload: Record<string, unknown> = {
           domain: handoff.domain,
           channel: handoff.channel,
+          vendorKind: isDiningHandoff ? "dining" : vendorKind,
           moneyCapInr: handoff.moneyCapInr,
           summary: handoff.summary,
           sendOnConfirm: false,
@@ -2605,62 +2786,57 @@ export async function handleInbound(
           payload.draftOnly = true;
           payload.accountLabel = "personal";
         }
-        if (handoff.channel === "vendor") {
-          if (handoff.domain === "home" || diningCtx || venue) {
-            const who = venue ?? "the venue";
-            payload.domain = "home";
-            payload.script = buildDiningHandoffScript({
-              venue: who,
-              ...(diningCtx?.partySize != null ? { partySize: diningCtx.partySize } : {}),
-              ...(diningCtx?.whenHint ? { whenHint: diningCtx.whenHint } : {}),
-              ...(diningCtx?.area ? { area: diningCtx.area } : {}),
-              ...(diningCtx?.vibe ? { vibe: diningCtx.vibe } : {}),
-              city,
-            });
-            payload.summary = [
-              `Book links: ${who}`,
-              diningCtx?.partySize ? `table for ${diningCtx.partySize}` : null,
-              diningCtx?.whenHint ?? null,
-              diningCtx?.area ? `near ${diningCtx.area}` : null,
-              formatMoneyCapNote(handoff.moneyCapInr),
-              "Reply yes to get the Zomato/Dineout/EazyDiner links — Amilo won't reserve or pay.",
-            ]
-              .filter(Boolean)
-              .join(" · ");
-            // Calendar hold only when user gave an explicit time — never invent tomorrow 8pm.
-            if (diningCtx?.whenHint) {
-              const calMerged = mergeLifeOpsIntoCalendarText(
-                `schedule ${diningCtx?.vibe === "pub" ? "drinks" : "dinner"} at ${who} ${diningCtx.whenHint}`,
-                recentChatSummary ??
-                  `Dining · ${diningCtx.whenHint}${diningCtx?.partySize ? ` · table for ${diningCtx.partySize}` : ""}`,
-              );
-              const calHint = parseCalendarCreateHint(calMerged, briefCtx.timezone);
-              if (calHint) {
-                payload.calendarHold = {
-                  title: calHint.title.includes(who)
-                    ? calHint.title
-                    : `${diningCtx?.vibe === "pub" ? "Drinks" : "Dinner"} at ${who}`,
-                  start: calHint.startIso,
-                  end: calHint.endIso,
-                  startIso: calHint.startIso,
-                  endIso: calHint.endIso,
-                  location: who,
-                  accountLabel: "personal",
-                };
-              }
+        if (handoff.channel === "vendor" && isDiningHandoff && venue) {
+          const who = venue;
+          payload.domain = "home";
+          payload.script = buildDiningHandoffScript({
+            venue: who,
+            ...(diningCtx?.partySize != null ? { partySize: diningCtx.partySize } : {}),
+            ...(diningCtx?.whenHint ? { whenHint: diningCtx.whenHint } : {}),
+            ...(diningCtx?.area ? { area: diningCtx.area } : {}),
+            ...(diningCtx?.vibe ? { vibe: diningCtx.vibe } : {}),
+            city,
+          });
+          payload.summary = [
+            `Book links: ${who}`,
+            diningCtx?.partySize ? `table for ${diningCtx.partySize}` : null,
+            diningCtx?.whenHint ?? null,
+            diningCtx?.area ? `near ${diningCtx.area}` : null,
+            formatMoneyCapNote(handoff.moneyCapInr),
+            "Reply yes for Zomato/Dineout/EazyDiner links — Amilo won't reserve or pay.",
+          ]
+            .filter(Boolean)
+            .join(" · ");
+          if (diningCtx?.whenHint) {
+            const calMerged = mergeLifeOpsIntoCalendarText(
+              `schedule ${diningCtx?.vibe === "pub" ? "drinks" : "dinner"} at ${who} ${diningCtx.whenHint}`,
+              recentChatSummary ??
+                `Dining · ${diningCtx.whenHint}${diningCtx?.partySize ? ` · table for ${diningCtx.partySize}` : ""}`,
+            );
+            const calHint = parseCalendarCreateHint(calMerged, briefCtx.timezone);
+            if (calHint) {
+              payload.calendarHold = {
+                title: calHint.title.includes(who)
+                  ? calHint.title
+                  : `${diningCtx?.vibe === "pub" ? "Drinks" : "Dinner"} at ${who}`,
+                start: calHint.startIso,
+                end: calHint.endIso,
+                startIso: calHint.startIso,
+                endIso: calHint.endIso,
+                location: who,
+                accountLabel: "personal",
+              };
             }
-          } else {
-            const who =
-              venue ??
-              (handoff.optionId ? `option ${handoff.optionId}` : "the venue");
-            payload.script = [
-              `Re: reservation / booking — ${who}`,
-              `Hi — looking for ${handoff.domain === "travel" ? "this travel option" : "a table"} as discussed (${text.replace(/\s+/g, " ").slice(0, 100)}). Please confirm availability.`,
-              formatMoneyCapNote(handoff.moneyCapInr) ?? "",
-            ]
-              .filter(Boolean)
-              .join("\n");
           }
+        } else if (handoff.channel === "vendor" && !isDiningHandoff) {
+          // Don't invent Zomato for unknown vendor kinds.
+          payload.script = [
+            `Re: ${venue ?? handoff.venueHint ?? "booking"}`,
+            text.replace(/\s+/g, " ").slice(0, 120),
+            formatMoneyCapNote(handoff.moneyCapInr) ?? "",
+          ]
+            .filter(Boolean)
+            .join("\n");
         }
         const pending = await deps.createPending({
           userId: msg.userId,
@@ -3215,15 +3391,32 @@ export async function handleInbound(
       if (kind === "email_draft") {
         summary = `Email draft to ${String(payload.to ?? action.to ?? "?")}: ${String(payload.subject ?? action.subject ?? "(no subject)")}`;
       } else if (kind === "life_ops_research" || kind === "life_ops_handoff") {
+        const standingHandoff =
+          kind === "life_ops_handoff" ? parseLifeOpsHandoffIntent(text) : null;
+        const brainSummary =
+          result.intent.summary?.trim() || String(action.summary ?? "").trim();
+        // Reject empty "life ops" handoffs from the model — prefer standing parse or skip.
+        if (
+          kind === "life_ops_handoff" &&
+          isWeakLifeOpsHandoffSummary(brainSummary) &&
+          !standingHandoff
+        ) {
+          return [
+            {
+              text: "What should I hand off? Say e.g. Book Uber, or Book Katani Dhaba Fri 8pm.",
+            },
+          ];
+        }
         const cap = formatMoneyCapNote(
           typeof payload.moneyCapInr === "number"
             ? payload.moneyCapInr
             : parseMoneyCapInr(text),
         );
         summary = [
-          result.intent.summary?.trim() ||
-            String(action.summary ?? "").trim() ||
-            `${kind}: ${String(payload.query ?? payload.domain ?? "life ops")}`,
+          !isWeakLifeOpsHandoffSummary(brainSummary)
+            ? brainSummary
+            : standingHandoff?.summary?.trim() ||
+              `${kind}: ${String(payload.query ?? payload.domain ?? "life ops")}`,
           cap,
         ]
           .filter(Boolean)
