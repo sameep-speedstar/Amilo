@@ -1,5 +1,6 @@
 import type { BookingIntent, BookingResult } from "@amilo/booking";
 import type { SessionPool } from "../sessionPool.js";
+import { requestPhoneOtp } from "./phoneLogin.js";
 
 export async function runGrocerySkill(opts: {
   intent: BookingIntent;
@@ -20,7 +21,7 @@ export async function runGrocerySkill(opts: {
     };
   }
 
-  // Live: open merchant home; if login wall detected → needs_otp.
+  // Live: open merchant, enter phone, request OTP — only then ask WA for the code.
   try {
     const session = await pool.getSession(userId);
     const url =
@@ -29,37 +30,30 @@ export async function runGrocerySkill(opts: {
         : intent.merchant === "bigbasket"
           ? "https://www.bigbasket.com"
           : "https://www.zepto.com";
-    await session.page.goto(url, { waitUntil: "domcontentloaded", timeout: 45_000 });
-    const body = ((await session.page.content()) || "").toLowerCase();
-    if (/otp|login|sign in|verify/i.test(body)) {
-      return {
-        status: "needs_otp",
-        merchant: intent.merchant,
-        jobId,
-        message: `${capitalize(intent.merchant)} needs a login code sent to your phone. Forward that OTP here.`,
-      };
-    }
-    // Blocked / soft-fail → ask user to try alternate.
-    if (/access denied|blocked|captcha/i.test(body)) {
+
+    const otpReq = await requestPhoneOtp({
+      page: session.page,
+      merchant: intent.merchant,
+      phoneE164: intent.phone,
+      homeUrl: url,
+    });
+
+    if (!otpReq.ok) {
       return {
         status: "blocked",
         merchant: intent.merchant,
-        message: `${capitalize(intent.merchant)} is blocking automated access right now.`,
+        message: otpReq.reason,
         alternatives: (["zepto", "blinkit", "bigbasket"] as const).filter(
           (m) => m !== intent.merchant,
         ) as Array<"zepto" | "blinkit" | "bigbasket">,
       };
     }
+
     return {
-      status: "needs_selection",
+      status: "needs_otp",
       merchant: intent.merchant,
       jobId,
-      message: `Opened ${intent.merchant}. Pick items (live catalog scrape TBD — reply with brands/qty):`,
-      options: (intent.items ?? ["milk", "cheese"]).map((label, i) => ({
-        id: String(i + 1),
-        label,
-        unitInr: null,
-      })),
+      message: `${capitalize(intent.merchant)} should text a login code to ••••${otpReq.phoneLast4}. Forward that OTP here (don't share it elsewhere).`,
     };
   } catch (err) {
     return {

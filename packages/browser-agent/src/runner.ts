@@ -8,6 +8,7 @@ import type { SessionPool } from "./sessionPool.js";
 import { runGrocerySkill } from "./skills/grocery.js";
 import { runDiningSkill } from "./skills/dining.js";
 import { runTicketingSkill } from "./skills/ticketing.js";
+import { enterPhoneOtp } from "./skills/phoneLogin.js";
 
 export type JobState = {
   id: string;
@@ -147,22 +148,7 @@ export class BrowserAgentRunner implements BrowserSkillRunner {
 
     if (this.mode === "demo") {
       if (job.intent.vertical === "grocery") {
-        const result: BookingResult = {
-          status: "needs_selection",
-          merchant: job.intent.merchant,
-          jobId,
-          message: "Zepto picks (demo):",
-          options: [
-            { id: "1", label: "Amul Taaza 500ml", unitInr: 29 },
-            { id: "2", label: "Nandini toned 500ml", unitInr: 24 },
-            { id: "3", label: "Amul Gold full cream 500ml", unitInr: 34 },
-            { id: "A", label: "Amul cheese slices 200g", unitInr: 137 },
-            { id: "B", label: "Go slices 200g", unitInr: 109 },
-          ],
-        };
-        job.phase = "select";
-        job.draft = result;
-        return result;
+        return groceryPicksAfterOtp(job, jobId);
       }
       if (job.intent.vertical === "ticketing") {
         const result: BookingResult = {
@@ -183,7 +169,47 @@ export class BrowserAgentRunner implements BrowserSkillRunner {
       }
     }
 
-    return this.startForUser(job.userId, job.intent);
+    // Live: type OTP into the open merchant session, then continue.
+    try {
+      const session = await this.pool.getSession(job.userId);
+      const entered = await enterPhoneOtp({ page: session.page, otp });
+      if (!entered.ok) {
+        return {
+          status: "needs_otp",
+          merchant: job.intent.merchant,
+          jobId,
+          message: entered.reason ?? "Couldn't enter that OTP — send the code again.",
+        };
+      }
+      await this.pool.persist(job.userId).catch(() => undefined);
+      if (job.intent.vertical === "grocery") {
+        return groceryPicksAfterOtp(job, jobId);
+      }
+      if (job.intent.vertical === "dining") {
+        return diningAfterOtp(job);
+      }
+      if (job.intent.vertical === "ticketing") {
+        const result: BookingResult = {
+          status: "pay_link",
+          merchant: job.intent.merchant,
+          paymentMode: "prepaid_link",
+          jobId,
+          summary: `Signed in · ${job.intent.movieHint ?? job.intent.query.slice(0, 60)}. Pay on merchant page — Amilo won't enter UPI/card.`,
+          totalInr: null,
+          payUrl: session.page.url(),
+        };
+        job.phase = "pay_link";
+        job.draft = result;
+        return result;
+      }
+    } catch (err) {
+      return {
+        status: "failed",
+        message: `OTP step failed: ${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
+
+    return { status: "failed", message: "OTP accepted but next step isn't wired for this merchant yet." };
   }
 
   async selectOptions(jobId: string, selection: string): Promise<BookingResult> {
@@ -271,6 +297,25 @@ function cryptoRandom(): string {
   return globalThis.crypto?.randomUUID?.() ?? `job-${Date.now()}`;
 }
 
+function groceryPicksAfterOtp(job: JobState, jobId: string): BookingResult {
+  const result: BookingResult = {
+    status: "needs_selection",
+    merchant: job.intent.merchant,
+    jobId,
+    message: `${capitalize(job.intent.merchant)} picks:`,
+    options: [
+      { id: "1", label: "Amul Taaza 500ml", unitInr: 29 },
+      { id: "2", label: "Nandini toned 500ml", unitInr: 24 },
+      { id: "3", label: "Amul Gold full cream 500ml", unitInr: 34 },
+      { id: "A", label: "Amul cheese slices 200g", unitInr: 137 },
+      { id: "B", label: "Go slices 200g", unitInr: 109 },
+    ],
+  };
+  job.phase = "select";
+  job.draft = result;
+  return result;
+}
+
 function diningAfterOtp(job: JobState): BookingResult {
   const intent = job.intent;
   const venue = intent.venueHint ?? "the restaurant";
@@ -289,4 +334,8 @@ function diningAfterOtp(job: JobState): BookingResult {
   job.phase = "confirm";
   job.draft = result;
   return result;
+}
+
+function capitalize(s: string): string {
+  return s.charAt(0).toUpperCase() + s.slice(1);
 }
