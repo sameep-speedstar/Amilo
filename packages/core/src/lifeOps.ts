@@ -197,6 +197,93 @@ export function zomatoSearchUrl(venue: string, city = "bangalore"): string {
   return `https://www.zomato.com/${city}/restaurants?q=${encodeURIComponent(venue.trim().slice(0, 80))}`;
 }
 
+/** Best-effort dining book deep links (platform search / open). Exact slot fill needs partner IDs. */
+export function buildDiningBookLinks(opts: {
+  venue: string;
+  partySize?: number | null;
+  whenHint?: string | null;
+  area?: string | null;
+  city?: string;
+}): { zomato: string; dineout: string; eazydiner: string; maps: string } {
+  const city = opts.city ?? "bangalore";
+  const venue = opts.venue.trim().slice(0, 80);
+  const qParts = [venue];
+  if (opts.partySize && opts.partySize > 0) qParts.push(`table for ${opts.partySize}`);
+  if (opts.whenHint?.trim()) qParts.push(opts.whenHint.trim());
+  if (opts.area?.trim()) qParts.push(opts.area.trim());
+  const q = qParts.join(" ").slice(0, 120);
+  return {
+    zomato: `https://www.zomato.com/${city}/restaurants?q=${encodeURIComponent(q)}`,
+    dineout: `https://www.dineout.co.in/${city}-restaurants?search=${encodeURIComponent(venue)}`,
+    eazydiner: `https://www.eazydiner.com/${city}/search?query=${encodeURIComponent(venue)}`,
+    maps: shortMapsSearchUrl(venue, opts.area),
+  };
+}
+
+/** BMS buytickets URL when we have an ET code + YYYYMMDD the user actually stated (or ISO day). */
+export function buildBookMyShowBuyLink(opts: {
+  citySlug?: string;
+  movieSlug?: string;
+  eventCode: string;
+  dateYmd: string;
+}): string {
+  const city = opts.citySlug ?? "bengaluru";
+  const slug = (opts.movieSlug ?? "movie").replace(/[^a-z0-9-]/gi, "-").toLowerCase();
+  const day = opts.dateYmd.replace(/-/g, "").slice(0, 8);
+  return `https://in.bookmyshow.com/movies/${city}/${slug}/buytickets/${opts.eventCode}/${day}`;
+}
+
+const MOVIE_LINE_RE =
+  /\b(bookmyshow|showtimes?|IMDb|film|films|PVR|INOX|Cinepolis|buytickets|ET\d{5,}|\bshows?\b|movie|cinema)\b/i;
+const DINING_LINE_RE =
+  /\b(dinner|lunch|brunch|restaurant|dining|zomato|eazydiner|dineout|table for|rooftop|fine dining|client dinner|pubs?|brewery)\b/i;
+
+/** Drop movie/cinema lines so dinner handoff never inherits showtimes / invented "today". */
+export function scopeChatToDining(chat: string | null | undefined): string {
+  if (!chat?.trim()) return "";
+  return chat
+    .split("\n")
+    .filter((line) => {
+      if (MOVIE_LINE_RE.test(line) && !DINING_LINE_RE.test(line)) return false;
+      return true;
+    })
+    .join("\n");
+}
+
+/** Prefer when/party from the user's own lines + current message — never from Amilo invented dates. */
+export function extractUserStatedWhen(
+  recentChat: string | null | undefined,
+  bookText?: string | null,
+): string | null {
+  const book = (bookText ?? "").trim();
+  const fromBook =
+    book.match(/\b(tomorrow|today|tonight)\b[^.]{0,60}/i)?.[0]?.trim() ??
+    book.match(
+      /\b(?:mon|tue|wed|thu|fri|sat|sun)[a-z]*\b[^.]{0,40}\b\d{1,2}(?::\d{2})?\s*[ap]m\b/i,
+    )?.[0]?.trim() ??
+    book.match(/\b\d{1,2}(?::\d{2})?\s*[ap]m\b/i)?.[0]?.trim() ??
+    book.match(/\b\d{1,2}[\/\-]\d{1,2}(?:[\/\-]\d{2,4})?\b/)?.[0]?.trim() ??
+    null;
+  if (fromBook) return fromBook.slice(0, 80);
+
+  const userLines = (recentChat ?? "")
+    .split("\n")
+    .filter((l) => /^User:/i.test(l))
+    .join("\n");
+  if (!userLines) return null;
+  return (
+    userLines.match(/\b(tomorrow|today|tonight)\b[^.]{0,60}/i)?.[0]?.trim() ??
+    userLines.match(
+      /\b(?:mon|tue|wed|thu|fri|sat|sun)[a-z]*\b[^.]{0,40}\b\d{1,2}(?::\d{2})?\s*[ap]m\b/i,
+    )?.[0]?.trim() ??
+    userLines.match(/\b\d{1,2}(?::\d{2})?\s*[ap]m\b/i)?.[0]?.trim() ??
+    null
+  )?.slice(0, 80) ?? null;
+}
+
+const BOOK_PLATFORM_ONLY_RE =
+  /^(?:via|on|using|with|through)?\s*(?:zomato|eazy\s*diner|dineout|book\s*my\s*show|bms|maps)\s*$/i;
+
 export function parseDiningResearchHints(text: string): DiningResearchHints | null {
   const t = text.trim();
   const isPub =
@@ -568,7 +655,7 @@ export function extractLifeOpsDiningContext(
   recentChat: string | null | undefined,
   bookText?: string | null,
 ): LifeOpsDiningContext | null {
-  const chat = (recentChat ?? "").trim();
+  const chat = scopeChatToDining(recentChat);
   const book = (bookText ?? "").trim();
   if (!chat && !book) return null;
 
@@ -579,7 +666,8 @@ export function extractLifeOpsDiningContext(
   const venueClean =
     venueFromBook &&
     !/^[A-Ea-e]$/.test(venueFromBook) &&
-    !/^[1-9]$/.test(venueFromBook)
+    !/^[1-9]$/.test(venueFromBook) &&
+    !BOOK_PLATFORM_ONLY_RE.test(venueFromBook)
       ? venueFromBook.replace(/\s+/g, " ").slice(0, 80)
       : null;
 
@@ -610,20 +698,20 @@ export function extractLifeOpsDiningContext(
 
   const head =
     chat.match(
-      /(?:Pure-veg|Dining|Pubs?|Pub picks)[^\n]{0,140}/i,
+      /(?:Pure-veg|Dining|Pubs?|Pub picks|Client dinner)[^\n]{0,140}/i,
     )?.[0] ?? chat;
   const diningHints = parseDiningResearchHints(chat) ?? parseDiningResearchHints(head);
   const partySize =
     diningHints?.partySize ??
-    (Number(chat.match(/\btable for\s+(\d{1,2})\b/i)?.[1]) || null);
-  const whenHint =
-    diningHints?.whenHint ??
-    chat.match(/\b(tomorrow|today|tonight)\b[^\n.]{0,40}/i)?.[0]?.trim() ??
-    chat.match(/\b\d{1,2}(?::\d{2})?\s*[ap]m\b/i)?.[0]?.trim() ??
-    null;
+    (Number(book.match(/\btable for\s+(\d{1,2})\b/i)?.[1]) ||
+      Number(chat.match(/\btable for\s+(\d{1,2})\b/i)?.[1]) ||
+      null);
+  // When/date only if the USER said it — never from Amilo movie "today (Sun 20 Sep)" lines.
+  const whenHint = extractUserStatedWhen(recentChat, book);
   const area =
     diningHints?.area ??
     chat.match(/\bnear\s+([A-Za-z][A-Za-z0-9 .'-]{2,40})/i)?.[1]?.trim() ??
+    book.match(/\bnear\s+([A-Za-z][A-Za-z0-9 .'-]{2,40})/i)?.[1]?.trim() ??
     null;
 
   if (!venue && !whenHint && !diningHints) return null;
@@ -703,15 +791,20 @@ export function buildDiningHandoffScript(ctx: {
   area?: string | null;
   vibe?: "restaurant" | "pub";
 }): string {
-  const party = ctx.partySize && ctx.partySize > 0 ? `table for ${ctx.partySize}` : "a table";
-  const when = ctx.whenHint?.trim() || "our preferred slot";
-  const where = ctx.area ? ` (${ctx.area})` : "";
-  const kind = ctx.vibe === "pub" ? "drinks / a table" : party;
+  const links = buildDiningBookLinks(ctx);
+  const bits = [
+    ctx.venue,
+    ctx.whenHint?.trim() || null,
+    ctx.partySize && ctx.partySize > 0 ? `table for ${ctx.partySize}` : null,
+    ctx.area ? `near ${ctx.area}` : null,
+  ].filter(Boolean);
   return [
-    `Call / Zomato / EazyDiner — ${ctx.venue}${where}`,
-    `Hi — looking for ${kind} ${when}. Please confirm availability.`,
-    `Zomato: ${zomatoSearchUrl(ctx.venue)}`,
-    `Maps: ${shortMapsSearchUrl(ctx.venue, ctx.area)}`,
+    `Open to finish booking (Amilo did not reserve or pay):`,
+    `· ${bits.join(" · ")}`,
+    `Zomato: ${links.zomato}`,
+    `Dineout: ${links.dineout}`,
+    `EazyDiner: ${links.eazydiner}`,
+    `Maps: ${links.maps}`,
   ].join("\n");
 }
 
@@ -975,9 +1068,16 @@ export function parseLifeOpsHandoffIntent(text: string): LifeOpsHandoffIntent | 
     (parseLifeOpsOptionPick(t) && /^(?:book|reserve|handoff|hand ?off|option)\b/i.test(t)
       ? parseLifeOpsOptionPick(t)
       : null);
-  const bookNamed =
+  const bookNamedRaw =
     t.match(/^(?:book|reserve)\s+(.+)$/i)?.[1]?.trim() ??
     t.match(/\bbook\s+(?:a\s+table\s+at\s+|at\s+)(.+)$/i)?.[1]?.trim();
+  const bookNamed =
+    bookNamedRaw && !BOOK_PLATFORM_ONLY_RE.test(bookNamedRaw) ? bookNamedRaw : null;
+
+  // "book via Zomato" with no venue — not a handoff yet.
+  if (bookNamedRaw && !bookNamed && BOOK_PLATFORM_ONLY_RE.test(bookNamedRaw)) {
+    return null;
+  }
 
   const wantsHandoff =
     Boolean(optionPick) ||
@@ -1048,9 +1148,9 @@ export function parseLifeOpsHandoffIntent(text: string): LifeOpsHandoffIntent | 
       ...(optionId ? { optionId } : {}),
       ...(venueHint ? { venueHint } : {}),
       summary: [
-        `Handoff (reservation): ${who}`,
+        `Book links: ${who}`,
         formatMoneyCapNote(moneyCapInr),
-        "Reply yes for the call/Zomato script — I won't book or pay without that.",
+        "Reply yes for platform book links — Amilo won't reserve or pay.",
       ]
         .filter(Boolean)
         .join("\n"),
@@ -1132,16 +1232,14 @@ export function lifeOpsHandoffConfirmMessage(payload: Record<string, unknown>): 
   }
   if (channel === "vendor") {
     const script = String(
-      payload.script ?? payload.summary ?? "Call/message the venue with your preferred slot.",
-    ).slice(0, 600);
+      payload.script ?? payload.summary ?? "Open the book link for your venue and slot.",
+    ).slice(0, 700);
     const calNote = payload.calendarHold
       ? "\n\nCalendar hold proposed next — reply yes to put it on your calendar (still confirm-first)."
-      : "\n\nWhen you've booked, say block calendar tomorrow 8pm at <venue> invite <name>.";
+      : "\n\nAfter you've booked on the platform, say block calendar <day time> at <venue> if you want it on Google.";
     return [
-      "Handoff plan locked. Script:",
+      "Book links ready (nothing reserved or paid by Amilo):",
       script,
-      "",
-      "I did not contact anyone or pay.",
       calNote.trim(),
     ].join("\n");
   }

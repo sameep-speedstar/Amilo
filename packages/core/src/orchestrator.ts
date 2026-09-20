@@ -28,6 +28,7 @@ import {
   parseLifeOpsResearchIntent,
   parseMoneyCapInr,
   resolveListedOptionVenue,
+  scopeChatToDining,
   type LifeOpsResearchIntent,
 } from "./lifeOps.js";
 import {
@@ -2437,8 +2438,9 @@ export async function handleInbound(
   {
     const pickId = parseLifeOpsOptionPick(text);
     if (pickId && recentChatSummary) {
+      const diningChat = scopeChatToDining(recentChatSummary);
       const venue =
-        resolveListedOptionVenue(recentChatSummary, pickId) ??
+        resolveListedOptionVenue(diningChat, pickId) ??
         extractLifeOpsDiningContext(recentChatSummary, `book ${pickId}`)?.venue ??
         null;
       if (venue) {
@@ -2483,11 +2485,11 @@ export async function handleInbound(
               ...(diningCtx?.vibe ? { vibe: diningCtx.vibe } : {}),
             }),
             summary: [
-              `Handoff (reservation): ${venue}`,
+              `Book links: ${venue}`,
               diningCtx?.partySize ? `table for ${diningCtx.partySize}` : null,
               diningCtx?.whenHint ?? null,
               diningCtx?.area ? `near ${diningCtx.area}` : null,
-              "Reply yes for the call/Zomato script — I won't book or pay without that.",
+              "Reply yes for Zomato/Dineout/EazyDiner links — Amilo won't reserve or pay.",
             ]
               .filter(Boolean)
               .join(" · "),
@@ -2535,14 +2537,33 @@ export async function handleInbound(
   if (deps.createPending) {
       const handoff = parseLifeOpsHandoffIntent(text);
       if (handoff) {
+        const diningChat = scopeChatToDining(recentChatSummary);
         const diningCtx = extractLifeOpsDiningContext(recentChatSummary, text);
         const venue =
           handoff.venueHint ??
           (handoff.optionId
-            ? resolveListedOptionVenue(recentChatSummary, handoff.optionId)
+            ? resolveListedOptionVenue(diningChat, handoff.optionId)
             : null) ??
           diningCtx?.venue ??
           (handoff.optionId ? `option ${handoff.optionId}` : null);
+
+        // Dining book without user-stated day/time → ask; never invent today / mix movie chat.
+        const isDiningHandoff =
+          handoff.channel === "vendor" &&
+          (handoff.domain === "home" || Boolean(diningCtx) || Boolean(venue)) &&
+          !/\b(flight|hotel|train|indigo)\b/i.test(text);
+        if (isDiningHandoff && venue && !diningCtx?.whenHint) {
+          return [
+            {
+              text: [
+                `Got it — ${venue}.`,
+                diningCtx?.partySize == null
+                  ? "Still need day + time (and party size). Reply e.g. Fri 8pm, table for 3 — I won't assume."
+                  : "Still need day + time. Reply e.g. Fri 8pm — I won't assume.",
+              ].join("\n"),
+            },
+          ];
+        }
         const payload: Record<string, unknown> = {
           domain: handoff.domain,
           channel: handoff.channel,
@@ -2571,12 +2592,12 @@ export async function handleInbound(
               ...(diningCtx?.vibe ? { vibe: diningCtx.vibe } : {}),
             });
             payload.summary = [
-              `Handoff (reservation): ${who}`,
+              `Book links: ${who}`,
               diningCtx?.partySize ? `table for ${diningCtx.partySize}` : null,
               diningCtx?.whenHint ?? null,
               diningCtx?.area ? `near ${diningCtx.area}` : null,
               formatMoneyCapNote(handoff.moneyCapInr),
-              "Reply yes for the call/Zomato script — I won't book or pay without that.",
+              "Reply yes to get the Zomato/Dineout/EazyDiner links — Amilo won't reserve or pay.",
             ]
               .filter(Boolean)
               .join(" · ");

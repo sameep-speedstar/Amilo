@@ -222,18 +222,41 @@ describe("lifeOps", () => {
       whenHint: "tomorrow 8pm",
       area: "Indiranagar",
     });
-    assert.match(script, /table for 2/);
+    assert.match(script, /Burma Burma/);
     assert.match(script, /tomorrow 8pm/);
+    assert.match(script, /table for 2/);
     assert.doesNotMatch(script, /flight/i);
     assert.match(script, /zomato\.com/i);
+    assert.match(script, /dineout\.co\.in/i);
+    assert.match(script, /Open to finish booking/i);
+  });
+
+  it("ignores movie chat when extracting dinner when/venue", () => {
+    const chat = [
+      "User: which good movie is running",
+      "Amilo: Hanuman Ansh showtimes today (Sun 20 Sep) — INOX Megaplex Mall of Asia",
+      "User: Have to take my client for a dinner near MG road",
+      "Amilo: 1) Kai — rooftop\n2) Ebony @ Barton Centre — rooftop",
+      "User: Book Ebony",
+    ].join("\n");
+    const ctx = extractLifeOpsDiningContext(chat, "Book Ebony");
+    assert.ok(ctx);
+    assert.equal(ctx!.venue, "Ebony");
+    assert.equal(ctx!.whenHint, null);
+    assert.doesNotMatch(ctx!.venue ?? "", /INOX/i);
+  });
+
+  it("does not treat book via Zomato as a venue handoff", () => {
+    assert.equal(parseLifeOpsHandoffIntent("Book via Zomato"), null);
   });
 
   it("merges life-ops context into calendar block text", () => {
     const chat = [
-      "Pure-veg · near Indiranagar · tomorrow 8pm · table for 2",
-      "A) Burma Burma — ★4.5 · Indiranagar",
-      "B) MTR — ★4.2",
-      "Handoff (reservation): Burma Burma",
+      "User: table for 2 near Indiranagar tomorrow 8pm vegetarian",
+      "Amilo: Pure-veg · near Indiranagar · tomorrow 8pm · table for 2",
+      "Amilo: A) Burma Burma — ★4.5 · Indiranagar",
+      "Amilo: B) MTR — ★4.2",
+      "Amilo: Handoff (reservation): Burma Burma",
     ].join("\n");
     const merged = mergeLifeOpsIntoCalendarText(
       "block calendar and send invite to Mahesh",
