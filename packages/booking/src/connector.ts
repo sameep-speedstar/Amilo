@@ -140,6 +140,8 @@ export function formatBookingResultForWa(result: BookingResult): string {
   switch (result.status) {
     case "needs_otp":
       return result.message;
+    case "needs_email":
+      return result.message;
     case "needs_selection":
       return [
         result.message,

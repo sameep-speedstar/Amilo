@@ -242,13 +242,15 @@ export async function executePendingAction(
       };
     }
 
-    if (row.kind === "booking_otp" || row.kind === "booking_select") {
+    if (row.kind === "booking_otp" || row.kind === "booking_select" || row.kind === "booking_email") {
       return {
         ok: false,
         message:
           row.kind === "booking_otp"
             ? "Send the one-time code from your phone (digits only), or cancel."
-            : "Send your picks (e.g. Milk 3; Cheese A), or cancel.",
+            : row.kind === "booking_email"
+              ? "Reply with your login email (or yes if Google is linked), or cancel."
+              : "Send your picks (e.g. Milk 3; Cheese A), or cancel.",
       };
     }
 

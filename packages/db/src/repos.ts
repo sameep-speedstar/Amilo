@@ -3593,6 +3593,7 @@ export type PendingActionKind =
   | "life_ops_research"
   | "life_ops_handoff"
   | "booking_otp"
+  | "booking_email"
   | "booking_confirm"
   | "booking_pay_link"
   | "booking_select";

@@ -1,6 +1,7 @@
 import type { Page } from "playwright";
 import type { OtpChannel } from "@amilo/booking";
 import {
+  clickExactContinue,
   clickFirst,
   enterPhoneOtp,
   nationalPhoneDigits,
@@ -39,7 +40,7 @@ export async function loginMobileThenEmail(opts: {
   if (!email) {
     return {
       kind: "need_email",
-      message: `${cap(merchant)} mobile login failed (${mobile.reason}). Reply with your email for ${cap(merchant)} login, or try another merchant.`,
+      message: `${cap(merchant)} mobile login didn't stick (${mobile.reason}). Reply with your ${cap(merchant)} email address to continue (or yes if Google is linked on Amilo).`,
     };
   }
 
@@ -93,6 +94,7 @@ async function requestEmailOtp(opts: {
     'text=/continue with email/i',
     'text=/login with email/i',
     'button:has-text("Use email")',
+    'button:has-text("Continue with Email")',
   ]);
   await page.waitForTimeout(400);
 
@@ -113,13 +115,18 @@ async function requestEmailOtp(opts: {
     return { ok: false, reason: `Couldn't fill email on ${cap(merchant)}.` };
   }
 
-  await clickFirst(page, [
-    'button:has-text("Continue")',
-    'button:has-text("Send")',
-    'button:has-text("Get OTP")',
-    'button:has-text("Submit")',
-    'button[type="submit"]',
-  ]);
+  // Exact "Continue" — not "Continue with Google/Apple"
+  const continued =
+    (await clickExactContinue(page)) ||
+    (await clickFirst(page, [
+      'button:has-text("Send")',
+      'button:has-text("Get OTP")',
+      'button:has-text("Submit")',
+      'button[type="submit"]',
+    ]));
+  if (!continued) {
+    await page.keyboard.press("Enter").catch(() => undefined);
+  }
   await page.waitForTimeout(1200);
 
   const body = ((await page.content()) || "").toLowerCase();

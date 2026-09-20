@@ -5,6 +5,7 @@ export type {
   BookingIntent,
   BookingLineItem,
   BookingMerchant,
+  BookingNeedsEmail,
   BookingNeedsOtp,
   BookingNeedsSelection,
   BookingPayLink,
@@ -25,7 +26,12 @@ export {
   isHostAllowed,
   spendCapFor,
 } from "./allowlist.js";
-export { parseBookingIntent, parseBookingOtpReply, isBookingResearchAsk } from "./parseIntent.js";
+export {
+  parseBookingIntent,
+  parseBookingOtpReply,
+  parseBookingEmailReply,
+  isBookingResearchAsk,
+} from "./parseIntent.js";
 export {
   BookingConnector,
   formatBookingResultForWa,

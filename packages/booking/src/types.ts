@@ -57,6 +57,14 @@ export type BookingNeedsOtp = {
   otpChannel?: OtpChannel;
 };
 
+/** Waiting for user to supply email after mobile login failed. */
+export type BookingNeedsEmail = {
+  status: "needs_email";
+  merchant: BookingMerchant;
+  message: string;
+  jobId: string;
+};
+
 export type SelectionOption = {
   id: string;
   label: string;
@@ -116,6 +124,7 @@ export type BookingFailed = {
 
 export type BookingResult =
   | BookingNeedsOtp
+  | BookingNeedsEmail
   | BookingNeedsSelection
   | BookingReadyConfirm
   | BookingPayLink
@@ -137,6 +146,8 @@ export type BrowserSkillRunner = {
   submitOtp: (jobId: string, otp: string) => Promise<BookingResult>;
   selectOptions: (jobId: string, selection: string) => Promise<BookingResult>;
   confirmPlace: (jobId: string) => Promise<BookingResult>;
+  /** Resume login with email after needs_email. */
+  continueWithEmail?: (jobId: string, email: string) => Promise<BookingResult>;
   /** Reattach an in-flight job after process recycle (from DB). */
   rehydrateJob?: (job: {
     id: string;

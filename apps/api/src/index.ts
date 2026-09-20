@@ -30,6 +30,8 @@ import { runLifeOpsResearch } from "./lifeOpsResearch.js";
 import {
   continueBookingOtp,
   continueBookingSelect,
+  continueBookingEmail,
+  resolveBookingEmailReply,
   parseBookingOtpReply,
   startBookingFlow,
   tryParseBookingIntent,
@@ -1244,6 +1246,27 @@ async function processInbound(rawJson: unknown): Promise<void> {
             userId: user.id,
             jobId,
             otp,
+          });
+          for (const msg of outbound) await sendAndLogOutbound(user.id, msg);
+          continue;
+        }
+      }
+      if (openBooking?.kind === "booking_email") {
+        const resolved = await resolveBookingEmailReply(db, user.id, content);
+        if (resolved && "askAgain" in resolved) {
+          await sendAndLogOutbound(user.id, { text: resolved.askAgain });
+          continue;
+        }
+        if (resolved && "email" in resolved) {
+          const jobId = String(openBooking.payload.jobId ?? "");
+          await resolvePendingAction(db, openBooking.id, {
+            status: "confirmed",
+            result: { email: resolved.email },
+          });
+          const outbound = await continueBookingEmail(db, {
+            userId: user.id,
+            jobId,
+            email: resolved.email,
           });
           for (const msg of outbound) await sendAndLogOutbound(user.id, msg);
           continue;

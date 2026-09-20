@@ -5,6 +5,7 @@ import {
   getAllowlistEntry,
   parseBookingIntent,
   parseBookingOtpReply,
+  parseBookingEmailReply,
   type BookingIntent,
   type BookingMerchant,
   type BookingResult,
@@ -19,6 +20,7 @@ import {
   createBrowserJob,
   createPendingAction,
   getBrowserJob,
+  getGoogleAccount,
   updateBrowserJob,
   upsertBrowserProfile,
   type Db,
@@ -84,6 +86,8 @@ function pendingKindFor(result: BookingResult): PendingActionKind | null {
   switch (result.status) {
     case "needs_otp":
       return "booking_otp";
+    case "needs_email":
+      return "booking_email";
     case "needs_selection":
       return "booking_select";
     case "ready_confirm":
@@ -136,6 +140,7 @@ function waBookingHeading(kind: PendingActionKind, result: BookingResult): strin
 
   switch (kind) {
     case "booking_otp":
+    case "booking_email":
     case "booking_select":
       return m ? `${v} · ${m}` : v;
     case "booking_confirm":
@@ -175,6 +180,46 @@ export async function continueBookingOtp(
     pendingKind: pendingKindFor(result),
   });
   return afterResult(db, opts.userId, result);
+}
+
+export async function continueBookingEmail(
+  db: Db,
+  opts: { userId: string; jobId: string; email: string },
+): Promise<OutboundMessage[]> {
+  const { agent } = getBookingAgent();
+  await ensureJobHydrated(db, agent, opts.jobId, opts.userId);
+  if (!agent.continueWithEmail) {
+    return [
+      {
+        text: "Email login resume isn't available — say book again with your email in the message.",
+      },
+    ];
+  }
+  const result = await agent.continueWithEmail(opts.jobId, opts.email);
+  await updateBrowserJob(db, opts.jobId, {
+    status: result.status,
+    result: result as unknown as Record<string, unknown>,
+    pendingKind: pendingKindFor(result),
+  });
+  return afterResult(db, opts.userId, result);
+}
+
+/** Resolve email for booking_email pending — explicit address or linked Google. */
+export async function resolveBookingEmailReply(
+  db: Db,
+  userId: string,
+  text: string,
+): Promise<{ email: string } | { askAgain: string } | null> {
+  const parsed = parseBookingEmailReply(text);
+  if (!parsed) return null;
+  if ("email" in parsed) return { email: parsed.email };
+  const acct = await getGoogleAccount(db, userId);
+  const linked = acct?.email?.trim();
+  if (linked?.includes("@")) return { email: linked.toLowerCase() };
+  return {
+    askAgain:
+      "Reply with the email address to use for login (e.g. you@gmail.com). Yes alone only works if Google is linked on Amilo.",
+  };
 }
 
 export async function continueBookingSelect(

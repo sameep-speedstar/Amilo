@@ -15,7 +15,7 @@ export type JobState = {
   id: string;
   userId: string;
   intent: BookingIntent;
-  phase: "otp" | "select" | "confirm" | "pay_link" | "done" | "failed";
+  phase: "otp" | "email" | "select" | "confirm" | "pay_link" | "done" | "failed";
   draft?: BookingResult;
   otpChannel?: "mobile" | "email";
   updatedAt: number;
@@ -103,6 +103,7 @@ export class BrowserAgentRunner implements BrowserSkillRunner {
     this.storeJob(jobId, userId, intent, result);
     if (
       result.status === "needs_otp" ||
+      result.status === "needs_email" ||
       result.status === "ready_confirm" ||
       result.status === "pay_link" ||
       result.status === "needs_selection"
@@ -110,6 +111,83 @@ export class BrowserAgentRunner implements BrowserSkillRunner {
       await this.pool.persist(userId).catch(() => undefined);
     }
     return result;
+  }
+
+  /** Resume after needs_email — set email on intent and retry login (mobile first, then email). */
+  async continueWithEmail(jobId: string, email: string): Promise<BookingResult> {
+    const job = this.jobs.get(jobId);
+    if (!job) return { status: "failed", message: "Booking job expired — start again." };
+    const trimmed = email.trim().toLowerCase();
+    if (!trimmed.includes("@")) {
+      return {
+        status: "needs_email",
+        merchant: job.intent.merchant,
+        jobId,
+        message: "That doesn't look like an email. Reply with e.g. you@gmail.com",
+      };
+    }
+    job.intent = { ...job.intent, email: trimmed };
+    await this.progress(job.userId, `Signing into ${job.intent.merchant} with email…`);
+
+    if (this.mode === "demo") {
+      const result: BookingResult = {
+        status: "needs_otp",
+        merchant: job.intent.merchant,
+        jobId,
+        message: `Demo mode — pretend OTP emailed to ${trimmed}. Reply with any 6-digit code.`,
+        otpChannel: "email",
+      };
+      this.applyDraft(job, result);
+      return result;
+    }
+
+    try {
+      const adapter = getSiteAdapter(job.intent.merchant);
+      const session = await this.pool.getSession(job.userId);
+      const step = await adapter.login(session.page, {
+        phoneE164: job.intent.phone,
+        email: trimmed,
+      });
+      if (step.kind === "logged_in") {
+        const searched = await adapter.search(session.page, job.intent, jobId);
+        this.applyDraft(job, searched);
+        await this.pool.persist(job.userId).catch(() => undefined);
+        return searched;
+      }
+      if (step.kind === "needs_otp") {
+        const result: BookingResult = {
+          status: "needs_otp",
+          merchant: job.intent.merchant,
+          jobId,
+          message: step.message,
+          otpChannel: step.channel,
+        };
+        this.applyDraft(job, result);
+        await this.pool.persist(job.userId).catch(() => undefined);
+        return result;
+      }
+      if (step.kind === "need_email") {
+        const result: BookingResult = {
+          status: "needs_email",
+          merchant: job.intent.merchant,
+          jobId,
+          message: step.message,
+        };
+        this.applyDraft(job, result);
+        return result;
+      }
+      return {
+        status: "blocked",
+        merchant: job.intent.merchant,
+        message: step.reason,
+        alternatives: altFor(adapter),
+      };
+    } catch (err) {
+      return {
+        status: "failed",
+        message: `Email login failed: ${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
   }
 
   async submitOtp(jobId: string, otp: string): Promise<BookingResult> {
@@ -260,10 +338,10 @@ export class BrowserAgentRunner implements BrowserSkillRunner {
     }
     if (step.kind === "need_email") {
       return {
-        status: "blocked",
+        status: "needs_email",
         merchant: intent.merchant,
+        jobId,
         message: step.message,
-        alternatives: altFor(adapter),
       };
     }
     return {
@@ -520,6 +598,8 @@ function phaseFor(
   switch (result.status) {
     case "needs_otp":
       return "otp";
+    case "needs_email":
+      return "email";
     case "needs_selection":
       return "select";
     case "ready_confirm":
@@ -536,6 +616,7 @@ function phaseFor(
 function normalizePhase(phase: string): JobState["phase"] {
   if (
     phase === "otp" ||
+    phase === "email" ||
     phase === "select" ||
     phase === "confirm" ||
     phase === "pay_link" ||
@@ -545,6 +626,7 @@ function normalizePhase(phase: string): JobState["phase"] {
     return phase;
   }
   if (phase === "needs_otp") return "otp";
+  if (phase === "needs_email") return "email";
   if (phase === "needs_selection") return "select";
   if (phase === "ready_confirm") return "confirm";
   return "failed";

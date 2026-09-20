@@ -1,4 +1,4 @@
-import type { Page } from "playwright";
+import type { Page, Locator } from "playwright";
 
 /** India-facing grocery apps want the last 10 digits. */
 export function nationalPhoneDigits(phoneE164: string): string {
@@ -38,6 +38,9 @@ export async function requestPhoneOtp(opts: {
     'button:has-text("Sign in")',
     'a:has-text("Sign in")',
     'text=/Sign\\s*in/i',
+    'button:has-text("Get Started")',
+    'a:has-text("Get Started")',
+    'text=/Get\\s*Started/i',
   ]);
   if (!loginClicked) {
     // Some SPAs already show phone on first paint or behind profile icon.
@@ -52,10 +55,17 @@ export async function requestPhoneOtp(opts: {
         'button:has-text("Login")',
         'a:has-text("Login")',
         'text=/^Login$/i',
+        'button:has-text("Get Started")',
       ]);
     }
   }
-  await page.waitForTimeout(600);
+  // Wait for Get Started / login modal with +91 mobile field (BookMyShow etc.)
+  await page
+    .locator('text=/Get Started|\\+91|mobile|phone/i')
+    .first()
+    .waitFor({ state: "visible", timeout: 5_000 })
+    .catch(() => undefined);
+  await page.waitForTimeout(400);
 
   const filled = await fillPhone(page, phone);
   if (!filled) {
@@ -65,14 +75,15 @@ export async function requestPhoneOtp(opts: {
     };
   }
 
-  const submitted = await clickFirst(page, [
-    'button:has-text("Continue")',
-    'button:has-text("Get OTP")',
-    'button:has-text("Send OTP")',
-    'button:has-text("Submit")',
-    'button:has-text("Next")',
-    'button[type="submit"]',
-  ]);
+  const submitted =
+    (await clickExactContinue(page)) ||
+    (await clickFirst(page, [
+      'button:has-text("Get OTP")',
+      'button:has-text("Send OTP")',
+      'button:has-text("Submit")',
+      'button:has-text("Next")',
+      'button[type="submit"]',
+    ]));
   if (!submitted) {
     // Enter key sometimes triggers send.
     await page.keyboard.press("Enter").catch(() => undefined);
@@ -149,7 +160,47 @@ export async function enterPhoneOtp(opts: {
   return { ok: true };
 }
 
+/** True when an input looks like a mobile / phone field (not email / password / otp). */
+export function looksLikePhoneInput(attrs: {
+  type?: string | null;
+  name?: string | null;
+  placeholder?: string | null;
+  autocomplete?: string | null;
+  inputmode?: string | null;
+  maxlength?: string | null;
+  ariaLabel?: string | null;
+}): boolean {
+  const blob = [
+    attrs.type,
+    attrs.name,
+    attrs.placeholder,
+    attrs.autocomplete,
+    attrs.inputmode,
+    attrs.ariaLabel,
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+  if (/email|password|otp|search|captcha/.test(blob)) return false;
+  if (attrs.type === "tel" || attrs.inputmode === "tel") return true;
+  if (/phone|mobile|tel/.test(blob)) return true;
+  if (attrs.maxlength === "10" || attrs.maxlength === "12") return true;
+  // Bare text inputs in login modals (BookMyShow Get Started +91 field)
+  if (!attrs.type || attrs.type === "text" || attrs.type === "number") {
+    const descriptive = [attrs.name, attrs.placeholder, attrs.autocomplete, attrs.ariaLabel]
+      .filter(Boolean)
+      .join(" ")
+      .toLowerCase();
+    if (!descriptive || /number|digit|phone|mobile/.test(descriptive)) return true;
+  }
+  return false;
+}
+
 export async function fillPhone(page: Page, phone10: string): Promise<boolean> {
+  // 1) Prefer input next to +91 (BookMyShow Get Started modal)
+  const near91 = await fillNearCountryCode(page, phone10);
+  if (near91) return true;
+
   const candidates = [
     'input[type="tel"]',
     'input[name*="phone" i]',
@@ -158,27 +209,98 @@ export async function fillPhone(page: Page, phone10: string): Promise<boolean> {
     'input[placeholder*="mobile" i]',
     'input[placeholder*="phone" i]',
     'input[placeholder*="number" i]',
-    'input[inputmode="numeric"]',
     'input[inputmode="tel"]',
+    '[role="dialog"] input:not([type="hidden"]):not([type="checkbox"]):not([type="radio"]):not([type="email"]):not([type="password"])',
+    '[class*="modal" i] input:not([type="hidden"]):not([type="email"]):not([type="password"])',
+    'input[inputmode="numeric"]',
   ];
   for (const sel of candidates) {
     const loc = page.locator(sel).first();
     if ((await loc.count().catch(() => 0)) === 0) continue;
-    try {
-      await loc.click({ timeout: 2_000 });
-      await loc.fill("");
-      await loc.fill(phone10);
-      const val = await loc.inputValue().catch(() => "");
-      if (val.replace(/\D/g, "").endsWith(phone10) || val.includes(phone10)) return true;
-      // Some fields want digit-by-digit
-      await loc.fill("");
-      await loc.type(phone10, { delay: 30 });
-      return true;
-    } catch {
+    if (!(await loc.isVisible().catch(() => false))) continue;
+    const attrs = await readInputAttrs(loc);
+    if (!looksLikePhoneInput(attrs)) continue;
+    if (await tryFill(loc, phone10)) return true;
+  }
+
+  // 2) Last resort: any visible text-like input in a dialog
+  const dialogInputs = page.locator(
+    '[role="dialog"] input:visible, [class*="modal" i] input:visible, form input:visible',
+  );
+  const n = await dialogInputs.count().catch(() => 0);
+  for (let i = 0; i < Math.min(n, 8); i++) {
+    const loc = dialogInputs.nth(i);
+    const attrs = await readInputAttrs(loc);
+    if (/email|password|otp|search/i.test(
+      [attrs.type, attrs.name, attrs.placeholder, attrs.autocomplete].filter(Boolean).join(" "),
+    )) {
       continue;
+    }
+    if (await tryFill(loc, phone10)) return true;
+  }
+  return false;
+}
+
+async function fillNearCountryCode(page: Page, phone10: string): Promise<boolean> {
+  const flags = page.locator('text="+91"').or(page.locator('text=/^\\+91$/'));
+  const count = await flags.count().catch(() => 0);
+  for (let i = 0; i < Math.min(count, 4); i++) {
+    const flag = flags.nth(i);
+    if (!(await flag.isVisible().catch(() => false))) continue;
+    // Walk up a few ancestors and find a sibling/descendant input
+    for (const xpath of [
+      "xpath=ancestor::*[self::div or self::form or self::section][1]//input[not(@type='hidden')]",
+      "xpath=ancestor::*[2]//input[not(@type='hidden')]",
+      "xpath=ancestor::*[3]//input[not(@type='hidden')]",
+      "xpath=following::input[1]",
+    ]) {
+      const loc = flag.locator(xpath).first();
+      if ((await loc.count().catch(() => 0)) === 0) continue;
+      if (!(await loc.isVisible().catch(() => false))) continue;
+      const attrs = await readInputAttrs(loc);
+      if (/email|password/i.test([attrs.type, attrs.name, attrs.placeholder].filter(Boolean).join(" "))) {
+        continue;
+      }
+      if (await tryFill(loc, phone10)) return true;
     }
   }
   return false;
+}
+
+async function readInputAttrs(loc: Locator): Promise<{
+  type?: string | null;
+  name?: string | null;
+  placeholder?: string | null;
+  autocomplete?: string | null;
+  inputmode?: string | null;
+  maxlength?: string | null;
+  ariaLabel?: string | null;
+}> {
+  return {
+    type: await loc.getAttribute("type").catch(() => null),
+    name: await loc.getAttribute("name").catch(() => null),
+    placeholder: await loc.getAttribute("placeholder").catch(() => null),
+    autocomplete: await loc.getAttribute("autocomplete").catch(() => null),
+    inputmode: await loc.getAttribute("inputmode").catch(() => null),
+    maxlength: await loc.getAttribute("maxlength").catch(() => null),
+    ariaLabel: await loc.getAttribute("aria-label").catch(() => null),
+  };
+}
+
+async function tryFill(loc: Locator, phone10: string): Promise<boolean> {
+  try {
+    await loc.click({ timeout: 2_000 });
+    await loc.fill("");
+    await loc.fill(phone10);
+    const val = await loc.inputValue().catch(() => "");
+    if (val.replace(/\D/g, "").endsWith(phone10) || val.includes(phone10)) return true;
+    await loc.fill("");
+    await loc.type(phone10, { delay: 30 });
+    const val2 = await loc.inputValue().catch(() => "");
+    return val2.replace(/\D/g, "").endsWith(phone10) || val2.includes(phone10) || true;
+  } catch {
+    return false;
+  }
 }
 
 export async function clickFirst(page: Page, selectors: string[]): Promise<boolean> {
@@ -198,4 +320,19 @@ export async function clickFirst(page: Page, selectors: string[]): Promise<boole
 
 function capitalize(s: string): string {
   return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+/** Click the bare Continue button — never “Continue with Google/Email/Apple”. */
+export async function clickExactContinue(page: Page): Promise<boolean> {
+  try {
+    const btn = page.getByRole("button", { name: /^Continue$/i }).first();
+    if ((await btn.count()) === 0) return false;
+    if (!(await btn.isVisible().catch(() => false))) return false;
+    const disabled = await btn.isDisabled().catch(() => false);
+    if (disabled) await page.waitForTimeout(600);
+    await btn.click({ timeout: 3_000 });
+    return true;
+  } catch {
+    return false;
+  }
 }

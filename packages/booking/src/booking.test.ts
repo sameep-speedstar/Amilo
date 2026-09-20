@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { BookingConnector, formatBookingResultForWa } from "./connector.js";
 import { exceedsSpendCap, isHostAllowed } from "./allowlist.js";
-import { parseBookingIntent, parseBookingOtpReply } from "./parseIntent.js";
+import { parseBookingIntent, parseBookingOtpReply, parseBookingEmailReply } from "./parseIntent.js";
 import { PARTNER_API_STUBS } from "./adapters/stubs.js";
 import type { BookingIntent, BookingResult, BrowserSkillRunner } from "./types.js";
 
@@ -56,6 +56,14 @@ describe("booking", () => {
   it("parses OTP reply", () => {
     assert.equal(parseBookingOtpReply("482913"), "482913");
     assert.equal(parseBookingOtpReply("yes"), null);
+  });
+
+  it("parses email reply for booking_email pending", () => {
+    assert.deepEqual(parseBookingEmailReply("sameep@speedstar.ai"), {
+      email: "sameep@speedstar.ai",
+    });
+    assert.deepEqual(parseBookingEmailReply("yes"), { useLinked: true });
+    assert.equal(parseBookingEmailReply("cancel"), null);
   });
 
   it("allowlists zepto host", () => {

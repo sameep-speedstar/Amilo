@@ -177,3 +177,18 @@ export function parseBookingOtpReply(text: string): string | null {
   const m = t.match(/^(\d{4,8})$/);
   return m?.[1] ?? null;
 }
+
+/**
+ * Email reply while booking_email pending is open.
+ * Returns the email, "use_linked" for yes/ok without an address, or null.
+ */
+export function parseBookingEmailReply(
+  text: string,
+): { email: string } | { useLinked: true } | null {
+  const t = text.trim();
+  if (!t || /^(cancel|no|nope)$/i.test(t)) return null;
+  const email = t.match(/\b([a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,})\b/i)?.[1]?.trim();
+  if (email) return { email: email.toLowerCase() };
+  if (/^(yes|y|ok|okay|sure|use email|email)$/i.test(t)) return { useLinked: true };
+  return null;
+}
