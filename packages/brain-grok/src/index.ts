@@ -483,16 +483,18 @@ function buildSystemPrompt(docs: string): string {
     "- Never invent venues, showtimes, flight numbers, fares, or seats.",
     "- Never claim booked, paid, reserved, locked, ordered, or tickets held.",
     "- Browser / WhatsApp booking is OFF until partner APIs ship — end with a clear book link + one ask (e.g. Want showtimes near Arekere?).",
-    "- Format reply_text for WhatsApp: one short headline, then bulleted lines using '- ' (one option per line). No dense paragraph lists.",
+    "- Format reply_text for WhatsApp: one short headline, then NUMBERED options `1) Name — detail` (one per line). Never bare '- ' bullets for pickable lists.",
+    "- End pickable lists with: Reply with a number to pick. Then ask for any missing day/time/party size — NEVER invent or assume date, time, or covers.",
     "- Rank options; stay WhatsApp-short (usually under ~700 chars). Lead with decision or next action.",
+    "- When the user picks a number (or name) but day/time is missing: acknowledge the venue and ask only for what's missing. Do not propose handoff/calendar until day+time are stated.",
     "- When the user says they already booked (movie/table), propose_action calendar_create for that block (use realistic duration, e.g. film ~2h).",
     "- Upsert durable prefs into graphUpdates (Friday dinners, movies, pubs, area) — silent context for next turns.",
     "- Never return propose_action type life_ops_research — answer in reply_text with live findings.",
-    "- intent.text MUST contain the full answer (names, bullets). Never empty text / noop after search.",
+    "- intent.text MUST contain the full answer (names, numbered options). Never empty text / noop after search.",
     "IMAGES: When an image is attached, read it (charts, screenshots, tickets). Answer from what is visible; say if unclear. Still return JSON with reply_text.",
-    "For vendor call scripts after they pick a place (not a ticket purchase), propose_action {\"type\":\"life_ops_handoff\",...} is ok — still confirm-first; never claim reserved.",
+    "For vendor call scripts after they pick a place AND gave day/time (not a ticket purchase), propose_action {\"type\":\"life_ops_handoff\",...} is ok — still confirm-first; never claim reserved; never invent time.",
     "graphUpdates: only durable facts; empty array if nothing new.",
-    "Reply text: short, concrete, ranked; usually under 500 characters for chat, up to ~700 for search results; use '- ' bullets for 2+ items; no therapist mode; no sycophancy.",
+    "Reply text: short, concrete, ranked; usually under 500 characters for chat, up to ~700 for search results; numbered picks for 2+ venues/films; no therapist mode; no sycophancy.",
     "When the user asks to mute/ignore/hide mail matching a phrase, return propose_action with action {\"type\":\"mute\",\"pattern\":\"...\"} (do not only say muted in reply_text).",
     "When the user asks to be reminded at a time, return propose_action with action {\"type\":\"remind\",\"title\":\"...\",\"dueAt\":\"ISO-8601 UTC\"}. Prefer letting the orchestrator parse times. Timed reminders write a 1-minute calendar nudge at that instant (allowed to overlap meetings). Date-only reminders (no clock) get a 1-minute calendar nudge at 09:00 that day plus a separate WhatsApp after that morning's brief — not FOCUS.",
     "When the user asks to add/change/cancel a calendar event, return propose_action with action {\"type\":\"calendar_create\"|\"calendar_update\"|\"calendar_cancel\",\"accountLabel\":\"personal\",\"title\":\"clean event title only\",\"start\":\"ISO-8601 with correct year from Now line\",\"end\":\"ISO-8601\",\"eventId\":\"from Calendar today [id:…] if present\",\"attendees\":[\"email@…\"]}. Do NOT claim it was written — orchestrator will ask for yes/cancel. Prefer ISO with offset for the user timezone. For cancel/update always include eventId from Calendar today when available, and title matching the event.",
@@ -631,7 +633,7 @@ export function createGrokBrain(cfg: GrokBrainConfig): BrainPort {
 
       const userPayload = buildUserPayload(cleanCtx, message);
       const researchHint = researchAsk
-        ? "\n\nRESEARCH MODE: Use web_search. Name real films/venues from search. Put the FULL answer in intent.text as WhatsApp bullets ('- ' lines). Never empty text. Never reply with only an explore/movies list URL stub."
+        ? "\n\nRESEARCH MODE: Use web_search. Name real films/venues from search. Put the FULL answer in intent.text as NUMBERED WhatsApp options (`1) Name — detail`). End with: Reply with a number to pick. Never invent day/time/party size. Never empty text. Never reply with only an explore/movies list URL stub."
         : hasImage
           ? "\n\nIMAGE MODE: An image is attached. Read it carefully and answer in intent.text. If the user only sent the image, briefly say what you see and ask what they need."
           : "";

@@ -15,9 +15,11 @@ import {
   parseFlightResearchHints,
   parseInboxErrandDraftAsk,
   parseLifeOpsHandoffIntent,
+  parseLifeOpsOptionPick,
   parseLifeOpsResearchIntent,
   parseMoneyCapInr,
   parseMovieResearchHints,
+  resolveListedOptionVenue,
   shortMapsSearchUrl,
 } from "./lifeOps.js";
 
@@ -142,12 +144,27 @@ describe("lifeOps", () => {
       ],
     });
     assert.equal(options.length, 2);
-    assert.match(text, /Plente/);
-    assert.match(text, /book A/i);
+    assert.equal(options[0]!.id, "1");
+    assert.match(text, /1\)\s+Plente/);
+    assert.match(text, /Reply with a number/i);
     assert.doesNotMatch(text, /Reply yes to lock/i);
     assert.doesNotMatch(text, /cid=/);
     assert.match(text, /Maps: https:\/\/www\.google\.com\/maps\/search/);
     assert.ok(text.length < 900);
+  });
+
+  it("resolves numbered pick from recent chat", () => {
+    const chat = [
+      "Client dinner near MG Road:",
+      "1) Kai – Bar & Kitchen — rooftop",
+      "2) Rim Naam @ The Oberoi — Thai",
+      "3) Yauatcha — Michelin Chinese",
+      "Reply with a number to pick.",
+    ].join("\n");
+    assert.equal(parseLifeOpsOptionPick("2"), "2");
+    assert.equal(resolveListedOptionVenue(chat, "2"), "Rim Naam @ The Oberoi");
+    const ctx = extractLifeOpsDiningContext(chat, "2");
+    assert.equal(ctx!.venue, "Rim Naam @ The Oberoi");
   });
 
   it("falls back to Maps search link when Places is empty", () => {

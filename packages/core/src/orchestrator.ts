@@ -24,8 +24,10 @@ import {
   mergeLifeOpsIntoCalendarText,
   parseInboxErrandDraftAsk,
   parseLifeOpsHandoffIntent,
+  parseLifeOpsOptionPick,
   parseLifeOpsResearchIntent,
   parseMoneyCapInr,
+  resolveListedOptionVenue,
   type LifeOpsResearchIntent,
 } from "./lifeOps.js";
 import {
@@ -2431,6 +2433,104 @@ export async function handleInbound(
 
   // Life-ops research (movies/dining/flights) → Grok session + web search + this user's
   // context graph. Deterministic Places/scrape short-circuit retired.
+  // Numbered pick ("2" / "option 2") from a prior list → lock venue, ask for missing day/time.
+  {
+    const pickId = parseLifeOpsOptionPick(text);
+    if (pickId && recentChatSummary) {
+      const venue =
+        resolveListedOptionVenue(recentChatSummary, pickId) ??
+        extractLifeOpsDiningContext(recentChatSummary, `book ${pickId}`)?.venue ??
+        null;
+      if (venue) {
+        const diningCtx = extractLifeOpsDiningContext(recentChatSummary, text);
+        if (!diningCtx?.whenHint) {
+          const needParty = diningCtx?.partySize == null;
+          return [
+            {
+              text: [
+                `Got it — ${venue}.`,
+                needParty
+                  ? "Still need day + time (and party size). Reply e.g. Fri 8pm, table for 3 — I won't assume."
+                  : "Still need day + time. Reply e.g. tomorrow 8pm — I won't assume.",
+              ].join("\n"),
+            },
+          ];
+        }
+        // Have when (+ optional party) — propose handoff with explicit details only.
+        const handoff = parseLifeOpsHandoffIntent(
+          [
+            "book",
+            venue,
+            diningCtx?.whenHint,
+            diningCtx?.partySize ? `table for ${diningCtx.partySize}` : null,
+          ]
+            .filter(Boolean)
+            .join(" "),
+        );
+        if (handoff && deps.createPending) {
+          const payload: Record<string, unknown> = {
+            domain: "home",
+            channel: "vendor",
+            moneyCapInr: handoff.moneyCapInr,
+            sendOnConfirm: false,
+            venueHint: venue,
+            optionId: pickId,
+            script: buildDiningHandoffScript({
+              venue,
+              ...(diningCtx?.partySize != null ? { partySize: diningCtx.partySize } : {}),
+              ...(diningCtx?.whenHint ? { whenHint: diningCtx.whenHint } : {}),
+              ...(diningCtx?.area ? { area: diningCtx.area } : {}),
+              ...(diningCtx?.vibe ? { vibe: diningCtx.vibe } : {}),
+            }),
+            summary: [
+              `Handoff (reservation): ${venue}`,
+              diningCtx?.partySize ? `table for ${diningCtx.partySize}` : null,
+              diningCtx?.whenHint ?? null,
+              diningCtx?.area ? `near ${diningCtx.area}` : null,
+              "Reply yes for the call/Zomato script — I won't book or pay without that.",
+            ]
+              .filter(Boolean)
+              .join(" · "),
+          };
+          if (diningCtx?.whenHint) {
+            const calMerged = mergeLifeOpsIntoCalendarText(
+              `schedule ${diningCtx.vibe === "pub" ? "drinks" : "dinner"} at ${venue} ${diningCtx.whenHint}`,
+              recentChatSummary,
+            );
+            const calHint = parseCalendarCreateHint(calMerged, briefCtx.timezone);
+            if (calHint) {
+              payload.calendarHold = {
+                title: `${diningCtx.vibe === "pub" ? "Drinks" : "Dinner"} at ${venue}`,
+                start: calHint.startIso,
+                end: calHint.endIso,
+                startIso: calHint.startIso,
+                endIso: calHint.endIso,
+                location: venue,
+                accountLabel: "personal",
+              };
+            }
+          }
+          const pending = await deps.createPending({
+            userId: msg.userId,
+            kind: "life_ops_handoff",
+            summary: String(payload.summary),
+            payload,
+          });
+          return [
+            {
+              text: [
+                `Proposed (${pending.kind}):`,
+                pending.summary,
+                "",
+                "Nothing sent or spent yet.",
+              ].join("\n"),
+            },
+          ];
+        }
+      }
+    }
+  }
+
   // Handoff scripts (call venue) still confirm-first below.
   if (deps.createPending) {
       const handoff = parseLifeOpsHandoffIntent(text);
@@ -2438,6 +2538,9 @@ export async function handleInbound(
         const diningCtx = extractLifeOpsDiningContext(recentChatSummary, text);
         const venue =
           handoff.venueHint ??
+          (handoff.optionId
+            ? resolveListedOptionVenue(recentChatSummary, handoff.optionId)
+            : null) ??
           diningCtx?.venue ??
           (handoff.optionId ? `option ${handoff.optionId}` : null);
         const payload: Record<string, unknown> = {
@@ -2477,12 +2580,12 @@ export async function handleInbound(
             ]
               .filter(Boolean)
               .join(" · ");
-            // Calendar hold for asked time/place — proposed after handoff yes.
-            if (diningCtx?.whenHint || diningCtx?.venue || venue) {
+            // Calendar hold only when user gave an explicit time — never invent tomorrow 8pm.
+            if (diningCtx?.whenHint) {
               const calMerged = mergeLifeOpsIntoCalendarText(
-                `schedule ${diningCtx?.vibe === "pub" ? "drinks" : "dinner"} at ${who} ${diningCtx?.whenHint ?? "tomorrow 8pm"}`,
+                `schedule ${diningCtx?.vibe === "pub" ? "drinks" : "dinner"} at ${who} ${diningCtx.whenHint}`,
                 recentChatSummary ??
-                  `Dining · ${diningCtx?.whenHint ?? "tomorrow 8pm"} · table for ${diningCtx?.partySize ?? 2}`,
+                  `Dining · ${diningCtx.whenHint}${diningCtx?.partySize ? ` · table for ${diningCtx.partySize}` : ""}`,
               );
               const calHint = parseCalendarCreateHint(calMerged, briefCtx.timezone);
               if (calHint) {

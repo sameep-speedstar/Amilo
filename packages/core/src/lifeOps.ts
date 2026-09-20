@@ -84,6 +84,42 @@ export type LifeOpsHandoffIntent = {
   venueHint?: string;
 };
 
+/** Resolve "2" / "option 2" / "book 2" against a numbered or A–E list in recent chat. */
+export function parseLifeOpsOptionPick(text: string): string | null {
+  const t = text.trim();
+  if (!t || t.length > 40) return null;
+  const m =
+    t.match(/^(?:option|pick|choose|book|reserve|handoff|hand\s*off)\s*([1-9A-Ea-e])\b/i)?.[1] ??
+    t.match(/^([1-9A-Ea-e])\s*[).:\-]?\s*$/i)?.[1] ??
+    t.match(/^([1-9])\b/i)?.[1];
+  if (!m) return null;
+  return /^[1-9]$/.test(m) ? m : m.toUpperCase();
+}
+
+/**
+ * Pull venue label from Amilo's numbered / lettered option list in recent chat.
+ * Supports: `1) Name`, `1. **Name**`, `A) Name — detail`
+ */
+export function resolveListedOptionVenue(
+  recentChat: string | null | undefined,
+  optionId: string,
+): string | null {
+  const chat = (recentChat ?? "").trim();
+  if (!chat || !optionId) return null;
+  const id = optionId.trim();
+  const esc = id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const patterns = [
+    new RegExp(`(?:^|\\n)\\s*${esc}\\)\\s+\\*{0,2}([^\\n*—\\-]+)`, "i"),
+    new RegExp(`(?:^|\\n)\\s*${esc}[.:]\\s+\\*{0,2}([^\\n*—\\-]+)`, "i"),
+    new RegExp(`(?:^|\\n)\\s*${esc}\\s+[-–—]\\s+\\*{0,2}([^\\n*—\\-]+)`, "i"),
+  ];
+  for (const re of patterns) {
+    const hit = chat.match(re)?.[1]?.replace(/\*{1,2}/g, "").trim();
+    if (hit && hit.length >= 2) return hit.slice(0, 80);
+  }
+  return null;
+}
+
 const MONEY_CAP_RE =
   /(?:under|below|max(?:imum)?|cap(?:ped)?(?:\s+at)?|budget(?:\s+of)?|upto|up to)\s*(?:₹|rs\.?|inr)?\s*([\d,]+(?:\.\d+)?)\s*(k|thousand)?/i;
 const RUPEE_RE = /(?:₹|rs\.?|inr)\s*([\d,]+(?:\.\d+)?)\s*(k|thousand)?/i;
@@ -541,19 +577,25 @@ export function extractLifeOpsDiningContext(
     book.match(/\bbook\s+(?:a\s+table\s+at\s+|at\s+)(.+)$/i)?.[1]?.trim() ??
     null;
   const venueClean =
-    venueFromBook && !/^[A-Ea-e]$/.test(venueFromBook)
+    venueFromBook &&
+    !/^[A-Ea-e]$/.test(venueFromBook) &&
+    !/^[1-9]$/.test(venueFromBook)
       ? venueFromBook.replace(/\s+/g, " ").slice(0, 80)
       : null;
 
-  const optionLetter = book.match(/^(?:book|reserve|option)\s*([A-Ea-e])\b/i)?.[1]?.toUpperCase();
+  const optionPick =
+    parseLifeOpsOptionPick(book) ??
+    book.match(/^(?:book|reserve|option)\s*([A-Ea-e1-9])\b/i)?.[1]?.toUpperCase() ??
+    null;
   let venueFromList: string | null = null;
-  if (optionLetter && chat) {
-    const re = new RegExp(`^${optionLetter}\\)\\s+([^\\n—\\-]+)`, "im");
-    venueFromList = chat.match(re)?.[1]?.trim()?.slice(0, 80) ?? null;
+  if (optionPick && chat) {
+    venueFromList = resolveListedOptionVenue(chat, optionPick);
   }
   if (!venueFromList && chat) {
-    const picks = [...chat.matchAll(/^[A-E]\)\s+([^\n—\-]+)/gim)];
-    const last = picks[picks.length - 1]?.[1]?.trim();
+    const picks = [
+      ...chat.matchAll(/(?:^|\n)\s*([1-9A-E])\)\s+\*{0,2}([^\n*—\-]+)/gim),
+    ];
+    const last = picks[picks.length - 1]?.[2]?.replace(/\*{1,2}/g, "").trim();
     if (last && /locked|handoff|reservation/i.test(chat.slice(-400))) {
       venueFromList = last.slice(0, 80);
     }
@@ -853,9 +895,8 @@ export function formatDiningResearchReply(opts: {
       options,
     };
   }
-  const letters = ["A", "B", "C", "D", "E"];
-  const options: LifeOpsOption[] = places.slice(0, 3).map((p, i) => {
-    const id = letters[i]!;
+  const options: LifeOpsOption[] = places.slice(0, 5).map((p, i) => {
+    const id = String(i + 1);
     const rating =
       p.rating != null && Number.isFinite(p.rating) ? `★${p.rating.toFixed(1)}` : null;
     return {
@@ -873,7 +914,7 @@ export function formatDiningResearchReply(opts: {
     ...options.map((o) => `${o.id}) ${o.label} — ${o.detail}`),
     "",
     `Maps: ${mapsSearchUrl}`,
-    "Say book A (or the name) for a reservation handoff — still needs your yes before I contact anyone.",
+    "Reply with a number to pick — I'll ask for day/time (and party size) if missing. Never assume.",
   ];
   return { text: lines.join("\n"), options };
 }
@@ -929,7 +970,11 @@ export function parseLifeOpsHandoffIntent(text: string): LifeOpsHandoffIntent | 
   const t = text.trim();
   if (!t || t.length > 800) return null;
 
-  const optionPick = t.match(/^(?:book|reserve|handoff|hand ?off|option)\s*([A-Ea-e])\b/i)?.[1];
+  const optionPick =
+    t.match(/^(?:book|reserve|handoff|hand ?off|option)\s*([A-Ea-e1-9])\b/i)?.[1] ??
+    (parseLifeOpsOptionPick(t) && /^(?:book|reserve|handoff|hand ?off|option)\b/i.test(t)
+      ? parseLifeOpsOptionPick(t)
+      : null);
   const bookNamed =
     t.match(/^(?:book|reserve)\s+(.+)$/i)?.[1]?.trim() ??
     t.match(/\bbook\s+(?:a\s+table\s+at\s+|at\s+)(.+)$/i)?.[1]?.trim();
@@ -945,8 +990,13 @@ export function parseLifeOpsHandoffIntent(text: string): LifeOpsHandoffIntent | 
 
   const domainRaw = domainFromText(t);
   const moneyCapInr = parseMoneyCapInr(t);
-  const venueHint = bookNamed && !/^[A-Ea-e]$/.test(bookNamed) ? bookNamed.slice(0, 80) : null;
-  const optionId = optionPick?.toUpperCase();
+  const venueHint =
+    bookNamed && !/^[A-Ea-e1-9]$/.test(bookNamed) ? bookNamed.slice(0, 80) : null;
+  const optionId = optionPick
+    ? /^[1-9]$/.test(optionPick)
+      ? optionPick
+      : optionPick.toUpperCase()
+    : undefined;
   // Named restaurant/pub book must never become "flight option".
   const domain: LifeOpsDomain =
     venueHint && domainRaw === "travel" && !/\b(flight|hotel|train|indigo)\b/i.test(t)
