@@ -18,6 +18,7 @@ import {
 import {
   createBrowserJob,
   createPendingAction,
+  getBrowserJob,
   updateBrowserJob,
   upsertBrowserProfile,
   type Db,
@@ -48,6 +49,35 @@ export function getBookingAgent(): {
     });
   }
   return { connector, agent, pool };
+}
+
+async function ensureJobHydrated(
+  db: Db,
+  agent: BrowserAgentRunner,
+  jobId: string,
+  userId: string,
+): Promise<void> {
+  if (agent.getJob(jobId)) return;
+  const row = await getBrowserJob(db, jobId);
+  if (!row || row.userId !== userId) return;
+  const intent = row.intent as unknown as BookingIntent;
+  const draft = row.result as unknown as BookingResult | undefined;
+  const payload: {
+    id: string;
+    userId: string;
+    intent: BookingIntent;
+    phase: string;
+    draft?: BookingResult;
+  } = {
+    id: row.id,
+    userId: row.userId,
+    intent,
+    phase: row.pendingKind ?? row.status,
+  };
+  if (draft && typeof draft === "object" && "status" in draft) {
+    payload.draft = draft as BookingResult;
+  }
+  agent.rehydrateJob?.(payload);
 }
 
 function pendingKindFor(result: BookingResult): PendingActionKind | null {
@@ -87,6 +117,8 @@ function verticalLabel(vertical: BookingVertical | null | undefined): string {
       return "Table";
     case "ticketing":
       return "Tickets";
+    case "cab":
+      return "Cab";
     default:
       return "Order";
   }
@@ -134,7 +166,8 @@ export async function continueBookingOtp(
   db: Db,
   opts: { userId: string; jobId: string; otp: string },
 ): Promise<OutboundMessage[]> {
-  const { connector } = getBookingAgent();
+  const { connector, agent } = getBookingAgent();
+  await ensureJobHydrated(db, agent, opts.jobId, opts.userId);
   const result = await connector.submitOtp(opts.jobId, opts.otp);
   await updateBrowserJob(db, opts.jobId, {
     status: result.status,
@@ -148,7 +181,8 @@ export async function continueBookingSelect(
   db: Db,
   opts: { userId: string; jobId: string; selection: string },
 ): Promise<OutboundMessage[]> {
-  const { connector } = getBookingAgent();
+  const { connector, agent } = getBookingAgent();
+  await ensureJobHydrated(db, agent, opts.jobId, opts.userId);
   const result = await connector.selectOptions(opts.jobId, opts.selection);
   await updateBrowserJob(db, opts.jobId, {
     status: result.status,
@@ -162,7 +196,8 @@ export async function confirmBookingPlace(
   db: Db,
   opts: { userId: string; jobId: string },
 ): Promise<{ ok: boolean; message: string }> {
-  const { connector } = getBookingAgent();
+  const { connector, agent } = getBookingAgent();
+  await ensureJobHydrated(db, agent, opts.jobId, opts.userId);
   const result = await connector.confirmPlace(opts.jobId);
   await updateBrowserJob(db, opts.jobId, {
     status: result.status,

@@ -68,6 +68,27 @@ export const BOOKING_ALLOWLIST: AllowlistEntry[] = [
     spendCapInr: 8000,
     maxJobsPerUser: 1,
   },
+  {
+    merchant: "uber",
+    vertical: "cab",
+    hosts: ["uber.com", "www.uber.com", "m.uber.com"],
+    spendCapInr: 3000,
+    maxJobsPerUser: 1,
+  },
+  {
+    merchant: "ola",
+    vertical: "cab",
+    hosts: ["olacabs.com", "www.olacabs.com"],
+    spendCapInr: 3000,
+    maxJobsPerUser: 1,
+  },
+  {
+    merchant: "rapido",
+    vertical: "cab",
+    hosts: ["rapido.bike", "www.rapido.bike"],
+    spendCapInr: 1500,
+    maxJobsPerUser: 1,
+  },
 ];
 
 const DEFAULT_GENERIC_CAP = 3000;

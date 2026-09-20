@@ -1,6 +1,6 @@
-/** Life bookings — grocery, dining, tickets, generic. API-preferred; browser fallback. */
+/** Life bookings — grocery, dining, tickets, cab, generic. API-preferred; browser fallback. */
 
-export type BookingVertical = "grocery" | "dining" | "ticketing" | "generic";
+export type BookingVertical = "grocery" | "dining" | "ticketing" | "cab" | "generic";
 
 /** How Amilo finishes payment. Never enters UPI/card. */
 export type PaymentMode = "cod" | "venue" | "prepaid_link" | "none";
@@ -14,13 +14,21 @@ export type BookingMerchant =
   | "eazydiner"
   | "bookmyshow"
   | "district"
+  | "uber"
+  | "ola"
+  | "rapido"
   | "generic";
+
+/** Login channel for OTP relay on WhatsApp. */
+export type OtpChannel = "mobile" | "email";
 
 export type BookingIntent = {
   vertical: BookingVertical;
   merchant: BookingMerchant;
   query: string;
   phone: string;
+  /** Optional email for sites that prefer email login. */
+  email?: string | null;
   /** Structured hints from parse. */
   items?: string[];
   partySize?: number | null;
@@ -28,6 +36,8 @@ export type BookingIntent = {
   venueHint?: string | null;
   addressHint?: string | null;
   movieHint?: string | null;
+  /** Cab destination hint. */
+  destinationHint?: string | null;
   /** Preferred payment; connector may override if merchant cannot. */
   preferredPayment?: PaymentMode;
 };
@@ -44,13 +54,23 @@ export type BookingNeedsOtp = {
   merchant: BookingMerchant;
   message: string;
   jobId: string;
+  otpChannel?: OtpChannel;
+};
+
+export type SelectionOption = {
+  id: string;
+  label: string;
+  detail?: string;
+  unitInr?: number | null;
+  /** Opaque adapter hint (href / sku) — not shown on WA. */
+  meta?: Record<string, unknown>;
 };
 
 export type BookingNeedsSelection = {
   status: "needs_selection";
   merchant: BookingMerchant;
   message: string;
-  options: Array<{ id: string; label: string; detail?: string; unitInr?: number | null }>;
+  options: SelectionOption[];
   jobId: string;
 };
 
@@ -117,4 +137,12 @@ export type BrowserSkillRunner = {
   submitOtp: (jobId: string, otp: string) => Promise<BookingResult>;
   selectOptions: (jobId: string, selection: string) => Promise<BookingResult>;
   confirmPlace: (jobId: string) => Promise<BookingResult>;
+  /** Reattach an in-flight job after process recycle (from DB). */
+  rehydrateJob?: (job: {
+    id: string;
+    userId: string;
+    intent: BookingIntent;
+    phase: string;
+    draft?: BookingResult;
+  }) => void;
 };

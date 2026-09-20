@@ -3,11 +3,12 @@ import { describe, it } from "node:test";
 import { allowGenericSite, BOOKING_ALLOWLIST, spendCapFor } from "./allowlist.js";
 
 describe("booking allowlist / general sites", () => {
-  it("lists grocery dining ticketing merchants", () => {
+  it("lists grocery dining ticketing cab merchants", () => {
     const verticals = new Set(BOOKING_ALLOWLIST.map((e) => e.vertical));
     assert.ok(verticals.has("grocery"));
     assert.ok(verticals.has("dining"));
     assert.ok(verticals.has("ticketing"));
+    assert.ok(verticals.has("cab"));
   });
 
   it("gates generic any-site behind flag", () => {

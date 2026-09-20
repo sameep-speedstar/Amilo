@@ -9,6 +9,9 @@ const MERCHANT_ALIASES: Array<{ re: RegExp; merchant: BookingMerchant }> = [
   { re: /\beazydiner\b|\beasy\s*diner\b/i, merchant: "eazydiner" },
   { re: /\bbook\s*my\s*show\b|\bbms\b|\bbookmyshow\b/i, merchant: "bookmyshow" },
   { re: /\bdistrict\b/i, merchant: "district" },
+  { re: /\buber\b/i, merchant: "uber" },
+  { re: /\bola\b/i, merchant: "ola" },
+  { re: /\brapido\b/i, merchant: "rapido" },
 ];
 
 function verticalFor(merchant: BookingMerchant, text: string): BookingVertical {
@@ -17,6 +20,8 @@ function verticalFor(merchant: BookingMerchant, text: string): BookingVertical {
   }
   if (merchant === "zomato" || merchant === "eazydiner") return "dining";
   if (merchant === "bookmyshow" || merchant === "district") return "ticketing";
+  if (merchant === "uber" || merchant === "ola" || merchant === "rapido") return "cab";
+  if (/\b(cab|taxi|ride|uber|ola|rapido)\b/i.test(text)) return "cab";
   if (/\b(movie|ticket|tickets|cinema|pvr|inox)\b/i.test(text)) return "ticketing";
   if (/\b(table|reserv|dinner|lunch|restaurant)\b/i.test(text)) return "dining";
   if (/\b(order|grocery|milk|vegetables|zepto|blinkit)\b/i.test(text)) return "grocery";
@@ -27,6 +32,7 @@ function defaultPayment(vertical: BookingVertical): PaymentMode {
   if (vertical === "grocery") return "cod";
   if (vertical === "dining") return "venue";
   if (vertical === "ticketing") return "prepaid_link";
+  if (vertical === "cab") return "prepaid_link";
   return "cod";
 }
 
@@ -43,7 +49,7 @@ export function parseBookingIntent(
   if (!phone?.trim()) return null;
 
   const looksBooking =
-    /\b(order|buy|get|book|reserve|tickets?|grocery|milk|cheese|table for|movie|cinema)\b/i.test(
+    /\b(order|buy|get|book|reserve|tickets?|grocery|milk|cheese|table for|movie|cinema|cab|taxi|ride)\b/i.test(
       t,
     ) || MERCHANT_ALIASES.some((a) => a.re.test(t));
   if (!looksBooking) return null;
@@ -61,7 +67,8 @@ export function parseBookingIntent(
     }
   }
   if (merchant === "generic") {
-    if (/\b(movie|cinema|tickets?|pvr|inox)\b/i.test(t)) merchant = "bookmyshow";
+    if (/\b(cab|taxi|ride)\b/i.test(t)) merchant = "uber";
+    else if (/\b(movie|cinema|tickets?|pvr|inox)\b/i.test(t)) merchant = "bookmyshow";
     else if (/\b(table|reserv|dinner|lunch)\b/i.test(t) && !/\border\b/i.test(t))
       merchant = "zomato";
     else if (/\b(order|grocery|milk|cheese|vegetables)\b/i.test(t)) merchant = "zepto";
@@ -81,6 +88,12 @@ export function parseBookingIntent(
     t.match(/\b(pvr|inox)\s+([A-Za-z0-9 &'-]{2,40})/i)?.[0]?.trim() ??
     null;
 
+  const destinationHint =
+    t.match(/\b(?:to|towards)\s+([A-Za-z0-9 &'.-]{2,60})/i)?.[1]?.trim() ?? null;
+
+  const email =
+    t.match(/\b([a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,})\b/i)?.[1]?.trim() ?? null;
+
   const items: string[] = [];
   const fromOrder = t.match(
     /\b(?:order|get|buy)\s+(.+?)(?:\s+from\s+|\s+on\s+|$)/i,
@@ -92,15 +105,25 @@ export function parseBookingIntent(
     }
   }
 
+  const movieHint =
+    vertical === "ticketing"
+      ? t.match(/\b(?:for|movie)\s+([A-Za-z0-9 :'-]{2,60})/i)?.[1]?.trim() ??
+        (t.replace(/\b(book|tickets?|for|at|pvr|inox|bookmyshow)\b/gi, "").trim().slice(0, 60) ||
+          null)
+      : null;
+
   return {
     vertical,
     merchant,
     query: t.replace(/\s+/g, " ").slice(0, 240),
     phone: phone.trim(),
+    ...(email ? { email } : {}),
     ...(items.length ? { items } : {}),
     partySize: partySize && partySize > 0 ? partySize : null,
     whenHint,
     venueHint,
+    ...(destinationHint ? { destinationHint } : {}),
+    ...(movieHint ? { movieHint } : {}),
     preferredPayment: defaultPayment(vertical),
   };
 }

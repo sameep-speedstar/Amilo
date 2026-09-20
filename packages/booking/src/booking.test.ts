@@ -30,6 +30,14 @@ describe("booking", () => {
     assert.equal(i!.preferredPayment, "venue");
   });
 
+  it("parses cab to destination", () => {
+    const i = parseBookingIntent("Book an Uber to Indiranagar", "+919999000001");
+    assert.ok(i);
+    assert.equal(i!.merchant, "uber");
+    assert.equal(i!.vertical, "cab");
+    assert.ok(i!.destinationHint?.toLowerCase().includes("indiranagar"));
+  });
+
   it("parses OTP reply", () => {
     assert.equal(parseBookingOtpReply("482913"), "482913");
     assert.equal(parseBookingOtpReply("yes"), null);

@@ -46,6 +46,7 @@ export class BookingConnector {
     if (intent.preferredPayment) return intent.preferredPayment;
     if (intent.vertical === "ticketing") return "prepaid_link";
     if (intent.vertical === "dining") return "venue";
+    if (intent.vertical === "cab") return "prepaid_link";
     if (entry) return intent.vertical === "grocery" ? "cod" : "cod";
     return "cod";
   }

@@ -149,7 +149,7 @@ export async function enterPhoneOtp(opts: {
   return { ok: true };
 }
 
-async function fillPhone(page: Page, phone10: string): Promise<boolean> {
+export async function fillPhone(page: Page, phone10: string): Promise<boolean> {
   const candidates = [
     'input[type="tel"]',
     'input[name*="phone" i]',
@@ -181,7 +181,7 @@ async function fillPhone(page: Page, phone10: string): Promise<boolean> {
   return false;
 }
 
-async function clickFirst(page: Page, selectors: string[]): Promise<boolean> {
+export async function clickFirst(page: Page, selectors: string[]): Promise<boolean> {
   for (const sel of selectors) {
     const loc = page.locator(sel).first();
     try {

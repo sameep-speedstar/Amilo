@@ -13,7 +13,9 @@ export type {
   BookingResult,
   BookingVertical,
   BrowserSkillRunner,
+  OtpChannel,
   PaymentMode,
+  SelectionOption,
 } from "./types.js";
 export {
   BOOKING_ALLOWLIST,

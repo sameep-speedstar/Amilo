@@ -32,6 +32,9 @@ export const PARTNER_API_STUBS: ApiAdapter[] = [
   stub("eazydiner", "dining", ["venue", "none"]),
   stub("bookmyshow", "ticketing", ["prepaid_link"]),
   stub("district", "ticketing", ["prepaid_link"]),
+  stub("uber", "cab", ["prepaid_link", "none"]),
+  stub("ola", "cab", ["prepaid_link", "none"]),
+  stub("rapido", "cab", ["prepaid_link", "none"]),
 ];
 
 /** BD checklist — track in docs; flip adapters when live. */
@@ -42,4 +45,6 @@ export const PARTNER_API_BD_TRACK = [
   { merchant: "zomato", need: "Table reservation API" },
   { merchant: "eazydiner", need: "Reservation partner API" },
   { merchant: "bookmyshow", need: "Seat hold + payment-link API" },
+  { merchant: "uber", need: "Ride quote + book API" },
+  { merchant: "ola", need: "Ride quote + book API" },
 ] as const;
