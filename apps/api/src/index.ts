@@ -26,7 +26,6 @@ import {
 } from "@amilo/core";
 import { processVoiceNote } from "./voice/pipeline.js";
 import { writeReminderCalendarNudge } from "./calendarNudge.js";
-import { runLifeOpsResearch } from "./lifeOpsResearch.js";
 import {
   continueBookingOtp,
   continueBookingSelect,
@@ -460,11 +459,17 @@ function orchestratorDeps(): OrchestratorDeps {
       return { ok: true, message: `Saved ${label}: ${address}. I'll use it for leave-by times.` };
     },
     researchLifeOps: async (_userId, intent) => {
-      const result = await runLifeOpsResearch({
-        intent,
-        mapsApiKey: settings.googleMapsApiKey,
-      });
-      return { text: result.text, options: result.options };
+      // Parked — research is Grok+web_search. Kept only so old propose_action paths soft-fail.
+      console.error(
+        JSON.stringify({
+          event: "life_ops_research_disabled",
+          query: intent.query?.slice(0, 80),
+        }),
+      );
+      return {
+        text: "Ask that as a normal question — I'll look it up live (movies, dining, flights).",
+        options: [],
+      };
     },
     listPlacesText: async (userId) => {
       const rows = await listPlaces(db, userId);

@@ -351,6 +351,7 @@ function buildUserPayload(ctx: BrainUserContext, message: string): string {
     minute: "2-digit",
     hour12: true,
   }).format(now);
+  const recent = sanitizeRecentChat(ctx.recentChatSummary);
   const lines = [
     `User: ${ctx.name} (${ctx.timezone})`,
     `Now (user local): ${localNow} — resolve "today"/"tomorrow"/times against THIS date, never invent another year.`,
@@ -363,13 +364,37 @@ function buildUserPayload(ctx: BrainUserContext, message: string): string {
     `Google accounts: ${ctx.googleAccountsSummary ?? "unknown"}`,
     `Recent mail:\n${ctx.recentMail ?? "none yet"}`,
     `Mail working set:\n${ctx.mailWorkingSet ?? "none yet"}`,
-    `Recent chat (oldest→newest):\n${ctx.recentChatSummary ?? "none yet"}`,
+    `Recent chat (oldest→newest):\n${recent ?? "none yet"}`,
   ];
   if (ctx.replyToSummary) {
     lines.push(`Reply-to (user quoted this message):\n${ctx.replyToSummary}`);
   }
   lines.push("", `Message:\n${message}`);
   return lines.join("\n");
+}
+
+/** Drop legacy Places/BMS-explore stub lines so the model cannot parrot them. */
+export function sanitizeRecentChat(chat: string | null | undefined): string | undefined {
+  if (!chat?.trim()) return undefined;
+  const kept: string[] = [];
+  for (const line of chat.split("\n")) {
+    if (isLegacyStubReply(line)) continue;
+    if (/explore\/movies-/i.test(line) && /BookMyShow|Paste the BookMyShow/i.test(line)) continue;
+    kept.push(line);
+  }
+  const out = kept.join("\n").trim();
+  return out || undefined;
+}
+
+/** Old Amilo Places short-circuit template — never accept as a live research answer. */
+export function isLegacyStubReply(text: string): boolean {
+  const t = text.trim();
+  if (!t) return false;
+  if (/Open BookMyShow for what's playing/i.test(t)) return true;
+  if (/Paste the BookMyShow movie link or say shows for/i.test(t)) return true;
+  if (/Live Places research isn't available/i.test(t)) return true;
+  if (/explore\/movies-[a-z0-9-]+/i.test(t) && /I won't book until you say book/i.test(t)) return true;
+  return false;
 }
 
 /**
@@ -415,57 +440,87 @@ export function createGrokBrain(cfg: GrokBrainConfig): BrainPort {
     },
 
     async interpret(ctx: BrainUserContext, message: string): Promise<InterpretResult> {
-      const userPayload = buildUserPayload(ctx, message);
       const researchAsk = isLiveResearchAsk(message);
-      let previousId = store ? await store.get(ctx.userId) : null;
-      // Stale sessions may still have the old “orchestrator does Places” system — reset on research.
-      if (researchAsk && previousId && looksLikeLegacyResearchStub(ctx.recentChatSummary)) {
-        if (store) await store.set(ctx.userId, null);
-        previousId = null;
+      const cleanCtx: BrainUserContext = {
+        ...ctx,
+        recentChatSummary: sanitizeRecentChat(ctx.recentChatSummary) ?? "none yet",
+      };
+      // Research asks: always start a fresh Responses thread so we never inherit the
+      // Places-era system prompt or parrot BMS explore stubs from chat history.
+      let previousId: string | null = null;
+      if (researchAsk && store) {
+        await store.set(ctx.userId, null);
+      } else if (store) {
+        previousId = await store.get(ctx.userId);
       }
 
-      const run = async (prev: string | null, withSearch: boolean) =>
+      const userPayload = buildUserPayload(cleanCtx, message);
+      const researchHint = researchAsk
+        ? "\n\nRESEARCH MODE: Use web_search. Name real films/venues from search. Never reply with only an explore/movies list URL stub."
+        : "";
+
+      const run = async (prev: string | null, withSearch: boolean, payload: string) =>
         responsesCompletion(api, {
           ...(prev ? {} : { system }),
-          user: userPayload,
+          user: payload + researchHint,
           previousResponseId: prev,
           webSearch: withSearch || researchAsk,
         });
 
       let result: ResponsesResult;
       try {
-        result = await run(previousId, webSearch || researchAsk);
+        result = await run(previousId, webSearch || researchAsk, userPayload);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        // Stale session — start fresh
         if (previousId && /404|not found|previous_response|invalid/i.test(msg)) {
           if (store) await store.set(ctx.userId, null);
           previousId = null;
           try {
-            result = await run(null, webSearch || researchAsk);
+            result = await run(null, webSearch || researchAsk, userPayload);
           } catch (err2) {
             const msg2 = err2 instanceof Error ? err2.message : String(err2);
             if ((webSearch || researchAsk) && /tool|web_search|400/i.test(msg2)) {
-              result = await run(null, false);
+              result = await run(null, false, userPayload);
             } else {
               if (store) await store.set(ctx.userId, null);
-              const text = await chatCompletion(api, system, userPayload);
+              const text = await chatCompletion(api, system, userPayload + researchHint);
               return normalizeInterpret(extractJson<unknown>(text));
             }
           }
         } else if ((webSearch || researchAsk) && /tool|web_search|400/i.test(msg)) {
-          result = await run(previousId, false);
+          result = await run(previousId, false, userPayload);
         } else {
           if (store) await store.set(ctx.userId, null);
-          const text = await chatCompletion(api, system, userPayload);
+          const text = await chatCompletion(api, system, userPayload + researchHint);
           return normalizeInterpret(extractJson<unknown>(text));
+        }
+      }
+
+      let interpreted = normalizeInterpret(extractJson<unknown>(result.text));
+      // Model parroted the BMS explore stub — hard retry with zero chat history + web search.
+      if (
+        researchAsk &&
+        interpreted.intent.type === "reply_text" &&
+        isLegacyStubReply(interpreted.intent.text)
+      ) {
+        console.error(
+          JSON.stringify({ event: "grok_rejected_legacy_research_stub", userId: ctx.userId }),
+        );
+        if (store) await store.set(ctx.userId, null);
+        const bareCtx: BrainUserContext = { ...cleanCtx, recentChatSummary: "none yet" };
+        const barePayload = buildUserPayload(bareCtx, message);
+        try {
+          result = await run(null, true, barePayload);
+          interpreted = normalizeInterpret(extractJson<unknown>(result.text));
+        } catch {
+          /* keep first interpreted */
         }
       }
 
       if (store) {
         await store.set(ctx.userId, result.id).catch(() => undefined);
       }
-      return normalizeInterpret(extractJson<unknown>(result.text));
+      return interpreted;
     },
   };
 }
@@ -484,13 +539,6 @@ export function isLiveResearchAsk(message: string): boolean {
     ) ||
     (/^(which|what)\b/i.test(t) && /\b(near|this\s+week|today|tonight)\b/i.test(t)) ||
     /\b(shows?\s+for|timings?)\b/i.test(t)
-  );
-}
-
-function looksLikeLegacyResearchStub(recentChat: string | null | undefined): boolean {
-  if (!recentChat) return false;
-  return /Open BookMyShow for what's playing|Live Places research isn't available|explore\/movies-/i.test(
-    recentChat,
   );
 }
 
