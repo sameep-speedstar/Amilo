@@ -383,7 +383,28 @@ describe("handled list dedupe", () => {
       ),
       true,
     );
-    assert.ok(isActionDemandingMail("e-Voting FOR GE VERNOVA starting 05-Sep"));
+    assert.equal(isActionDemandingMail("e-Voting FOR GE VERNOVA starting 05-Sep"), false);
+    assert.equal(
+      mailPriorityScore("e-Voting FOR TRANSFO", "nsdl@nsdl.co.in"),
+      0,
+    );
+    assert.ok(
+      mailQuietRankScore("e-Voting FOR GE VERNOVA starting 05-Sep", "nsdl@nsdl.co.in") > 0,
+    );
+    assert.ok(
+      isActionDemandingMail(
+        "Re: Agreement — draft for your review",
+        "counsel@firm.com",
+      ),
+    );
+    assert.ok(
+      mailPriorityScore(
+        "Draft for your review: SPA",
+        "lawyer@example.com",
+        [],
+        "Please find the attached draft for your review",
+      ) >= 70,
+    );
   });
 
   it("ranks school / PTI above work Re: and soft digests", () => {

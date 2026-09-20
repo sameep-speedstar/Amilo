@@ -1,0 +1,37 @@
+{
+  "id": "voice",
+  "kicker": "Speak, don't type",
+  "headline": "One voice note, in the language you <em>actually speak.</em>",
+  "dayChip": "Friday, 17 July",
+  "beats": [
+    {
+      "id": "note",
+      "messages": [
+        { "who": "user", "time": "9:40 am", "kind": "voice" }
+      ]
+    },
+    {
+      "id": "heard",
+      "messages": [
+        { "who": "user", "time": "9:40 am", "kind": "voice" },
+        {
+          "who": "amilo",
+          "time": "9:40 am",
+          "text": "Heard three things:\n**1.** Reminder — call Sharma ji, tomorrow 9:30 am\n**2.** Remember — Priya prefers calls after 4\n**3.** Calendar — move gym to 7:00 pm"
+        }
+      ]
+    },
+    {
+      "id": "ok",
+      "messages": [
+        { "who": "user", "time": "9:40 am", "kind": "voice" },
+        {
+          "who": "amilo",
+          "time": "9:40 am",
+          "text": "Heard three things. Confirm all?"
+        },
+        { "who": "user", "time": "9:41 am", "text": "OK" }
+      ]
+    }
+  ]
+}

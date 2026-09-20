@@ -44,9 +44,11 @@ export function morningBriefTemplateVarsV2(opts: {
   const focus = padFocusTemplateSlots(opts.items);
   let footer = "—";
   if (opts.quieterCount > 0) {
-    footer = `${opts.quieterCount} quieter yesterday. Reply M for more.`;
+    footer = `${opts.quieterCount} quieter yesterday. Reply M for more. Type Help for anything else.`;
   } else if (opts.calendarLines.length) {
-    footer = `Today: ${flattenBriefLineList(opts.calendarLines, "", 200)}`;
+    footer = `Today: ${flattenBriefLineList(opts.calendarLines, "", 160)}. Type Help for anything else.`;
+  } else {
+    footer = "Type Help for anything else.";
   }
   return [
     flattenWaTemplateParam(opts.name, 60),

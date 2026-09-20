@@ -11,16 +11,20 @@
     "packages/*"
   ],
   "scripts": {
-    "build": "npm run build -w @amilo/brain-contract -w @amilo/core -w @amilo/db -w @amilo/channels-whatsapp -w @amilo/brain-cursor -w @amilo/brain-grok -w @amilo/google -w @amilo/api",
+    "build": "npm run build -w @amilo/brain-contract -w @amilo/core -w @amilo/db -w @amilo/booking -w @amilo/browser-agent -w @amilo/channels-whatsapp -w @amilo/brain-cursor -w @amilo/brain-grok -w @amilo/google -w @amilo/api",
     "dev": "npm run dev -w @amilo/api",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",
     "lint": "npm run typecheck",
     "db:generate": "npm run generate -w @amilo/db",
-    "db:migrate": "npm run migrate -w @amilo/db"
+    "db:migrate": "npm run migrate -w @amilo/db",
+    "social:render": "node --experimental-strip-types --no-warnings scripts/social/render.mts",
+    "social:post": "node --experimental-strip-types --no-warnings scripts/social/post.mts"
   },
   "devDependencies": {
     "@types/node": "^22.15.3",
+    "playwright-core": "^1.55.0",
+    "twitter-api-v2": "^1.24.0",
     "typescript": "^5.8.3"
   },
   "dependencies": {

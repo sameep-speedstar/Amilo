@@ -16,8 +16,9 @@ import {
   type InboundCalendarBlock,
   type ScheduleNodeLike,
 } from "@amilo/core";
-import { and, eq } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import {
+  commitments,
   countWatcherAlertsToday,
   createCommitment,
   createPendingAction,
@@ -27,6 +28,7 @@ import {
   listGoogleAccounts,
   listScheduleNodes,
   listUsersWithGoogleForScan,
+  listRecentCalendarInviteAlertedIds,
   logMessage,
   markCalendarConflictAlerted,
   markCalendarInviteNotified,
@@ -88,6 +90,11 @@ export async function scanInboundCalendarConflicts(opts: {
   const accounts = await listGoogleAccounts(opts.db, opts.userId);
   if (!accounts.length) return { alerted: 0 };
 
+  const alreadyAlertedIds = await listRecentCalendarInviteAlertedIds(
+    opts.db,
+    opts.userId,
+  );
+
   const rangeStart = localDayBoundsUtc(timezone, now).timeMin;
   const rangeEnd = new Date(now.getTime() + 7 * 86_400_000);
   const blocks: InboundCalendarBlock[] = [];
@@ -128,7 +135,8 @@ export async function scanInboundCalendarConflicts(opts: {
           accountEmail,
           createdIso: ev.createdIso,
           conflictAlerted: Boolean(meta.conflictAlertedAt),
-          inviteNotified: Boolean(meta.inviteNotifiedAt),
+          inviteNotified:
+            Boolean(meta.inviteNotifiedAt) || alreadyAlertedIds.has(ev.id),
           location: ev.location,
           meetingUrl: ev.meetingUrl,
         });
@@ -360,9 +368,13 @@ export async function scanInboundCalendarConflicts(opts: {
   }
 
   // No conflict — still notify fresh inbound meetings (hard commitments).
-  const news = findNewInboundInvites(blocks, now);
+  const news = findNewInboundInvites(blocks, now).filter(
+    (b) => !alreadyAlertedIds.has(b.eventId),
+  );
   if (!news.length) return { alerted: 0 };
   const inv = news[0]!;
+  // Re-check log right before send (mark on events row may still be missing).
+  if (alreadyAlertedIds.has(inv.eventId)) return { alerted: 0 };
   const account =
     accounts.find(
       (a) => (a.email ?? "").toLowerCase() === (inv.accountEmail ?? "").toLowerCase(),
@@ -474,6 +486,21 @@ async function trackCalendarInviteCommitment(
   inv: InboundCalendarBlock,
 ): Promise<string | null> {
   try {
+    // Reuse an open invite commitment for the same meeting (title + start).
+    const existing = await db.query.commitments.findFirst({
+      where: and(
+        eq(commitments.userId, userId),
+        eq(commitments.status, "open"),
+        eq(commitments.reason, "calendar_invite"),
+        eq(commitments.title, inv.title.slice(0, 200)),
+      ),
+      orderBy: [desc(commitments.createdAt)],
+    });
+    if (existing?.dueAt && Math.abs(existing.dueAt.getTime() - inv.start.getTime()) < 120_000) {
+      return existing.id;
+    }
+    if (existing && !existing.dueAt) return existing.id;
+
     const { id } = await createCommitment(db, {
       userId,
       title: inv.title.slice(0, 200),

@@ -16,6 +16,8 @@ export interface InboundMessage {
   replyToContent?: string;
   /** in | out for the quoted message. */
   replyToDirection?: "in" | "out";
+  /** From message_log.meta.scheduled when the quoted outbound was a morning/evening brief. */
+  replyToScheduled?: "morning" | "evening" | string;
   ts: Date;
 }
 

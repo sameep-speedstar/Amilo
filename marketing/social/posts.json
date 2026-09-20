@@ -1,0 +1,168 @@
+[
+  {
+    "id": "x-01",
+    "date": "2026-09-21",
+    "platforms": ["x"],
+    "mockup": "briefing",
+    "hook": "Most things don't deserve your attention.",
+    "copy": {
+      "x": "Most things don't deserve your attention.\n\nAmilo is an AI chief of staff in WhatsApp. It reads your email and calendar — and speaks only when something genuinely needs you.\n\nInvite-only. amilo.io"
+    }
+  },
+  {
+    "id": "ig-01",
+    "date": "2026-09-21",
+    "platforms": ["instagram"],
+    "mockup": "briefing",
+    "hook": "Most things don't deserve your attention.",
+    "copy": {
+      "instagram": "Most things don't deserve your attention.\n\nAmilo lives in WhatsApp. It reads the noise — email, calendar, traffic — and speaks only when something genuinely needs you.\n\nInvite-only beta. Link in bio.",
+      "story": "07:00, every morning.\nOne message. Your whole day, already read.\n\namilo.io/invite"
+    }
+  },
+  {
+    "id": "x-02",
+    "date": "2026-09-22",
+    "platforms": ["x"],
+    "mockup": "filter",
+    "hook": "Measured by how little it speaks.",
+    "copy": {
+      "x": "Most assistants are measured by how much you use them.\n\nAmilo is measured by how little it needs to speak — while missing nothing."
+    }
+  },
+  {
+    "id": "x-03",
+    "date": "2026-09-23",
+    "platforms": ["x"],
+    "mockup": "pickup",
+    "hook": "Pickup isn't on any calendar.",
+    "copy": {
+      "x": "Your 2:00 review overlaps school pickup.\n\nPickup isn't on any calendar. Amilo still sees it.\n\nThat's the job: protect the life that never made it onto Google."
+    }
+  },
+  {
+    "id": "ig-02",
+    "date": "2026-09-23",
+    "platforms": ["instagram"],
+    "mockup": "pickup",
+    "hook": "14 emails. None of them reach you.",
+    "copy": {
+      "instagram": "An assistant that touches the whole day — and interrupts almost none of it.\n\nWatch a day: amilo.io/how-it-works",
+      "story": "Your 2:00 overlaps school pickup.\nPickup is on no calendar. Amilo still sees it."
+    }
+  },
+  {
+    "id": "x-04",
+    "date": "2026-09-24",
+    "platforms": ["x"],
+    "mockup": "briefing",
+    "hook": "A day with Amilo.",
+    "copy": {
+      "x": "1/ A day with Amilo.\n\n7:00am. One WhatsApp. Three things need you. Twenty-two handled quietly.\n\nThe ideal reply is one character long.\n\n2/ 10:52. Fourteen emails arrive.\n\nNone of them reach you.\n\nThis is the product working.\n\n3/ 13:35. \"Your 2:00 overlaps school pickup — move it to 3:30?\"\n\nYou reply OK. Moved, logged, done.\n\n4/ 16:00. Traffic is building.\n\n\"Leave by 4:10 for the 5pm — 40 min in current traffic.\"\n\nOne tap opens maps.\n\n5/ 21:00. Evening wrap.\n\n\"Did the Sharma call happen?\"\n\nYou say yes. Loop closed. It does not ask again.\n\nPersistence with restraint. Amilo never nags.\n\namilo.io"
+    }
+  },
+  {
+    "id": "x-05",
+    "date": "2026-09-25",
+    "platforms": ["x"],
+    "mockup": "confirm",
+    "hook": "Nothing happens without your OK.",
+    "copy": {
+      "x": "Nothing happens without your OK.\n\nAmilo proposes. You confirm.\n\nIt never touches your calendar or your mail without an explicit yes — and every action is logged where you can see it."
+    }
+  },
+  {
+    "id": "ig-03",
+    "date": "2026-09-25",
+    "platforms": ["instagram"],
+    "mockup": "confirm",
+    "hook": "An assistant, on purpose. Not a companion.",
+    "copy": {
+      "instagram": "An assistant, on purpose. Not a companion.\n\nAmilo proposes; you confirm. It reads your calendar, not your mood. Memory you can inspect. Loops it closes — then it stops.\n\nLink in bio.",
+      "story": "Nothing happens without your OK."
+    }
+  },
+  {
+    "id": "x-06",
+    "date": "2026-09-28",
+    "platforms": ["x"],
+    "mockup": "filter",
+    "hook": "Watching 25. Three will reach you.",
+    "copy": {
+      "x": "Watching 25 things right now.\n\nThree of them will reach you.\n\n\"22 handled quietly\" is the proof that silence means watched — not missed."
+    }
+  },
+  {
+    "id": "ig-04",
+    "date": "2026-09-28",
+    "platforms": ["instagram"],
+    "mockup": "briefing",
+    "hook": "07:00, every morning.",
+    "copy": {
+      "instagram": "07:00, every morning. One message. Your whole day, already read.\n\nThree need you. Twenty-two handled quietly. The ideal reply is one character long.\n\nInvite-only. Link in bio.",
+      "story": "3 need you · 22 handled quietly.\namilo.io/invite"
+    }
+  },
+  {
+    "id": "x-07",
+    "date": "2026-09-29",
+    "platforms": ["x"],
+    "mockup": "confirm",
+    "hook": "Not a friend. Not a streak.",
+    "copy": {
+      "x": "We built an assistant on purpose.\n\nNot a friend. Not a therapist. Not a streak. Not \"talk to me more.\"\n\nThe best conversation with Amilo ends quickly, with your day improved."
+    }
+  },
+  {
+    "id": "x-08",
+    "date": "2026-09-30",
+    "platforms": ["x"],
+    "mockup": "voice",
+    "hook": "One voice note. The language you actually speak.",
+    "copy": {
+      "x": "One voice note, in the language you actually speak.\n\n\"Kal subah Sharma ji ko call karna hai, aur note kar lo — Priya prefers calls after 4.\"\n\nAmilo heard three things. You reply OK."
+    }
+  },
+  {
+    "id": "ig-05",
+    "date": "2026-09-30",
+    "platforms": ["instagram"],
+    "mockup": "voice",
+    "hook": "Speak, don't type.",
+    "copy": {
+      "instagram": "One voice note, in the language you actually speak.\n\nAmilo heard three things. You reply OK.\n\nLink in bio.",
+      "story": "Speak, don't type."
+    }
+  },
+  {
+    "id": "x-09",
+    "date": "2026-10-01",
+    "platforms": ["x"],
+    "mockup": "leaveby",
+    "hook": "Calendars know start time. Not Bangalore traffic.",
+    "copy": {
+      "x": "Calendars know when the meeting starts.\n\nThey do not know the 40 minutes of Bangalore traffic between here and there.\n\nAmilo does. Leave-by is part of the brief."
+    }
+  },
+  {
+    "id": "x-10",
+    "date": "2026-10-02",
+    "platforms": ["x"],
+    "mockup": "invite",
+    "hook": "One inbox at a time.",
+    "copy": {
+      "x": "Amilo earns trust one inbox at a time. Real accounts, real mornings.\n\nWe onboard a handful of people at a time, deliberately.\n\nIf you want a seat: amilo.io"
+    }
+  },
+  {
+    "id": "ig-06",
+    "date": "2026-10-02",
+    "platforms": ["instagram"],
+    "mockup": "invite",
+    "hook": "At the end of the day, your attention came home.",
+    "copy": {
+      "instagram": "At the end of the day, your attention came home.\n\nAmilo is invite-only. Real inboxes, real mornings. A handful of seats at a time.\n\nRequest one. Link in bio.",
+      "story": "If you want a seat when the next few open, tell us.\namilo.io/invite"
+    }
+  }
+]

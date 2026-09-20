@@ -101,12 +101,31 @@ export function focusDedupeKey(label: string): string {
     .toLowerCase()
     .replace(/^overdue:\s*/i, "")
     .replace(/^\d{1,2}:\d{2}\s+/, "")
+    .replace(/^\[?reminder\]?\s*/i, "")
     .replace(/\s*[—–-]\s*[^—–-]+$/u, "")
     .replace(/^(re|fwd|fw):\s*/gi, "")
     .replace(/[^a-z0-9]+/g, " ")
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, 64);
+}
+
+function tokenSet(label: string): Set<string> {
+  return new Set(
+    focusDedupeKey(label)
+      .split(" ")
+      .filter((t) => t.length >= 3),
+  );
+}
+
+/** Jaccard overlap of significant tokens — catches paraphrased reminder holds. */
+export function labelTokenOverlap(a: string, b: string): number {
+  const sa = tokenSet(a);
+  const sb = tokenSet(b);
+  if (!sa.size || !sb.size) return 0;
+  let inter = 0;
+  for (const t of sa) if (sb.has(t)) inter += 1;
+  return inter / (sa.size + sb.size - inter);
 }
 
 /** True when two FOCUS labels are the same meeting / thread under different wrappers. */
@@ -118,7 +137,27 @@ export function focusLabelsMatch(a: string, b: string): boolean {
   if (ka.length >= 12 && kb.length >= 12 && (ka.includes(kb) || kb.includes(ka))) {
     return true;
   }
+  // Paraphrased calendar reminders / follow-up holds at similar length.
+  if (labelTokenOverlap(a, b) >= 0.72) return true;
   return false;
+}
+
+/**
+ * Deduplicate TODAY calendar lines that share a clock and near-identical titles
+ * (e.g. two [Reminder] paraphrases at 09:00).
+ */
+export function dedupeCalendarBriefLines(lines: string[]): string[] {
+  const out: string[] = [];
+  for (const line of lines) {
+    const when = line.match(/^(\d{1,2}:\d{2}|all day)\b/i)?.[1]?.toLowerCase() ?? "";
+    const duplicate = out.some((prev) => {
+      const prevWhen = prev.match(/^(\d{1,2}:\d{2}|all day)\b/i)?.[1]?.toLowerCase() ?? "";
+      if (when && prevWhen && when !== prevWhen) return false;
+      return focusLabelsMatch(prev, line);
+    });
+    if (!duplicate) out.push(line);
+  }
+  return out;
 }
 
 /** Stable short label for evening TODAY section. */

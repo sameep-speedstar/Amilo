@@ -1,83 +1,115 @@
-# Dedicated API subdomain: `api.amilo.io`
+# Dedicated API subdomain: `api.amilo.io` (+ staging)
 
 Marketing / privacy stay on `www.amilo.io`.  
-WhatsApp webhooks + Amilo API live on **`api.amilo.io`**.
+WhatsApp webhooks + Amilo API live on **`api.amilo.io`** (production) and **`api-staging.amilo.io`** (staging).
 
 Privacy (already live): https://www.amilo.io/privacy
 
 ## Target URLs
 
-| Purpose | URL |
-|---------|-----|
-| Health | `https://api.amilo.io/health` |
-| Meta webhook | `https://api.amilo.io/webhooks/whatsapp` |
-| Azure default (before DNS) | `https://amilo-api.azurewebsites.net/webhooks/whatsapp` |
+| Purpose | Production | Staging |
+|---------|------------|---------|
+| Health | `https://api.amilo.io/health` | `https://api-staging.amilo.io/health` |
+| Meta webhook | `https://api.amilo.io/webhooks/whatsapp` | `https://api-staging.amilo.io/webhooks/whatsapp` |
+| Google OAuth | `https://api.amilo.io/oauth/google/callback` | `https://api-staging.amilo.io/oauth/google/callback` |
+| App Service | `amilo-api` | `amilo-api-staging` |
+| Postgres DB | `amilo` on `amilo-pg` | `amilo_staging` on `amilo-pg` |
+| Env files | `.env` + `.env.azure.db` | `.env.staging` + `.env.azure.db.staging` |
+| Image tags | `amilo-wa:<sha>` (+ `:latest` on promote) | `amilo-wa:<sha>` + `:staging` |
 
-LifeOS Telegram bot stays on `amilo-app` — this is a **separate** App Service: `amilo-api`.
+LifeOS Telegram bot stays on `amilo-app` — this is a **separate** App Service family: `amilo-api` / `amilo-api-staging`.
 
-## 1. Deploy the API (Azure)
+**Do not** share one WABA phone number across staging and prod webhooks. Meta binds one callback URL per WABA app/number.
 
-From this repo root (with `.env` filled):
+## 1. Deploy staging (default for new work)
 
 ```bash
-chmod +x deploy_azure.sh
-./deploy_azure.sh
+# copy .env.staging.example → .env.staging; set staging WABA + ALLOWED_PHONES (founder only)
+# DATABASE_URL in .env.azure.db.staging → …/amilo_staging?sslmode=require
+chmod +x deploy_staging.sh deploy_prod.sh
+./deploy_staging.sh
 ```
 
 Creates/updates:
 
-- ACR image `amiloacr.azurecr.io/amilo-wa:<sha>`
-- App Service `amilo-api` on plan `amilo-plan` (shared with LifeOS; separate container)
+- ACR images `amiloacr.azurecr.io/amilo-wa:<sha>` and `:staging`
+- App Service `amilo-api-staging` on plan `amilo-plan`
 
-## 2. Cloudflare DNS (you do this in the dashboard)
-
-`amilo.io` is already on Cloudflare. Add:
-
-| Type | Name | Content | Proxy status |
-|------|------|---------|--------------|
-| CNAME | `api` | `amilo-api.azurewebsites.net` | **DNS only** (grey cloud) first |
-
-Wait 1–2 minutes for propagation (`dig api.amilo.io`).
-
-## 3. Bind custom domain + free cert (Azure)
+Migrate staging DB once (from repo root, with staging URL loaded):
 
 ```bash
+set -a && source .env.azure.db.staging && set +a
+npm run db:migrate
+```
+
+## 2. Promote to production (after WA smoke)
+
+```bash
+./deploy_prod.sh <sha>   # same tag already pushed by deploy_staging.sh
+```
+
+Prod deploy **does not rebuild**. It refuses a dirty tree by default and requires the tag to exist in ACR. Production beta users only get smoked images.
+
+Legacy `./deploy_azure.sh` now redirects to this promote path (passes through args).
+
+## 3. Cloudflare DNS
+
+Production (already live):
+
+| Type | Name | Content | Proxy |
+|------|------|---------|-------|
+| CNAME | `api` | `amilo-api.azurewebsites.net` | DNS only first |
+
+Staging (add):
+
+| Type | Name | Content | Proxy |
+|------|------|---------|-------|
+| CNAME | `api-staging` | `amilo-api-staging.azurewebsites.net` | DNS only first |
+
+```bash
+# After DNS propagates — bind hostname + cert on staging
 az webapp config hostname add \
-  --webapp-name amilo-api \
+  --webapp-name amilo-api-staging \
   --resource-group rg-lifeos \
-  --hostname api.amilo.io
+  --hostname api-staging.amilo.io
 
 az webapp config ssl bind \
-  --name amilo-api \
+  --name amilo-api-staging \
   --resource-group rg-lifeos \
   --certificate-thumbprint "$(az webapp config ssl create \
-      --name amilo-api \
+      --name amilo-api-staging \
       --resource-group rg-lifeos \
-      --hostname api.amilo.io \
+      --hostname api-staging.amilo.io \
       --query thumbprint -o tsv)" \
   --ssl-type SNI
 ```
 
-If hostname add asks for domain verification, Cloudflare may need a TXT record Azure prints — add it under DNS, wait, retry.
+Add staging redirect URI to the shared Google OAuth client:
+`https://api-staging.amilo.io/oauth/google/callback`
 
-After HTTPS works on `api.amilo.io`, you may turn the Cloudflare proxy **orange** (Proxied) if you want CF WAF — use SSL mode **Full (strict)**.
+## 4. Meta webhook (per environment)
 
-## 4. Meta webhook
+**Production** (existing number):
 
-In Meta → WhatsApp → Production setup → Configure Webhooks:
+- Callback: `https://api.amilo.io/webhooks/whatsapp`
+- Verify token: `WABA_VERIFY_TOKEN` in `.env`
 
-- **Callback URL:** `https://api.amilo.io/webhooks/whatsapp`
-- **Verify token:** same as `WABA_VERIFY_TOKEN` in `.env`
-- Subscribe to: `messages`
+**Staging** (dedicated test / second number):
 
-Click **Verify and save**.
+- Callback: `https://api-staging.amilo.io/webhooks/whatsapp`
+- Verify token: staging `WABA_VERIFY_TOKEN` in `.env.staging`
+- Subscribe: `messages`
 
 ## 5. Smoke checks
 
 ```bash
+curl -s https://api-staging.amilo.io/health   # or Azure host before DNS
 curl -s https://api.amilo.io/health
-# {"ok":true,"service":"amilo",...}
 ```
+
+Staging WA: Hi Amilo · sync/brief · calendar yes · reminder · one invite (no duplicate) · life-ops research yes (no book claim).
+
+Promote checklist (before `./deploy_prod.sh <sha>`): same smoke on staging, then prod health unchanged until promote completes.
 
 ## Notes
 

@@ -1,0 +1,29 @@
+{
+  "id": "briefing",
+  "kicker": "07:00, every morning",
+  "headline": "One message. Your whole day, <em>already read.</em>",
+  "dayChip": "Friday, 17 July",
+  "beats": [
+    {
+      "id": "brief",
+      "messages": [
+        {
+          "who": "amilo",
+          "time": "7:00 am",
+          "text": "Good morning — Friday.\n\n**3 need you:**\n1. Priya — contract redlines, waiting since Tuesday.\n2. School fee, due tomorrow.\n3. Sharma ji wants a call before 2.\n\n**22 handled quietly.**\nReply 1, 2 or 3."
+        }
+      ]
+    },
+    {
+      "id": "ok",
+      "messages": [
+        {
+          "who": "amilo",
+          "time": "7:00 am",
+          "text": "Good morning — Friday.\n\n**3 need you:**\n1. Priya — contract redlines, waiting since Tuesday.\n2. School fee, due tomorrow.\n3. Sharma ji wants a call before 2.\n\n**22 handled quietly.**"
+        },
+        { "who": "user", "time": "7:01 am", "text": "OK" }
+      ]
+    }
+  ]
+}

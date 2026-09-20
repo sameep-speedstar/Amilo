@@ -1,0 +1,18 @@
+{
+  "id": "invite",
+  "kicker": "Invite-only",
+  "headline": "At the end of the day, your attention came <em>home.</em>",
+  "dayChip": "Friday, 17 July",
+  "beats": [
+    {
+      "id": "seat",
+      "messages": [
+        {
+          "who": "amilo",
+          "time": "9:02 pm",
+          "text": "Good night.\nIf you want a seat when the next few open: **amilo.io**"
+        }
+      ]
+    }
+  ]
+}

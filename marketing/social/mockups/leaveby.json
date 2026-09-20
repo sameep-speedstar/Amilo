@@ -1,0 +1,18 @@
+{
+  "id": "leaveby",
+  "kicker": "16:00",
+  "headline": "Calendars know start time. Not <em>Bangalore traffic.</em>",
+  "dayChip": "Friday, 17 July",
+  "beats": [
+    {
+      "id": "leave",
+      "messages": [
+        {
+          "who": "amilo",
+          "time": "4:00 pm",
+          "text": "Leave by **4:10** for the 5 pm — **40 min** in current traffic.\nOne tap opens navigation."
+        }
+      ]
+    }
+  ]
+}

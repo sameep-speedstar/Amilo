@@ -54,10 +54,17 @@ Deduped per event (`conflictAlertedAt` + `inviteNotifiedAt`). Counts toward the 
 
 ## Anti-goals (do not build)
 
-- Bank / subscription / junk-fee monitors
-- Flight/hotel price hunting as a product surface
+- Bank / subscription / junk-fee monitors as silent background watchers (inbox errands are user-initiated chase drafts only)
+- Flight/hotel price hunting as a product surface (research shortlists after the user asks; no autopay)
 - Shopping agents, dating coach, life-coach check-ins
 - Folk-style companion “watch everything” breadth
+- Credential vault / cloud-browser act-first shopping (Instinct-style)
+
+## Life ops (confirm-first)
+
+- `life_ops_research` / `life_ops_handoff` pendings: yes locks the plan or opens a draft — never books or pays.
+- Travel forwards (flight/hotel/train/bus) → calendar propose with leave-by glue; still needs yes.
+- Home/family: schedule memory + vendor handoff scripts; Google writes only after yes.
 
 ## Graph link
 

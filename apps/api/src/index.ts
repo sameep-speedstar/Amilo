@@ -26,9 +26,19 @@ import {
 } from "@amilo/core";
 import { processVoiceNote } from "./voice/pipeline.js";
 import { writeReminderCalendarNudge } from "./calendarNudge.js";
-import { appendOnboardingTipToBrief } from "./onboardingTips.js";
+import { runLifeOpsResearch } from "./lifeOpsResearch.js";
+import {
+  continueBookingOtp,
+  continueBookingSelect,
+  parseBookingOtpReply,
+  startBookingFlow,
+  tryParseBookingIntent,
+} from "./bookingService.js";
+import { appendOnboardingTipToBrief, resolveAndStampTip } from "./onboardingTips.js";
 import {
   addMutedPattern,
+  addVipName,
+  listVipNames,
   applyGraphUpdates,
   buildPriorityBriefPayload,
   closeBriefPriorityItem,
@@ -52,6 +62,7 @@ import {
   listPlaces,
   rememberPersonEmail,
   resolveCommitmentByHint,
+  resolvePendingAction,
   resolvePersonEmail,
   getWhatsAppAddress,
   getWhatsAppLastInbound,
@@ -142,6 +153,8 @@ import {
   setAdminCookie,
   setAdminSessionCookie,
 } from "./adminUi.js";
+import { mountStudio } from "./studio/routes.js";
+import { startStudioWorker } from "./studio/worker.js";
 import { getWorkerStatuses, readGitSha } from "./workerStatus.js";
 
 loadEnv();
@@ -335,6 +348,26 @@ function orchestratorDeps(): OrchestratorDeps {
       const { day } = localDayBoundsUtc(tz);
       return appendOnboardingTipToBrief(db, userId, prefs, day, briefText);
     },
+    pullTrainingTip: async (userId) => {
+      const u = await getUserById(db, userId);
+      const prefs = await getUserPrefs(db, userId);
+      const tz = u?.timezone ?? "Asia/Kolkata";
+      const { day } = localDayBoundsUtc(tz);
+      if (!prefs.onboarding.startedAt) {
+        await patchUserPrefs(db, userId, {
+          onboarding: {
+            ...prefs.onboarding,
+            startedAt: new Date().toISOString(),
+            startedLocalDay: day,
+          },
+        });
+      }
+      const fresh = await getUserPrefs(db, userId);
+      const hit = await resolveAndStampTip(db, userId, fresh, day, {
+        onDemand: true,
+      });
+      return hit?.tip.text ?? null;
+    },
     getContextGraphSummary: async (id) => summarizeContextGraph(db, id),
     getAboutMeSummary: (id) => summarizeAboutMe(db, id),
     getAboutPersonSummary: (id, name) => summarizeAboutPerson(db, id, name),
@@ -413,10 +446,14 @@ function orchestratorDeps(): OrchestratorDeps {
           message: `Saved ${label}, but couldn't geocode that address yet — leave-by may wait until Maps resolves it.`,
         };
       }
-      return {
-        ok: true,
-        message: `Saved ${label}: ${address}. I'll use it for leave-by times.`,
-      };
+      return { ok: true, message: `Saved ${label}: ${address}. I'll use it for leave-by times.` };
+    },
+    researchLifeOps: async (_userId, intent) => {
+      const result = await runLifeOpsResearch({
+        intent,
+        mapsApiKey: settings.googleMapsApiKey,
+      });
+      return { text: result.text, options: result.options };
     },
     listPlacesText: async (userId) => {
       const rows = await listPlaces(db, userId);
@@ -726,6 +763,8 @@ function orchestratorDeps(): OrchestratorDeps {
       languageCode: "en",
     },
     addMutedPattern: (userId, pattern) => addMutedPattern(db, userId, pattern),
+    addVipName: (userId, name) => addVipName(db, userId, name),
+    listVipNames: (userId) => listVipNames(db, userId),
     removeMutedPattern: (userId, pattern) => removeMutedPattern(db, userId, pattern),
     listMutedPatterns: async (userId) => (await getUserPrefs(db, userId)).mutedPatterns,
     getTimezoneState: async (userId) => {
@@ -1060,11 +1099,16 @@ async function processInbound(rawJson: unknown): Promise<void> {
 
     let replyToContent: string | undefined;
     let replyToDirection: "in" | "out" | undefined;
+    let replyToScheduled: string | undefined;
     if (parsed.replyToMessageId) {
       const prior = await findMessageByWaId(db, user.id, parsed.replyToMessageId);
-      if (prior?.bodyRef) {
-        replyToContent = prior.bodyRef;
+      if (prior) {
+        if (prior.bodyRef) replyToContent = prior.bodyRef;
         replyToDirection = prior.direction === "out" ? "out" : "in";
+        const scheduled = prior.meta?.scheduled;
+        if (scheduled === "morning" || scheduled === "evening") {
+          replyToScheduled = scheduled;
+        }
       }
     }
 
@@ -1167,6 +1211,7 @@ async function processInbound(rawJson: unknown): Promise<void> {
       ...(parsed.replyToMessageId ? { replyToMessageId: parsed.replyToMessageId } : {}),
       ...(replyToContent ? { replyToContent } : {}),
       ...(replyToDirection ? { replyToDirection } : {}),
+      ...(replyToScheduled ? { replyToScheduled } : {}),
     };
 
     console.log(
@@ -1179,10 +1224,65 @@ async function processInbound(rawJson: unknown): Promise<void> {
         brain: brainLabel,
         ...(voiceHeard ? { transcript: voiceHeard.slice(0, 120) } : {}),
         ...(parsed.replyToMessageId ? { replyTo: parsed.replyToMessageId } : {}),
+        ...(replyToScheduled ? { replyToScheduled } : {}),
+        ...(replyToContent ? { replyToChars: replyToContent.length } : {}),
       }),
     );
 
     try {
+      // Cloud browser bookings — OTP / select continue before generic orchestrator.
+      const openBooking = await getOpenPendingAction(db, user.id);
+      if (openBooking?.kind === "booking_otp") {
+        const otp = parseBookingOtpReply(content);
+        if (otp) {
+          const jobId = String(openBooking.payload.jobId ?? "");
+          await resolvePendingAction(db, openBooking.id, {
+            status: "confirmed",
+            result: { otpRelayed: true },
+          });
+          const outbound = await continueBookingOtp(db, {
+            userId: user.id,
+            jobId,
+            otp,
+          });
+          for (const msg of outbound) await sendAndLogOutbound(user.id, msg);
+          continue;
+        }
+      }
+      if (openBooking?.kind === "booking_select") {
+        if (!/^(cancel|no|nope)$/i.test(content.trim())) {
+          const jobId = String(openBooking.payload.jobId ?? "");
+          await resolvePendingAction(db, openBooking.id, {
+            status: "confirmed",
+            result: { selection: content.slice(0, 200) },
+          });
+          const outbound = await continueBookingSelect(db, {
+            userId: user.id,
+            jobId,
+            selection: content,
+          });
+          for (const msg of outbound) await sendAndLogOutbound(user.id, msg);
+          continue;
+        }
+      }
+
+      // New booking ask (grocery / table / tickets) — before brain.
+      if (
+        (!openBooking ||
+          openBooking.kind.startsWith("booking_") === false) &&
+        tryParseBookingIntent(content, parsed.phoneE164)
+      ) {
+        const outbound = await startBookingFlow(db, {
+          userId: user.id,
+          phone: parsed.phoneE164,
+          text: content,
+        });
+        if (outbound?.length) {
+          for (const msg of outbound) await sendAndLogOutbound(user.id, msg);
+          continue;
+        }
+      }
+
       let outbound = await handleInbound(inbound, orchestratorDeps());
       // LifeOS lesson: echo Heard in the first reply — no separate transcript confirm.
       if (voiceHeard && outbound.length) {
@@ -1375,26 +1475,34 @@ app.post("/access-requests", async (c) => {
   }
 });
 
+function safeNextPath(raw: unknown): string {
+  const s = String(raw ?? "");
+  if (/^\/(studio|admin)(\/|\?|$)/.test(s)) return s;
+  return "/admin";
+}
+
 app.get("/admin/login", async (c) => {
   const email = await requireAdminEmail(c);
-  if (email) return c.redirect("/admin");
-  return c.html(renderAdminLogin({ emailHint: settings.adminEmail }));
+  const next = safeNextPath(c.req.query("next"));
+  if (email) return c.redirect(next);
+  return c.html(renderAdminLogin({ emailHint: settings.adminEmail, next }));
 });
 
 app.post("/admin/login", async (c) => {
   const body = await c.req.parseBody();
   const email = normalizeEmail(String(body.email ?? ""));
   const password = String(body.password ?? "");
+  const next = safeNextPath(body.next);
   const allowed = settings.adminEmail;
   if (!allowed) {
     return c.html(
-      renderAdminLogin({ error: "ADMIN_EMAIL is not configured.", emailHint: email }),
+      renderAdminLogin({ error: "ADMIN_EMAIL is not configured.", emailHint: email, next }),
       503,
     );
   }
   if (email !== allowed) {
     return c.html(
-      renderAdminLogin({ error: "Unknown admin account.", emailHint: email }),
+      renderAdminLogin({ error: "Unknown admin account.", emailHint: email, next }),
       401,
     );
   }
@@ -1405,13 +1513,13 @@ app.post("/admin/login", async (c) => {
   });
   if (!ok) {
     return c.html(
-      renderAdminLogin({ error: "Wrong password.", emailHint: email }),
+      renderAdminLogin({ error: "Wrong password.", emailHint: email, next }),
       401,
     );
   }
   const session = await createAdminSession(db, email);
   c.header("Set-Cookie", setAdminSessionCookie(session.token));
-  return c.redirect("/admin");
+  return c.redirect(next);
 });
 
 app.post("/admin/logout", async (c) => {
@@ -1823,11 +1931,28 @@ app.post("/dev/chat", async (c) => {
   return c.json({ userId: user.id, brain: brainLabel, outbound });
 });
 
+mountStudio(app, {
+  db,
+  encryptionKey: settings.tokenEncryptionKey,
+  publicBaseUrl: settings.publicBaseUrl,
+  requireEmail: requireAdminEmail,
+  grok: settings.xaiApiKey
+    ? { apiKey: settings.xaiApiKey, model: settings.grokModel }
+    : null,
+});
+
 const port = settings.port;
 serve({ fetch: app.fetch, port, createServer }, (info) => {
   console.log(
     `Amilo API listening on :${info.port} (brain=${brainLabel}, google=${googleOk ? "on" : "off"}, maps=${settings.googleMapsApiKey ? "on" : "off"}, milestone=M5.5)`,
   );
+});
+
+startStudioWorker({
+  db,
+  encryptionKey: settings.tokenEncryptionKey,
+  publicBaseUrl: settings.publicBaseUrl,
+  intervalMs: 20_000,
 });
 
 startReminderWorker({

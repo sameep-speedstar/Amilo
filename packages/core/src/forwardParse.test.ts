@@ -5,6 +5,9 @@ import {
   extractInviteeNames,
   isCalendarInviteIntent,
   parseAppointmentForward,
+  parseFlightForward,
+  parseHotelForward,
+  parseTrainForward,
   parseTravelForward,
 } from "./forwardParse.js";
 
@@ -50,5 +53,45 @@ Pickup Point: Kolhapur Bypass
     );
     const names = extractInviteeNames("send calendar invite to Rajeev for tomorrow 3pm");
     assert.ok(names.some((n) => /rajeev/i.test(n)));
+  });
+
+  it("parses flight e-ticket forward", () => {
+    const msg = `
+Indigo e-ticket
+PNR: AB3C4D
+Flight 6E 204 DEL → GOI
+Departure: Aug 12, 2026 09:15 AM
+Boarding gate TBA
+`;
+    const hint = parseFlightForward(msg, "Asia/Kolkata", new Date("2026-08-10T10:00:00.000Z"));
+    assert.ok(hint);
+    assert.match(hint!.title, /Flight/i);
+    assert.match(hint!.description ?? "", /Leave-by/i);
+  });
+
+  it("parses hotel check-in forward", () => {
+    const msg = `
+Booking.com confirmation
+Hotel: Taj Holiday Village
+Check-in: Sep 20, 2026 2:00 PM
+Confirmation number: HX991122
+`;
+    const hint = parseHotelForward(msg, "Asia/Kolkata", new Date("2026-09-01T10:00:00.000Z"));
+    assert.ok(hint);
+    assert.match(hint!.title, /Hotel/i);
+  });
+
+  it("parses train PNR forward", () => {
+    const msg = `
+IRCTC
+PNR: 1234567890
+Train number: 12627
+From SBC to MAS
+Departure: Oct 5, 2026 06:00 AM
+Coach: A1 Berth: 12
+`;
+    const hint = parseTrainForward(msg, "Asia/Kolkata", new Date("2026-10-01T10:00:00.000Z"));
+    assert.ok(hint);
+    assert.match(hint!.title, /Train/i);
   });
 });

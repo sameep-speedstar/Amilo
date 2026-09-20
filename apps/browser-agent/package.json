@@ -1,0 +1,9 @@
+{
+  "name": "@amilo/browser-agent-aci",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Azure ACI image entry — runtime is @amilo/browser-agent",
+  "scripts": {
+    "start": "npm run start -w @amilo/browser-agent"
+  }
+}

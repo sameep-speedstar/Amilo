@@ -18,6 +18,7 @@ import {
 } from "./attention.js";
 import {
   attendedMeetingLabel,
+  dedupeCalendarBriefLines,
   extractMeetingActionItems,
   focusLabelsMatch,
   isAttendedMeeting,
@@ -225,16 +226,27 @@ export async function findMessageByWaId(
   direction: string;
   bodyRef: string | null;
   kind: string;
+  meta?: Record<string, unknown> | null;
 } | null> {
-  const rows = await db.query.messageLog.findMany({
-    where: and(eq(messageLog.userId, userId), eq(messageLog.channel, "whatsapp")),
-    orderBy: [desc(messageLog.ts)],
-    limit: 80,
-  });
-  for (const r of rows) {
-    const meta = (r.meta ?? {}) as { waMessageId?: unknown };
-    if (String(meta.waMessageId ?? "") === waMessageId) {
-      return { direction: r.direction, bodyRef: r.bodyRef, kind: r.kind };
+  const id = waMessageId.trim();
+  if (!id) return null;
+  // Prefer indexed-ish recent scan, then widen — reply-to often points at morning brief hours earlier.
+  for (const limit of [120, 400]) {
+    const rows = await db.query.messageLog.findMany({
+      where: and(eq(messageLog.userId, userId), eq(messageLog.channel, "whatsapp")),
+      orderBy: [desc(messageLog.ts)],
+      limit,
+    });
+    for (const r of rows) {
+      const meta = (r.meta ?? {}) as { waMessageId?: unknown };
+      if (String(meta.waMessageId ?? "") === id) {
+        return {
+          direction: r.direction,
+          bodyRef: r.bodyRef,
+          kind: r.kind,
+          meta: (r.meta ?? null) as Record<string, unknown> | null,
+        };
+      }
     }
   }
   return null;
@@ -1189,6 +1201,43 @@ export async function markCalendarInviteNotified(
   }
 }
 
+/**
+ * Google calendar event ids already WhatsApp-alerted (message_log).
+ * Used when the local events row is not synced yet — markCalendarInviteNotified
+ * would otherwise no-op and the next watch tick would double-ping.
+ */
+export async function listRecentCalendarInviteAlertedIds(
+  db: Db,
+  userId: string,
+  since: Date = new Date(Date.now() - 7 * 86_400_000),
+): Promise<Set<string>> {
+  const rows = await db.query.messageLog.findMany({
+    where: and(
+      eq(messageLog.userId, userId),
+      eq(messageLog.channel, "whatsapp"),
+      eq(messageLog.direction, "out"),
+      gte(messageLog.ts, since),
+    ),
+    orderBy: [desc(messageLog.ts)],
+    limit: 120,
+  });
+  const out = new Set<string>();
+  for (const r of rows) {
+    const meta = (r.meta ?? {}) as {
+      calendarInviteEventId?: unknown;
+      watchId?: unknown;
+      watchKind?: unknown;
+    };
+    if (meta.watchKind && String(meta.watchKind) !== "calendar_invite") continue;
+    const eid = String(meta.calendarInviteEventId ?? "").trim();
+    if (eid) out.add(eid);
+    const wid = String(meta.watchId ?? "");
+    const m = wid.match(/^calinvite:(.+)$/);
+    if (m?.[1]) out.add(m[1]);
+  }
+  return out;
+}
+
 /** Drop local calendar rows for a Google event id (after cancel). */
 export async function deleteCalendarEventByGoogleId(
   db: Db,
@@ -1839,6 +1888,24 @@ export async function addMutedPattern(
   return next;
 }
 
+export async function addVipName(
+  db: Db,
+  userId: string,
+  name: string,
+): Promise<string[]> {
+  const prefs = await getUserPrefs(db, userId);
+  const cleaned = name.trim().replace(/^["']|["']$/g, "").slice(0, 80);
+  if (!cleaned) return prefs.vipList;
+  const next = [...new Set([...prefs.vipList, cleaned])];
+  await patchUserPrefs(db, userId, { vipList: next });
+  return next;
+}
+
+export async function listVipNames(db: Db, userId: string): Promise<string[]> {
+  const prefs = await getUserPrefs(db, userId);
+  return prefs.vipList;
+}
+
 /** Mark existing gmail events matching a mute phrase so they leave the brief. */
 export async function markMatchingMailMuted(
   db: Db,
@@ -2443,8 +2510,14 @@ export function isActionDemandingMail(hay: string, actor = ""): boolean {
     /\b(charges? levied|imps charges?|unauthorised|unauthorized|dispute (the )?charge)\b/.test(
       h,
     ) ||
-    /\b(e-?vot(?:e|ing)|cast your vote|vote now)\b/.test(h) ||
-    /\b(certificate|ssl|cert)\b/.test(h) && /\b(expir\w*|renew(?:al)?|key rotation)\b/.test(h)
+    // e-voting / AGM ballots are quieter (M list) — not FOCUS.
+    /\b(certificate|ssl|cert)\b/.test(h) && /\b(expir\w*|renew(?:al)?|key rotation)\b/.test(h) ||
+    // Lawyer / advisor drafts awaiting user sign-off — not soft FYI.
+    /\bdraft for your review\b/.test(h) ||
+    /\bfor your (review|approval|signature|sign[- ]?off)\b/.test(h) ||
+    /\b(please (find|see) (the )?attached draft|attached (is|please find) .{0,40}draft)\b/.test(h) ||
+    /\b(return (request|initiated|window)|initiate (a )?return|refund (status|request))\b/.test(h) ||
+    /\b(cancel(ling)? your subscription|subscription (renewal|expir)|auto[- ]?renew)\b/.test(h)
   );
 }
 
@@ -3403,7 +3476,7 @@ export async function buildPriorityBriefPayload(
   }
   const calSeen = new Set<string>();
   const calUnique: string[] = [];
-  for (const bit of calBits) {
+  for (const bit of dedupeCalendarBriefLines(calBits)) {
     const k = bit.toLowerCase().replace(/\s+/g, " ");
     if (calSeen.has(k)) continue;
     calSeen.add(k);
@@ -3516,7 +3589,13 @@ export type PendingActionKind =
   | "calendar_update"
   | "calendar_cancel"
   | "calendar_conflict"
-  | "email_draft";
+  | "email_draft"
+  | "life_ops_research"
+  | "life_ops_handoff"
+  | "booking_otp"
+  | "booking_confirm"
+  | "booking_pay_link"
+  | "booking_select";
 
 export type PendingActionStatus =
   | "pending"

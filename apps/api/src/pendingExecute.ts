@@ -1,4 +1,10 @@
-import { formatLocalIsoWall, parseIsoDate } from "@amilo/core";
+import {
+  formatCalendarProposalSummary,
+  formatLocalIsoWall,
+  lifeOpsHandoffConfirmMessage,
+  lifeOpsResearchConfirmMessage,
+  parseIsoDate,
+} from "@amilo/core";
 import {
   cancelCalendarEvent,
   createCalendarEvent,
@@ -10,6 +16,7 @@ import {
 } from "@amilo/google";
 import {
   appendAudit,
+  createPendingAction,
   deleteCalendarEventByGoogleId,
   getGoogleAccount,
   listGoogleAccounts,
@@ -58,6 +65,193 @@ export async function executePendingAction(
   const payload = (row.payload ?? {}) as Record<string, unknown>;
 
   try {
+    if (row.kind === "life_ops_research") {
+      await resolvePendingAction(db, row.id, {
+        status: "confirmed",
+        result: { locked: true, domain: payload.domain },
+      });
+      await appendAudit(db, {
+        userId: row.userId,
+        action: "life_ops_research",
+        detail: { pendingId: row.id, domain: payload.domain, query: payload.query },
+        confirmed: true,
+      });
+      await logEvalEvent(db, {
+        userId: row.userId,
+        event: "action_confirmed",
+        note: "life_ops_research",
+        meta: { pendingId: row.id },
+      });
+      return { ok: true, message: lifeOpsResearchConfirmMessage(payload) };
+    }
+
+    if (row.kind === "life_ops_handoff") {
+      // Email channel: if draft fields present, send only when explicitly marked sendOnConfirm.
+      if (
+        str(payload.channel) === "email" &&
+        payload.sendOnConfirm === true &&
+        cfg
+      ) {
+        // Fall through to email_draft path by rewriting kind-like payload.
+        const accountLabel = str(payload.accountLabel, "personal");
+        const named = await getGoogleAccount(db, row.userId, accountLabel);
+        const account = named ?? (await listGoogleAccounts(db, row.userId))[0];
+        if (!account) throw new Error("No Google account linked. Send: connect google personal");
+        if (!hasGmailSendScope(account.scopes ?? "")) {
+          return {
+            ok: false,
+            message:
+              "Gmail send isn't authorized yet. Send: reconnect google personal — then try again.",
+          };
+        }
+        const to = str(payload.to);
+        const subject = str(payload.subject, "(no subject)");
+        const body = str(payload.body ?? payload.body_draft);
+        if (!to || !to.includes("@")) throw new Error("Missing recipient email");
+        const { accessToken } = await ensureAccessToken(db, cfg, account);
+        const sent = await sendGmailMessage(accessToken, {
+          to,
+          subject,
+          body,
+          ...(account.email ? { from: account.email } : {}),
+        });
+        await resolvePendingAction(db, row.id, {
+          status: "confirmed",
+          result: { messageId: sent.id, threadId: sent.threadId },
+        });
+        await appendAudit(db, {
+          userId: row.userId,
+          action: "life_ops_handoff_email",
+          detail: { pendingId: row.id, to, subject, messageId: sent.id },
+          confirmed: true,
+        });
+        await logEvalEvent(db, {
+          userId: row.userId,
+          event: "action_confirmed",
+          note: "life_ops_handoff_email",
+          meta: { pendingId: row.id, messageId: sent.id },
+        });
+        return { ok: true, message: `Sent to ${to}: ${subject}` };
+      }
+
+      await resolvePendingAction(db, row.id, {
+        status: "confirmed",
+        result: { channel: payload.channel, domain: payload.domain },
+      });
+      await appendAudit(db, {
+        userId: row.userId,
+        action: "life_ops_handoff",
+        detail: { pendingId: row.id, channel: payload.channel, domain: payload.domain },
+        confirmed: true,
+      });
+      await logEvalEvent(db, {
+        userId: row.userId,
+        event: "action_confirmed",
+        note: "life_ops_handoff",
+        meta: { pendingId: row.id },
+      });
+
+      let message = lifeOpsHandoffConfirmMessage(payload);
+      const hold = payload.calendarHold;
+      if (hold && typeof hold === "object") {
+        const h = hold as Record<string, unknown>;
+        const title = str(h.title, "Dinner");
+        const startIso = str(h.startIso || h.start);
+        const endIso = str(h.endIso || h.end);
+        const location = str(h.location);
+        if (startIso && endIso) {
+          const calPayload: Record<string, unknown> = {
+            accountLabel: str(h.accountLabel, "personal"),
+            title,
+            start: startIso,
+            end: endIso,
+            startIso,
+            endIso,
+            ...(location ? { location } : {}),
+          };
+          const summary = formatCalendarProposalSummary({
+            kind: "calendar_create",
+            title,
+            startIso,
+            endIso,
+            timeZone: timezone,
+            attendees: [],
+          });
+          const calPending = await createPendingAction(db, {
+            userId: row.userId,
+            kind: "calendar_create",
+            summary,
+            payload: calPayload,
+          });
+          message = [
+            message,
+            "",
+            `Proposed (${calPending.kind}):`,
+            calPending.summary,
+            "",
+            "Reply yes to put it on your calendar (still confirm-first).",
+          ].join("\n");
+        }
+      }
+      return { ok: true, message };
+    }
+
+    if (row.kind === "booking_confirm") {
+      const jobId = str(payload.jobId);
+      if (!jobId) throw new Error("Missing booking job");
+      const { confirmBookingPlace } = await import("./bookingService.js");
+      const placed = await confirmBookingPlace(db, {
+        userId: row.userId,
+        jobId,
+      });
+      await resolvePendingAction(db, row.id, {
+        status: placed.ok ? "confirmed" : "failed",
+        result: { message: placed.message },
+      });
+      await appendAudit(db, {
+        userId: row.userId,
+        action: "booking_confirm",
+        detail: { pendingId: row.id, jobId },
+        confirmed: true,
+      });
+      await logEvalEvent(db, {
+        userId: row.userId,
+        event: "action_confirmed",
+        note: "booking_confirm",
+        meta: { pendingId: row.id, jobId },
+      });
+      return { ok: placed.ok, message: placed.message };
+    }
+
+    if (row.kind === "booking_pay_link") {
+      // User acknowledging they will pay / paid — no Amilo card entry.
+      await resolvePendingAction(db, row.id, {
+        status: "confirmed",
+        result: { payUrl: payload.payUrl, acknowledged: true },
+      });
+      await appendAudit(db, {
+        userId: row.userId,
+        action: "booking_pay_link",
+        detail: { pendingId: row.id },
+        confirmed: true,
+      });
+      return {
+        ok: true,
+        message:
+          "When you've paid, forward the ticket/receipt or say done. Amilo never enters UPI or card details.",
+      };
+    }
+
+    if (row.kind === "booking_otp" || row.kind === "booking_select") {
+      return {
+        ok: false,
+        message:
+          row.kind === "booking_otp"
+            ? "Send the one-time code from your phone (digits only), or cancel."
+            : "Send your picks (e.g. Milk 3; Cheese A), or cancel.",
+      };
+    }
+
     if (row.kind === "email_draft" || row.kind === "email_send") {
       if (!cfg) throw new Error("Google OAuth not configured");
       const accountLabel = str(payload.accountLabel, "personal");
