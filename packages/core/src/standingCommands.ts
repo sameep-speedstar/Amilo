@@ -213,6 +213,12 @@ export function parseScheduleDayQuery(text: string): "today" | "tomorrow" | null
   const wantsToday = /\btoday\b/.test(t);
   if (wantsTomorrow === wantsToday) return null; // neither or both
 
+  // Create / hold / invite — not a "what's on my calendar" query.
+  if (/\b(block|book|add|create|invite|put|fix)\b/.test(t)) return null;
+  if (/\bschedule\s+(?:a|an|the|me|my)?\s*(meeting|call|lunch|event|appointment|invite)\b/.test(t)) {
+    return null;
+  }
+
   // "scheduled" without asking for the schedule itself → leave to brain
   if (/\bscheduled\b/.test(t) && !/\b(my\s+)?(schedule|calendar|agenda|plan)\b/.test(t)) {
     return null;
@@ -311,6 +317,19 @@ export function parseCommitmentCloseCommand(
     return { status: "done", titleHint: mark[1].trim() };
   }
   return null;
+}
+
+/** connect google / reconnect gmail personal */
+export function parseConnectGoogleCommand(
+  text: string,
+): { kind: "connect" | "reconnect"; rawLabel: string | null } | null {
+  const t = normalizeCommandText(text);
+  const m = t.match(/^(?:please\s+)?(re)?connect\s+(?:google|gmail)(?:\s+(\S+))?$/);
+  if (!m) return null;
+  return {
+    kind: m[1] ? "reconnect" : "connect",
+    rawLabel: m[2]?.trim() || null,
+  };
 }
 
 export function isGoogleListCommand(text: string): boolean {

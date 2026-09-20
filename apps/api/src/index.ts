@@ -529,7 +529,7 @@ function orchestratorDeps(): OrchestratorDeps {
     },
     listGoogleAccounts: async (userId) => {
       const rows = await listGoogleAccounts(db, userId);
-      return rows.map((r) => ({ label: r.label, email: r.email }));
+      return rows.map((r) => ({ label: r.label, email: r.email, scopes: r.scopes }));
     },
     disconnectGoogle: async (userId, label) => {
       const r =

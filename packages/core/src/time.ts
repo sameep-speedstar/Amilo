@@ -230,6 +230,13 @@ export function parseCalendarCreateHint(
   startClock = { hour: resolved.hour, minute: resolved.minute };
 
   let title = text
+    .replace(/\b(?:can|could|would|will)\s+you\b/gi, "")
+    .replace(/\b(?:please|kindly)\b/gi, "")
+    // "block Sameep Bansal's calendar for …" — whose calendar, not the title
+    .replace(
+      /\b((?:[A-Za-z][A-Za-z.'-]+\s+){0,2}[A-Za-z][A-Za-z.'-]+?)(?:'s|s)?\s+calendar(?:\s+for)?\b/gi,
+      "",
+    )
     // Instruction verbs — not part of the event title
     .replace(
       /^(?:please\s+)?(?:add|schedule|book|create|put|block|invite|send|fix)\s+(?:a\s+|an\s+|me\s+)?/i,
@@ -262,11 +269,13 @@ export function parseCalendarCreateHint(
     .replace(/\bat\s+that\s+place\b/gi, "")
     .replace(/https?:\/\/\S+/gi, "")
     .replace(/\bon\s+(?:personal|work|excro|speedstar)\b/gi, "")
+    .replace(/\b(?:ist|india(?:n)? standard time)\b/gi, "")
     // "calendar for/on/at …" is scaffolding, not a title
     .replace(/^(?:the\s+)?calendar(?:\s+(?:for|on|at|to))?\b/i, "")
     .replace(/\b(?:in the morning|in the evening|in the afternoon)\b/gi, "")
     .replace(/\b(?:we have to|i have to|have to|need to|going to|go to)\b/gi, "")
     .replace(/\b(?:play)\b/gi, "")
+    .replace(/^(?:for|on)\s+/i, "")
     // "of/for daughter" → keep as "daughter" phrasing; normalize pickup wording later
     .replace(/\s+/g, " ")
     .replace(/^[\s,.\-–—]+|[\s,.\-–—]+$/g, "")
@@ -293,8 +302,8 @@ export function parseCalendarCreateHint(
       .replace(/\bdrop[\s-]?off\b/gi, "Drop-off")
       .replace(/\bdropoff\b/gi, "Drop-off");
   }
-  // Bare leftovers after "block calendar for tomorrow 10am"
-  if (!title || /^(calendar|for|on|at|the|a|an|event|from|to|another)$/i.test(title)) {
+  // Bare leftovers after "block calendar for tomorrow 10am" / "block it"
+  if (!title || /^(calendar|for|on|at|the|a|an|event|from|to|another|it|that|this)$/i.test(title)) {
     title = /\bblock\b/i.test(message) ? "Busy" : "Event";
   }
   // Title-case short activity phrases ("school pickup of daughter")
@@ -323,6 +332,34 @@ export function parseCalendarCreateHint(
     startIso: start.toISOString(),
     endIso: end.toISOString(),
   };
+}
+
+/**
+ * "Block it" / "block that" after a prior hold request — reuse the last
+ * parseable calendar-create line from chat instead of titling the event "It".
+ */
+export function mergeCalendarFollowUp(
+  text: string,
+  recentChat: string | null | undefined,
+  timeZone: string,
+  now: Date = new Date(),
+): string {
+  const t = text.trim();
+  if (
+    !/^(?:(?:ok|okay|yes|sure|please|yeah|yep)\s+)*block(?:\s+(?:it|that|this|the\s+slot))?\.?$/i.test(
+      t,
+    )
+  ) {
+    return t;
+  }
+  if (!recentChat?.trim()) return t;
+  const lines = recentChat.split(/\n/).reverse();
+  for (const line of lines) {
+    const body = line.replace(/^(?:User|Amilo):\s*/i, "").trim();
+    if (!body || body === t) continue;
+    if (parseCalendarCreateHint(body, timeZone, now)) return body;
+  }
+  return t;
 }
 
 /** "from 12 to 2 PM" / "10-11am" → start+end clocks with shared meridiem inference. */

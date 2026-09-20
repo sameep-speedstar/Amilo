@@ -24,6 +24,8 @@ describe("pending intent routing", () => {
     );
     assert.equal(looksLikeNewActionIntent("show draft", "Asia/Kolkata"), false);
     assert.equal(looksLikeNewActionIntent("send", "Asia/Kolkata"), false);
+    assert.equal(looksLikeNewActionIntent("reconnect google personal", "Asia/Kolkata"), true);
+    assert.equal(looksLikeNewActionIntent("Connect google speedstar", "Asia/Kolkata"), true);
   });
 
   it("does not treat chatter or yes/cancel as new intents", () => {

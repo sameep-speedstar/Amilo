@@ -53,6 +53,12 @@ Pickup Point: Kolhapur Bypass
     );
     const names = extractInviteeNames("send calendar invite to Rajeev for tomorrow 3pm");
     assert.ok(names.some((n) => /rajeev/i.test(n)));
+    const hold = extractInviteeNames(
+      "block sameep bansals calendar for dental appointment tomorrow 1-4 pm",
+    );
+    assert.ok(hold.some((n) => /sameep/i.test(n)));
+    const fwd = extractInviteeNames("And forward to sameep bansal as well");
+    assert.ok(fwd.some((n) => /sameep/i.test(n)));
   });
 
   it("parses flight e-ticket forward", () => {

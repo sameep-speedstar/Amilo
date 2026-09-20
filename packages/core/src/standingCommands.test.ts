@@ -17,6 +17,7 @@ import {
   parseScheduleDayQuery,
   parseWaitingOnCommand,
   isGoogleListCommand,
+  parseConnectGoogleCommand,
   parseDisconnectGoogleCommand,
   parseSyncCommand,
   parseMailLookup,
@@ -109,6 +110,12 @@ describe("standing commands", () => {
     // specific "scheduled" questions stay with the brain
     assert.equal(parseScheduleDayQuery("is the GVP meeting scheduled tomorrow?"), null);
     assert.equal(parseScheduleDayQuery("help"), null);
+    assert.equal(
+      parseScheduleDayQuery(
+        "Ok can you block sameep bansals calendar for dental appointment tomorrow 1-4 pm ist",
+      ),
+      null,
+    );
   });
 
   it("recognizes google list phrasing", () => {
@@ -117,6 +124,22 @@ describe("standing commands", () => {
     assert.equal(isGoogleListCommand("Which google account os is connected?"), true);
     assert.equal(isGoogleListCommand("which 3 accounts"), true);
     assert.equal(isGoogleListCommand("book google meet"), false);
+  });
+
+  it("parses connect / reconnect google", () => {
+    assert.deepEqual(parseConnectGoogleCommand("Reconnect google personal"), {
+      kind: "reconnect",
+      rawLabel: "personal",
+    });
+    assert.deepEqual(parseConnectGoogleCommand("Connect google speedstar"), {
+      kind: "connect",
+      rawLabel: "speedstar",
+    });
+    assert.deepEqual(parseConnectGoogleCommand("reconnect google"), {
+      kind: "reconnect",
+      rawLabel: null,
+    });
+    assert.equal(parseConnectGoogleCommand("connect me later"), null);
   });
 
   it("parses disconnect / sync", () => {

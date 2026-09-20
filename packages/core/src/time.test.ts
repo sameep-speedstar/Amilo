@@ -10,6 +10,7 @@ import {
   isInQuietHours,
   localDayBoundsUtc,
   parseCalendarCreateHint,
+  mergeCalendarFollowUp,
   parseClockToken,
   parseReminderMessage,
   isReminderAsk,
@@ -304,5 +305,41 @@ describe("timezone helpers", () => {
     );
     assert.ok(hint);
     assert.equal(hint!.title, "Meeting with Vivek");
+  });
+
+  it("parses block someone else's calendar for a dental hold 1–4pm", () => {
+    const now = new Date("2026-09-20T14:16:00.000Z");
+    const hint = parseCalendarCreateHint(
+      "Ok can you block sameep bansals calendar for dental appointment tomorrow 1-4 pm ist",
+      "Asia/Kolkata",
+      now,
+    );
+    assert.ok(hint);
+    assert.match(hint!.title, /dental/i);
+    assert.doesNotMatch(hint!.title, /sameep|calendar|\bit\b/i);
+    assert.equal(
+      formatLocalWhenFriendly(new Date(hint!.startIso), "Asia/Kolkata"),
+      "Monday 21 September · 1:00 pm",
+    );
+    assert.equal(
+      formatLocalWhenFriendly(new Date(hint!.endIso), "Asia/Kolkata"),
+      "Monday 21 September · 4:00 pm",
+    );
+  });
+
+  it("reuses the prior hold when the user says Block it", () => {
+    const now = new Date("2026-09-20T14:17:00.000Z");
+    const prior =
+      "Ok can you block sameep bansals calendar for dental appointment tomorrow 1-4 pm ist";
+    const merged = mergeCalendarFollowUp(
+      "Block it",
+      `User: ${prior}\nAmilo: Tomorrow: nothing on the calendar yet.`,
+      "Asia/Kolkata",
+      now,
+    );
+    assert.equal(merged, prior);
+    const hint = parseCalendarCreateHint(merged, "Asia/Kolkata", now);
+    assert.ok(hint);
+    assert.match(hint!.title, /dental/i);
   });
 });

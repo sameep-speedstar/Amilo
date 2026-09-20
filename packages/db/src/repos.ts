@@ -941,6 +941,18 @@ export async function resolvePersonEmail(
       return { label: n.label, email: emailRaw };
     }
   }
+  const seeds: Array<{ needles: string[]; label: string; email: string }> = [
+    { needles: ["sameep", "sameepbansal"], label: "Sameep", email: "sameep@speedstar.ai" },
+  ];
+  for (const seed of seeds) {
+    if (
+      seed.needles.some(
+        (n) => needle === n || (needle.length >= 5 && (needle.startsWith(n) || n.startsWith(needle))),
+      )
+    ) {
+      return { label: seed.label, email: seed.email };
+    }
+  }
   return null;
 }
 

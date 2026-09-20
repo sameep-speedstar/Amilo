@@ -358,6 +358,7 @@ export function extractInviteeNames(message: string): string[] {
     /\b(?:to|with)\s+([A-Z][a-zA-Z.'-]{1,40})(?:\s+(?:for|on|at|tomorrow|today)\b|[.,]|$)/i,
     /\bcalendar invite (?:to|for)\s+([A-Z][a-zA-Z.'-]{1,40})\b/i,
     /\bsend (?:a )?(?:calendar )?invite to\s+([A-Z][a-zA-Z.'-]{1,40})\b/i,
+    /\bforward(?:\s+it)?\s+to\s+([A-Za-z][A-Za-z.'-]+(?:\s+[A-Za-z][A-Za-z.'-]+)?)\b/i,
   ];
   for (const re of patterns) {
     const m = message.match(re);
@@ -368,15 +369,27 @@ export function extractInviteeNames(message: string): string[] {
       }
     }
   }
+  const holdWho = message.match(
+    /\bblock\s+([A-Za-z][A-Za-z.'-]+(?:\s+[A-Za-z][A-Za-z.'-]+)?)\s+calendar\b/i,
+  );
+  if (holdWho?.[1]) {
+    const n = holdWho[1].trim().replace(/s$/i, "");
+    if (!/^(it|that|this|the|my|your|his|her|our)$/i.test(n)) {
+      names.push(n.replace(/\b\w/g, (c) => c.toUpperCase()));
+    }
+  }
   // Lowercase "rajeev" / "rajiv" still count
   const lower = message.match(
     /\b(?:invite|to|with)\s+(rajeev|rajiv)\b/i,
   );
   if (lower?.[1]) {
-    const canon = lower[1].toLowerCase() === "rajiv" ? "Rajeev" : "Rajeev";
+    const canon = "Rajeev";
     if (!names.some((n) => n.toLowerCase() === canon.toLowerCase())) {
       names.push(canon);
     }
+  }
+  if (/\bsameep(?:\s+bansal)?\b/i.test(message) && !names.some((n) => /sameep/i.test(n))) {
+    names.push("Sameep");
   }
   return [...new Set(names.map((n) => n.trim()).filter(Boolean))];
 }

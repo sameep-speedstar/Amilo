@@ -74,6 +74,7 @@ import {
   parseScheduleDayQuery,
   parseWaitingOnCommand,
   isGoogleListCommand,
+  parseConnectGoogleCommand,
   parseDisconnectGoogleCommand,
   parseSyncCommand,
   parseMailLookup,
@@ -109,6 +110,7 @@ import {
   isReminderAsk,
   localDayBoundsUtc,
   parseCalendarCreateHint,
+  mergeCalendarFollowUp,
   parseHmInput,
   parseIsoDate,
   parseReminderMessage,
@@ -454,7 +456,7 @@ export interface OrchestratorDeps {
   getGoogleAuthUrl?: (userId: string, label: string) => Promise<string | null>;
   listGoogleAccounts?: (
     userId: string,
-  ) => Promise<Array<{ label: string; email: string | null }>>;
+  ) => Promise<Array<{ label: string; email: string | null; scopes?: string }>>;
   disconnectGoogle?: (
     userId: string,
     label: string | "all",
@@ -727,7 +729,12 @@ export function looksLikeNewActionIntent(
   if (/\b(send|draft)\b/i.test(t) && /\b(email|mail|invite)\b/i.test(t)) return true;
   if (/\bcalendar invite\b/i.test(t)) return true;
   if (/\binvite\b/i.test(t) && /@|\bspeedstar\b|\brajeev\b|\brajiv\b/i.test(t)) return true;
-  if (isGoogleListCommand(t) || parseDisconnectGoogleCommand(t) || parseSyncCommand(t)) {
+  if (
+    isGoogleListCommand(t) ||
+    parseConnectGoogleCommand(t) ||
+    parseDisconnectGoogleCommand(t) ||
+    parseSyncCommand(t)
+  ) {
     return true;
   }
   if (parseMailLookup(t) || isLookbackOnlyMessage(t) || isBriefRequest(t)) return true;
@@ -890,6 +897,63 @@ function emailDraftMessages(payload: Record<string, unknown>, mode: "draft" | "s
   ];
 }
 
+async function gmailSendFailOrGeneric(
+  userId: string,
+  message: string,
+  deps: OrchestratorDeps,
+  payload: Record<string, unknown>,
+): Promise<OutboundMessage[]> {
+  if (!/Gmail send isn't authorized/i.test(message) || !deps.getGoogleAuthUrl) {
+    return [{ text: `Couldn't complete: ${message}` }];
+  }
+  const lead = await gmailSendAuthLeadIn(userId, deps, payload);
+  if (lead) return [lead];
+  return [{ text: `Couldn't complete: ${message}` }];
+}
+
+function accountHasGmailSend(scopes?: string): boolean {
+  return Boolean(scopes && /gmail\.send/i.test(scopes));
+}
+
+async function gmailSendAuthLeadIn(
+  userId: string,
+  deps: OrchestratorDeps,
+  payload: Record<string, unknown>,
+): Promise<OutboundMessage | null> {
+  if (!deps.getGoogleAuthUrl) return null;
+  const label = normalizeGoogleLabel(String(payload.accountLabel ?? "personal"));
+  let needsGrant = true;
+  if (deps.listGoogleAccounts) {
+    const accounts = await deps.listGoogleAccounts(userId);
+    const acct = accounts.find((a) => a.label === label) ?? accounts[0];
+    if (acct && accountHasGmailSend(acct.scopes)) needsGrant = false;
+  }
+  if (!needsGrant) return null;
+  const url = await deps.getGoogleAuthUrl(userId, label);
+  if (!url) return null;
+  return {
+    text: [
+      "Gmail send isn't authorized on this Google link yet.",
+      `Tap to grant Send email as “${label}”:`,
+      "",
+      url,
+      "",
+      "After Google says connected, reply yes again to send the draft.",
+    ].join("\n"),
+  };
+}
+
+async function withGmailSendAuthNotice(
+  userId: string,
+  deps: OrchestratorDeps,
+  payload: Record<string, unknown>,
+  messages: OutboundMessage[],
+): Promise<OutboundMessage[]> {
+  if (isDraftOnlyPayload(payload)) return messages;
+  const lead = await gmailSendAuthLeadIn(userId, deps, payload);
+  return lead ? [lead, ...messages] : messages;
+}
+
 async function proposeEmailComposePending(
   msg: InboundMessage,
   deps: OrchestratorDeps,
@@ -924,7 +988,12 @@ async function proposeEmailComposePending(
   if (to && deps.rememberContactEmail && ask.toHint && !ask.toHint.includes("@")) {
     await deps.rememberContactEmail(msg.userId, { label: ask.toHint, email: to });
   }
-  return emailDraftMessages(payload, ask.mode);
+  return withGmailSendAuthNotice(
+    msg.userId,
+    deps,
+    payload,
+    emailDraftMessages(payload, ask.mode),
+  );
 }
 
 /** Apply "edit …" patches to a pending payload (email to/subject, calendar title). */
@@ -1322,7 +1391,8 @@ export async function handleInbound(
           return [{ text: `Need ${who}'s email before I can send.` }];
         }
         const r = await deps.confirmPending(msg.userId);
-        return [{ text: r.ok ? r.message : `Couldn't complete: ${r.message}` }];
+        if (r.ok) return [{ text: r.message }];
+        return gmailSendFailOrGeneric(msg.userId, r.message, deps, openPending.payload);
       }
     }
     const affirm = isCancelKind
@@ -1348,7 +1418,8 @@ export async function handleInbound(
         ];
       }
       const r = await deps.confirmPending(msg.userId);
-      return [{ text: r.ok ? r.message : `Couldn't complete: ${r.message}` }];
+      if (r.ok) return [{ text: r.message }];
+      return gmailSendFailOrGeneric(msg.userId, r.message, deps, openPending.payload);
     }
     const wantAlternate =
       (openPending.kind === "calendar_create" || isConflictKind) &&
@@ -1502,7 +1573,8 @@ export async function handleInbound(
       Boolean(parsePlaceSetCommands(text).length) ||
       isPlacesListCommand(text) ||
       Boolean(parseOriginCorrection(text)) ||
-      Boolean(parseCommitmentCloseCommand(text));
+      Boolean(parseCommitmentCloseCommand(text)) ||
+      Boolean(parseConnectGoogleCommand(text));
     if (inspectOnly) {
       // fall through
     } else if (looksLikeNewActionIntent(text, tzForPending.timezone)) {
@@ -2207,33 +2279,30 @@ export async function handleInbound(
     return replyGoogleList(msg.userId, deps);
   }
 
-  const connectMatch = lower.match(
-    /^(?:connect google|connect gmail|reconnect google|reconnect gmail)(?:\s+(\S+))?$/,
-  );
-  if (connectMatch) {
+  const connectCmd = parseConnectGoogleCommand(text);
+  if (connectCmd) {
     if (!deps.getGoogleAuthUrl) {
       return [{ text: "Google connect isn't configured on this server yet." }];
     }
-    let label = connectMatch[1] ? normalizeGoogleLabel(connectMatch[1]) : "";
+    let label = connectCmd.rawLabel ? normalizeGoogleLabel(connectCmd.rawLabel) : "";
     if (!label) {
       const existing = deps.listGoogleAccounts
         ? await deps.listGoogleAccounts(msg.userId)
         : [];
-      if (existing.some((a) => a.label === "personal")) {
+      if (connectCmd.kind === "connect" && existing.some((a) => a.label === "personal")) {
         return [
           {
             text: [
               "You already have a personal Google link.",
-              "Add another with a label, e.g.:",
-              "  connect google work",
-              "  connect google speedstar",
+              "Reconnect it (grants send if missing): reconnect google personal",
+              "Or add another: connect google work",
               "",
-              'See linked accounts: google',
+              "See linked accounts: google",
             ].join("\n"),
           },
         ];
       }
-      label = "personal";
+      label = existing[0]?.label || "personal";
     }
     const url = await deps.getGoogleAuthUrl(msg.userId, label);
     if (!url) {
@@ -2246,12 +2315,13 @@ export async function handleInbound(
     return [
       {
         text: [
-          `Tap to connect Gmail + Calendar as “${label}” (read-only for now):`,
+          connectCmd.kind === "reconnect"
+            ? `Tap to reconnect Gmail + Calendar as “${label}” (must allow Send email):`
+            : `Tap to connect Gmail + Calendar as “${label}” (read, send, calendar):`,
           "",
           url,
           "",
-          "Pick the right Google account in the browser. After connect, send sync or brief.",
-          "Add more later with: connect google <other-label>",
+          "Pick the right Google account in the browser. After connect, reply yes if a draft is waiting, or send sync.",
         ].join("\n"),
       },
     ];
@@ -2873,7 +2943,11 @@ export async function handleInbound(
 
   // Calendar invite by name — resolve stored email, propose calendar_create (not email draft).
   {
-    const calText = mergeLifeOpsIntoCalendarText(text, recentChatSummary);
+    const calText = mergeCalendarFollowUp(
+      mergeLifeOpsIntoCalendarText(text, recentChatSummary),
+      recentChatSummary,
+      briefCtx.timezone,
+    );
     if (deps.createPending && isCalendarInviteIntent(calText)) {
       const hint = parseCalendarCreateHint(calText, briefCtx.timezone);
       if (hint) {
@@ -2925,7 +2999,11 @@ export async function handleInbound(
 
   // Standing calendar block / meeting (before brain — avoids wrong "tomorrow" invents).
   if (deps.createPending) {
-    const calText = mergeLifeOpsIntoCalendarText(text, recentChatSummary);
+    const calText = mergeCalendarFollowUp(
+      mergeLifeOpsIntoCalendarText(text, recentChatSummary),
+      recentChatSummary,
+      briefCtx.timezone,
+    );
     const hint = parseCalendarCreateHint(calText, briefCtx.timezone);
     if (hint) {
       const diningCtx = extractLifeOpsDiningContext(recentChatSummary, calText);
@@ -2933,16 +3011,23 @@ export async function handleInbound(
         (await resolveCalendarLocation(msg.userId, calText, deps)) ??
         diningCtx?.venue ??
         null;
+      const attendees = await resolveAttendeesFromMessage(msg.userId, calText, deps);
+      const withName = extractInviteeNames(calText)[0];
       const title =
         diningCtx?.venue && /^(busy|event|meeting|calendar)$/i.test(hint.title.trim())
           ? `${diningCtx.vibe === "pub" ? "Drinks" : "Dinner"} at ${diningCtx.venue}`
-          : hint.title;
+          : hint.title && !/^(busy|event)$/i.test(hint.title) && !/^it$/i.test(hint.title)
+            ? hint.title
+            : withName
+              ? `Meeting with ${withName}`
+              : hint.title;
       return proposeCalendarCreatePending(msg, deps, briefCtx.timezone, {
         title,
         start: hint.startIso,
         end: hint.endIso,
         startIso: hint.startIso,
         endIso: hint.endIso,
+        ...(attendees.length ? { attendees } : {}),
         ...(location ? { location } : {}),
       });
     }
@@ -3448,7 +3533,12 @@ export async function handleInbound(
       });
 
       if (kind === "email_draft") {
-        return emailDraftMessages(payload, emailDraftMode(payload, parseEmailComposeAsk(text)));
+        return withGmailSendAuthNotice(
+          msg.userId,
+          deps,
+          payload,
+          emailDraftMessages(payload, emailDraftMode(payload, parseEmailComposeAsk(text))),
+        );
       }
 
       if (kind === "life_ops_research" || kind === "life_ops_handoff") {
