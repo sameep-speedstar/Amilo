@@ -48,6 +48,20 @@ describe("extractJson / interpretFromModelText", () => {
     assert.match(parsed.intent.text, /Saiyaara/);
   });
 
+  it("does not treat [[1]] footnotes as the brain payload", () => {
+    const prose = `**Hindi movies this week:**
+- **Mirzapur: The Movie** at PVR.[[1]](https://timesofindia.indiatimes.com/x)
+- **Toxic** at INOX.[[1]](https://example.com)
+Want showtimes near Arekere?`;
+    assert.throws(() => extractJson(prose));
+    const r = interpretFromModelText(prose);
+    assert.equal(r.intent.type, "reply_text");
+    if (r.intent.type === "reply_text") {
+      assert.match(r.intent.text, /Mirzapur/);
+      assert.notEqual(r.intent.text, "Got it.");
+    }
+  });
+
   it("falls back to prose as reply_text", () => {
     const r = interpretFromModelText(
       "Near L&T South City: 1. URU Brewpark 2. The Pump House. Want timings?",

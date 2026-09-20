@@ -2654,6 +2654,7 @@ export async function handleInbound(
     recentMail: briefCtx.recentMail,
     googleAccountsSummary,
     ...(mailWorkingSetText ? { mailWorkingSet: mailWorkingSetText } : {}),
+    ...(msg.imageDataUrl ? { imageDataUrl: msg.imageDataUrl } : {}),
   };
 
   let result = await deps.brain.interpret(interpretCtx, text);

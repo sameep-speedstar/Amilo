@@ -1116,6 +1116,7 @@ async function processInbound(rawJson: unknown): Promise<void> {
     let replyToContent: string | undefined;
     let replyToDirection: "in" | "out" | undefined;
     let replyToScheduled: string | undefined;
+    let replyToMediaId: string | undefined;
     if (parsed.replyToMessageId) {
       const prior = await findMessageByWaId(db, user.id, parsed.replyToMessageId);
       if (prior) {
@@ -1124,6 +1125,10 @@ async function processInbound(rawJson: unknown): Promise<void> {
         const scheduled = prior.meta?.scheduled;
         if (scheduled === "morning" || scheduled === "evening") {
           replyToScheduled = scheduled;
+        }
+        const mediaId = prior.meta?.mediaId;
+        if (typeof mediaId === "string" && mediaId.trim()) {
+          replyToMediaId = mediaId.trim();
         }
       }
     }
@@ -1137,11 +1142,69 @@ async function processInbound(rawJson: unknown): Promise<void> {
       meta: {
         waMessageId: parsed.messageId,
         ...(parsed.replyToMessageId ? { replyToMessageId: parsed.replyToMessageId } : {}),
+        ...(parsed.mediaId ? { mediaId: parsed.mediaId } : {}),
       },
     });
 
     let content = parsed.content;
     let voiceHeard: string | null = null;
+    let imageDataUrl: string | undefined;
+
+    const wabaCfg = {
+      accessToken: settings.wabaAccessToken,
+      phoneNumberId: settings.wabaPhoneNumberId,
+      appSecret: settings.wabaAppSecret,
+    };
+
+    const toImageDataUrl = async (mediaId: string): Promise<string> => {
+      const { bytes, mimeType } = await downloadWhatsAppMedia(wabaCfg, mediaId);
+      const mime = mimeType.startsWith("image/") ? mimeType : "image/jpeg";
+      // Cap ~4MB raw to keep Responses payloads sane
+      if (bytes.length > 4_000_000) {
+        throw new Error("image too large");
+      }
+      return `data:${mime};base64,${bytes.toString("base64")}`;
+    };
+
+    if (parsed.kind === "image") {
+      if (!parsed.mediaId) {
+        await sendAndLogOutbound(user.id, {
+          text: "Couldn't read that image — try again, or describe it in text.",
+        });
+        continue;
+      }
+      try {
+        imageDataUrl = await toImageDataUrl(parsed.mediaId);
+        if (!content || content === "[image]") {
+          content = "What do you see in this image? Summarize the key point.";
+        }
+      } catch (err) {
+        console.error(
+          JSON.stringify({
+            event: "image_pipeline_failed",
+            userId: user.id,
+            error: err instanceof Error ? err.message : String(err),
+          }),
+        );
+        await sendAndLogOutbound(user.id, {
+          text: "Couldn't download that image — try again, or describe it in text.",
+        });
+        continue;
+      }
+    } else if (replyToMediaId) {
+      // User quoted a prior image (e.g. chart) — re-attach for vision.
+      try {
+        imageDataUrl = await toImageDataUrl(replyToMediaId);
+      } catch (err) {
+        console.error(
+          JSON.stringify({
+            event: "reply_image_attach_failed",
+            userId: user.id,
+            error: err instanceof Error ? err.message : String(err),
+          }),
+        );
+      }
+    }
 
     if (parsed.kind === "voice") {
       if (!parsed.mediaId) {
@@ -1157,14 +1220,7 @@ async function processInbound(rawJson: unknown): Promise<void> {
         continue;
       }
       try {
-        const { bytes } = await downloadWhatsAppMedia(
-          {
-            accessToken: settings.wabaAccessToken,
-            phoneNumberId: settings.wabaPhoneNumberId,
-            appSecret: settings.wabaAppSecret,
-          },
-          parsed.mediaId,
-        );
+        const { bytes } = await downloadWhatsAppMedia(wabaCfg, parsed.mediaId);
         const result = await processVoiceNote(bytes, {
           apiKey: settings.sarvamApiKey,
           model: settings.sarvamModel,
@@ -1219,11 +1275,12 @@ async function processInbound(rawJson: unknown): Promise<void> {
     const inbound: InboundMessage = {
       userId: user.id,
       channel: "whatsapp",
-      kind: parsed.kind === "voice" ? "text" : parsed.kind,
+      kind: parsed.kind === "voice" || parsed.kind === "image" ? "text" : parsed.kind,
       content,
       messageId: parsed.messageId,
       ts: parsed.timestamp,
       ...(parsed.mediaId ? { mediaRef: parsed.mediaId } : {}),
+      ...(imageDataUrl ? { imageDataUrl } : {}),
       ...(parsed.replyToMessageId ? { replyToMessageId: parsed.replyToMessageId } : {}),
       ...(replyToContent ? { replyToContent } : {}),
       ...(replyToDirection ? { replyToDirection } : {}),
@@ -1239,6 +1296,7 @@ async function processInbound(rawJson: unknown): Promise<void> {
         chars: content.length,
         brain: brainLabel,
         ...(voiceHeard ? { transcript: voiceHeard.slice(0, 120) } : {}),
+        ...(imageDataUrl ? { image: true } : {}),
         ...(parsed.replyToMessageId ? { replyTo: parsed.replyToMessageId } : {}),
         ...(replyToScheduled ? { replyToScheduled } : {}),
         ...(replyToContent ? { replyToChars: replyToContent.length } : {}),

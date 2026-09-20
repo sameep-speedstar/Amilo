@@ -5,7 +5,7 @@ export interface ParsedWhatsAppMessage {
   waId: string;
   /** E.164 with leading +. */
   phoneE164: string;
-  kind: "text" | "voice" | "button";
+  kind: "text" | "voice" | "button" | "image";
   content: string;
   mediaId?: string;
   messageId: string;
@@ -112,6 +112,7 @@ function normalizeMessage(
       list_reply?: { id?: string; title?: string };
     };
     audio?: { id?: string };
+    image?: { id?: string; caption?: string };
   },
   profileName?: string,
 ): ParsedWhatsAppMessage | null {
@@ -156,6 +157,16 @@ function normalizeMessage(
         kind: "voice",
         content: "[voice note]",
         mediaId: msg.audio.id,
+      };
+    }
+    case "image": {
+      if (!msg.image?.id) return null;
+      const caption = msg.image.caption?.trim();
+      return {
+        ...base,
+        kind: "image",
+        content: caption || "[image]",
+        mediaId: msg.image.id,
       };
     }
     default:

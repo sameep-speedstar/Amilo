@@ -102,6 +102,8 @@ export interface BrainUserContext {
    * follow-ups (action points, reply, schedule). Empty = honest none.
    */
   mailWorkingSet?: string;
+  /** Optional image attached this turn (data URL) — charts, screenshots, etc. */
+  imageDataUrl?: string;
 }
 
 export interface BrainPort {

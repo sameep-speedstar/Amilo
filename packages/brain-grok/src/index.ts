@@ -106,9 +106,13 @@ function sliceBalanced(raw: string, openIdx: number): string | null {
 
 function isUsefulBrainJson(parsed: unknown): boolean {
   if (Array.isArray(parsed)) {
-    // Skip web_search citation footnotes like [1] / [1,2]
-    if (parsed.length > 0 && parsed.every((x) => typeof x === "number")) return false;
-    return parsed.every((x) => x !== null && typeof x === "object");
+    // Skip web_search citation footnotes: [1], [1,2], [[1]], [[1],[2]]
+    const isNumFootnote = (x: unknown): boolean =>
+      typeof x === "number" ||
+      (Array.isArray(x) && x.length > 0 && x.every((y) => typeof y === "number"));
+    if (parsed.length > 0 && parsed.every(isNumFootnote)) return false;
+    // Triage / borderline: array of objects only
+    return parsed.every((x) => x !== null && typeof x === "object" && !Array.isArray(x));
   }
   return parsed !== null && typeof parsed === "object";
 }
@@ -166,28 +170,78 @@ export function extractJson<T>(text: string): T {
   throw new Error("Grok brain returned no JSON");
 }
 
+/** Strip citation footnotes / JSON blobs to recover readable prose for WA. */
+export function extractProseCandidate(text: string): string {
+  let t = text
+    .replace(/```(?:json)?\s*[\s\S]*?```/g, " ")
+    .replace(/\[\[[0-9,\s]+\]\](?:\([^)]*\))?/g, "")
+    .replace(/\[([0-9,\s]+)\](?:\([^)]*\))?/g, "")
+    .replace(/https?:\/\/\S+/g, (url) => url.replace(/[),.]+$/, ""));
+  // Drop a trailing/leading intent JSON object if present
+  const intentAt = t.search(/\{\s*"intent"\s*:/);
+  if (intentAt >= 0) {
+    const before = t.slice(0, intentAt).trim();
+    const afterBrace = t.slice(intentAt);
+    const slice = sliceBalanced(afterBrace, 0);
+    const after = slice ? afterBrace.slice(slice.length).trim() : "";
+    t = [before, after].filter(Boolean).join("\n");
+  }
+  return t
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .replace(/[^\S\n]{2,}/g, " ")
+    .trim()
+    .slice(0, 900);
+}
+
+function isWeakReplyText(text: string): boolean {
+  const t = text.trim();
+  if (!t || t === "Got it." || /^Got it\b/i.test(t)) return true;
+  if (isLegacyStubReply(t)) return true;
+  return false;
+}
+
 /** Interpret path: parse contract JSON, or fall back to prose as reply_text. */
 export function interpretFromModelText(text: string): InterpretResult {
+  let interpreted: InterpretResult | undefined;
   try {
-    return normalizeInterpret(extractJson<unknown>(text));
+    interpreted = normalizeInterpret(extractJson<unknown>(text));
   } catch {
-    const cleaned = text
-      .replace(/```[\s\S]*?```/g, " ")
-      .replace(/^\s*(\[[0-9,\s]+\]\s*)+/gm, "")
-      .replace(/\s+/g, " ")
-      .trim()
-      .slice(0, 700);
-    if (cleaned.length >= 12) {
+    interpreted = undefined;
+  }
+
+  if (interpreted) {
+    const reply =
+      interpreted.intent.type === "reply_text" ? interpreted.intent.text.trim() : "";
+    const weak =
+      interpreted.intent.type === "noop" ||
+      (interpreted.intent.type === "reply_text" && isWeakReplyText(reply));
+    if (!weak) return interpreted;
+
+    const prose = extractProseCandidate(text);
+    if (prose.length >= 12 && !isLegacyStubReply(prose)) {
       console.error(
-        JSON.stringify({ event: "grok_prose_fallback", chars: cleaned.length }),
+        JSON.stringify({ event: "grok_prose_fallback", chars: prose.length, reason: "weak_json" }),
       );
       return normalizeInterpret({
-        intent: { type: "reply_text", text: cleaned },
-        graphUpdates: [],
+        intent: { type: "reply_text", text: prose },
+        graphUpdates: interpreted.graphUpdates ?? [],
       });
     }
-    throw new Error("Grok brain returned no JSON");
+    return interpreted;
   }
+
+  const prose = extractProseCandidate(text);
+  if (prose.length >= 12) {
+    console.error(
+      JSON.stringify({ event: "grok_prose_fallback", chars: prose.length, reason: "no_json" }),
+    );
+    return normalizeInterpret({
+      intent: { type: "reply_text", text: prose },
+      graphUpdates: [],
+    });
+  }
+  throw new Error("Grok brain returned no JSON");
 }
 
 function sanitizeGraphUpdates(raw: unknown): GraphUpdate[] {
@@ -354,13 +408,25 @@ async function responsesCompletion(
     user: string;
     previousResponseId?: string | null;
     webSearch?: boolean;
+    imageDataUrl?: string;
   },
 ): Promise<ResponsesResult> {
-  const input: Array<{ role: string; content: string }> = [];
+  type InputMsg = { role: string; content: string | Array<Record<string, unknown>> };
+  const input: InputMsg[] = [];
   if (opts.system && !opts.previousResponseId) {
     input.push({ role: "system", content: opts.system });
   }
-  input.push({ role: "user", content: opts.user });
+  if (opts.imageDataUrl) {
+    input.push({
+      role: "user",
+      content: [
+        { type: "input_text", text: opts.user },
+        { type: "input_image", image_url: opts.imageDataUrl },
+      ],
+    });
+  } else {
+    input.push({ role: "user", content: opts.user });
+  }
 
   const body: Record<string, unknown> = {
     model: cfg.model,
@@ -417,13 +483,16 @@ function buildSystemPrompt(docs: string): string {
     "- Never invent venues, showtimes, flight numbers, fares, or seats.",
     "- Never claim booked, paid, reserved, locked, ordered, or tickets held.",
     "- Browser / WhatsApp booking is OFF until partner APIs ship — end with a clear book link + one ask (e.g. Want showtimes near Arekere?).",
+    "- Format reply_text for WhatsApp: one short headline, then bulleted lines using '- ' (one option per line). No dense paragraph lists.",
     "- Rank options; stay WhatsApp-short (usually under ~700 chars). Lead with decision or next action.",
     "- When the user says they already booked (movie/table), propose_action calendar_create for that block (use realistic duration, e.g. film ~2h).",
     "- Upsert durable prefs into graphUpdates (Friday dinners, movies, pubs, area) — silent context for next turns.",
     "- Never return propose_action type life_ops_research — answer in reply_text with live findings.",
+    "- intent.text MUST contain the full answer (names, bullets). Never empty text / noop after search.",
+    "IMAGES: When an image is attached, read it (charts, screenshots, tickets). Answer from what is visible; say if unclear. Still return JSON with reply_text.",
     "For vendor call scripts after they pick a place (not a ticket purchase), propose_action {\"type\":\"life_ops_handoff\",...} is ok — still confirm-first; never claim reserved.",
     "graphUpdates: only durable facts; empty array if nothing new.",
-    "Reply text: short, concrete, ranked; usually under 500 characters for chat, up to ~700 for search results; no therapist mode; no sycophancy.",
+    "Reply text: short, concrete, ranked; usually under 500 characters for chat, up to ~700 for search results; use '- ' bullets for 2+ items; no therapist mode; no sycophancy.",
     "When the user asks to mute/ignore/hide mail matching a phrase, return propose_action with action {\"type\":\"mute\",\"pattern\":\"...\"} (do not only say muted in reply_text).",
     "When the user asks to be reminded at a time, return propose_action with action {\"type\":\"remind\",\"title\":\"...\",\"dueAt\":\"ISO-8601 UTC\"}. Prefer letting the orchestrator parse times. Timed reminders write a 1-minute calendar nudge at that instant (allowed to overlap meetings). Date-only reminders (no clock) get a 1-minute calendar nudge at 09:00 that day plus a separate WhatsApp after that morning's brief — not FOCUS.",
     "When the user asks to add/change/cancel a calendar event, return propose_action with action {\"type\":\"calendar_create\"|\"calendar_update\"|\"calendar_cancel\",\"accountLabel\":\"personal\",\"title\":\"clean event title only\",\"start\":\"ISO-8601 with correct year from Now line\",\"end\":\"ISO-8601\",\"eventId\":\"from Calendar today [id:…] if present\",\"attendees\":[\"email@…\"]}. Do NOT claim it was written — orchestrator will ask for yes/cancel. Prefer ISO with offset for the user timezone. For cancel/update always include eventId from Calendar today when available, and title matching the event.",
@@ -546,6 +615,7 @@ export function createGrokBrain(cfg: GrokBrainConfig): BrainPort {
 
     async interpret(ctx: BrainUserContext, message: string): Promise<InterpretResult> {
       const researchAsk = isLiveResearchAsk(message);
+      const hasImage = Boolean(ctx.imageDataUrl);
       const cleanCtx: BrainUserContext = {
         ...ctx,
         recentChatSummary: sanitizeRecentChat(ctx.recentChatSummary) ?? "none yet",
@@ -553,7 +623,7 @@ export function createGrokBrain(cfg: GrokBrainConfig): BrainPort {
       // Research asks: always start a fresh Responses thread so we never inherit the
       // Places-era system prompt or parrot BMS explore stubs from chat history.
       let previousId: string | null = null;
-      if (researchAsk && store) {
+      if ((researchAsk || hasImage) && store) {
         await store.set(ctx.userId, null);
       } else if (store) {
         previousId = await store.get(ctx.userId);
@@ -561,8 +631,10 @@ export function createGrokBrain(cfg: GrokBrainConfig): BrainPort {
 
       const userPayload = buildUserPayload(cleanCtx, message);
       const researchHint = researchAsk
-        ? "\n\nRESEARCH MODE: Use web_search. Name real films/venues from search. Never reply with only an explore/movies list URL stub."
-        : "";
+        ? "\n\nRESEARCH MODE: Use web_search. Name real films/venues from search. Put the FULL answer in intent.text as WhatsApp bullets ('- ' lines). Never empty text. Never reply with only an explore/movies list URL stub."
+        : hasImage
+          ? "\n\nIMAGE MODE: An image is attached. Read it carefully and answer in intent.text. If the user only sent the image, briefly say what you see and ask what they need."
+          : "";
 
       const run = async (prev: string | null, withSearch: boolean, payload: string) =>
         responsesCompletion(api, {
@@ -570,6 +642,7 @@ export function createGrokBrain(cfg: GrokBrainConfig): BrainPort {
           user: payload + researchHint,
           previousResponseId: prev,
           webSearch: withSearch || researchAsk,
+          ...(ctx.imageDataUrl ? { imageDataUrl: ctx.imageDataUrl } : {}),
         });
 
       let result: ResponsesResult;

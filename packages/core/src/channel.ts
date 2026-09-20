@@ -5,7 +5,7 @@ export type ChannelKind = "whatsapp" | "telegram" | "web";
 export interface InboundMessage {
   userId: string;
   channel: ChannelKind;
-  kind: "text" | "voice" | "button";
+  kind: "text" | "voice" | "button" | "image";
   content: string;
   mediaRef?: string;
   /** Upstream message id (e.g. WhatsApp wamid) for graph observation audit. */
@@ -18,6 +18,8 @@ export interface InboundMessage {
   replyToDirection?: "in" | "out";
   /** From message_log.meta.scheduled when the quoted outbound was a morning/evening brief. */
   replyToScheduled?: "morning" | "evening" | string;
+  /** data:image/...;base64,... when kind is image or reply-to resolves an image. */
+  imageDataUrl?: string;
   ts: Date;
 }
 
