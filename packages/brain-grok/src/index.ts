@@ -71,7 +71,9 @@ function loadDocs(brainDir: string): string {
 
 function extractJson<T>(text: string): T {
   const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/);
-  const raw = (fenced?.[1] ?? text).trim();
+  let raw = (fenced?.[1] ?? text).trim();
+  // Models sometimes wrap JSON in **bold**
+  raw = raw.replace(/^\*+/, "").replace(/\*+$/, "").trim();
   const start =
     raw.indexOf("{") >= 0 && (raw.indexOf("[") < 0 || raw.indexOf("{") < raw.indexOf("["))
       ? raw.indexOf("{")
@@ -304,13 +306,16 @@ function buildSystemPrompt(docs: string): string {
     "If the user only shared a durable fact, still reply with one short concrete ack (e.g. next useful question or a crisp confirmation) — do NOT perform memory ('as you told me').",
     "Never claim a Google write succeeded — and never say an event was cancelled/created/updated unless you returned propose_action (orchestrator confirms).",
     "LIFE OPS / SEARCH (movies, dining, pubs, flights, showtimes, 'what's on'):",
-    "- Use live web search. Prefer BookMyShow / Maps / airline / Zomato deep links.",
+    "- ALWAYS use live web search for these. Do not reuse prior Amilo stub replies from Recent chat.",
+    "- Never reply with only an explore/list URL like bookmyshow.com/explore/movies-… — name real titles/venues from search.",
+    "- Prefer BookMyShow / Maps / airline / Zomato deep links to specific titles or places.",
     "- Never invent venues, showtimes, flight numbers, fares, or seats.",
     "- Never claim booked, paid, reserved, locked, ordered, or tickets held.",
     "- Browser / WhatsApp booking is OFF until partner APIs ship — end with a clear book link + one ask (e.g. Want showtimes near Arekere?).",
     "- Rank options; stay WhatsApp-short (usually under ~700 chars). Lead with decision or next action.",
     "- When the user says they already booked (movie/table), propose_action calendar_create for that block (use realistic duration, e.g. film ~2h).",
     "- Upsert durable prefs into graphUpdates (Friday dinners, movies, pubs, area) — silent context for next turns.",
+    "- Never return propose_action type life_ops_research — answer in reply_text with live findings.",
     "For vendor call scripts after they pick a place (not a ticket purchase), propose_action {\"type\":\"life_ops_handoff\",...} is ok — still confirm-first; never claim reserved.",
     "graphUpdates: only durable facts; empty array if nothing new.",
     "Reply text: short, concrete, ranked; usually under 500 characters for chat, up to ~700 for search results; no therapist mode; no sycophancy.",
@@ -411,19 +416,25 @@ export function createGrokBrain(cfg: GrokBrainConfig): BrainPort {
 
     async interpret(ctx: BrainUserContext, message: string): Promise<InterpretResult> {
       const userPayload = buildUserPayload(ctx, message);
+      const researchAsk = isLiveResearchAsk(message);
       let previousId = store ? await store.get(ctx.userId) : null;
+      // Stale sessions may still have the old “orchestrator does Places” system — reset on research.
+      if (researchAsk && previousId && looksLikeLegacyResearchStub(ctx.recentChatSummary)) {
+        if (store) await store.set(ctx.userId, null);
+        previousId = null;
+      }
 
       const run = async (prev: string | null, withSearch: boolean) =>
         responsesCompletion(api, {
           ...(prev ? {} : { system }),
           user: userPayload,
           previousResponseId: prev,
-          webSearch: withSearch,
+          webSearch: withSearch || researchAsk,
         });
 
       let result: ResponsesResult;
       try {
-        result = await run(previousId, webSearch);
+        result = await run(previousId, webSearch || researchAsk);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         // Stale session — start fresh
@@ -431,20 +442,21 @@ export function createGrokBrain(cfg: GrokBrainConfig): BrainPort {
           if (store) await store.set(ctx.userId, null);
           previousId = null;
           try {
-            result = await run(null, webSearch);
+            result = await run(null, webSearch || researchAsk);
           } catch (err2) {
             const msg2 = err2 instanceof Error ? err2.message : String(err2);
-            if (webSearch && /tool|web_search|400/i.test(msg2)) {
+            if ((webSearch || researchAsk) && /tool|web_search|400/i.test(msg2)) {
               result = await run(null, false);
             } else {
-              // Last resort: legacy chat completions
+              if (store) await store.set(ctx.userId, null);
               const text = await chatCompletion(api, system, userPayload);
               return normalizeInterpret(extractJson<unknown>(text));
             }
           }
-        } else if (webSearch && /tool|web_search|400/i.test(msg)) {
+        } else if ((webSearch || researchAsk) && /tool|web_search|400/i.test(msg)) {
           result = await run(previousId, false);
         } else {
+          if (store) await store.set(ctx.userId, null);
           const text = await chatCompletion(api, system, userPayload);
           return normalizeInterpret(extractJson<unknown>(text));
         }
@@ -456,6 +468,30 @@ export function createGrokBrain(cfg: GrokBrainConfig): BrainPort {
       return normalizeInterpret(extractJson<unknown>(result.text));
     },
   };
+}
+
+/** Open web research — movies, dining, flights, showtimes. */
+export function isLiveResearchAsk(message: string): boolean {
+  const t = message.trim();
+  if (!t) return false;
+  if (/\b(book|buy|order|reserve)\b/i.test(t.replace(/\bbook\s*my\s*show\b/gi, "BMS"))) {
+    // Explicit book may still want search first if "book" means research follow-up — keep false
+    return false;
+  }
+  return (
+    /\b(movie|movies|film|films|cinema|showtimes?|what's\s+on|whats\s+on|dinner|lunch|brunch|pub|pubs|restaurant|flight|flights|playing|running|showing)\b/i.test(
+      t,
+    ) ||
+    (/^(which|what)\b/i.test(t) && /\b(near|this\s+week|today|tonight)\b/i.test(t)) ||
+    /\b(shows?\s+for|timings?)\b/i.test(t)
+  );
+}
+
+function looksLikeLegacyResearchStub(recentChat: string | null | undefined): boolean {
+  if (!recentChat) return false;
+  return /Open BookMyShow for what's playing|Live Places research isn't available|explore\/movies-/i.test(
+    recentChat,
+  );
 }
 
 export type BorderlineMail = {

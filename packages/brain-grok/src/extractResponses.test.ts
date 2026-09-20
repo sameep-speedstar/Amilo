@@ -24,3 +24,11 @@ describe("extractResponsesText", () => {
     assert.match(text, /reply_text/);
   });
 });
+
+describe("isLiveResearchAsk", () => {
+  it("detects movie research", async () => {
+    const { isLiveResearchAsk } = await import("./index.js");
+    assert.equal(isLiveResearchAsk("which Hindi movie is running this week"), true);
+    assert.equal(isLiveResearchAsk("Book 2 tickets for VIBE"), false);
+  });
+});
