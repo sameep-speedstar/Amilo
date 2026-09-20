@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { extractResponsesText } from "./index.js";
+import {
+  extractJson,
+  extractResponsesText,
+  interpretFromModelText,
+  isLegacyStubReply,
+  isLiveResearchAsk,
+  sanitizeRecentChat,
+} from "./index.js";
 
 describe("extractResponsesText", () => {
   it("reads output_text convenience field", () => {
@@ -25,17 +32,42 @@ describe("extractResponsesText", () => {
   });
 });
 
+describe("extractJson / interpretFromModelText", () => {
+  it("skips web_search citation prefixes before intent JSON", () => {
+    const raw = `[1,2] Sources about Bengaluru films
+{"intent":{"type":"reply_text","text":"1. VIBE 2. Saiyaara"},"graphUpdates":[]}`;
+    const parsed = extractJson<{ intent: { type: string; text: string } }>(raw);
+    assert.equal(parsed.intent.type, "reply_text");
+    assert.match(parsed.intent.text, /VIBE/);
+  });
+
+  it("handles [1] citation then intent object", () => {
+    const raw = `[1] https://bookmyshow.com
+{"intent":{"type":"reply_text","text":"Saiyaara near Arekere"},"graphUpdates":[]}`;
+    const parsed = extractJson<{ intent: { text: string } }>(raw);
+    assert.match(parsed.intent.text, /Saiyaara/);
+  });
+
+  it("falls back to prose as reply_text", () => {
+    const r = interpretFromModelText(
+      "Near L&T South City: 1. URU Brewpark 2. The Pump House. Want timings?",
+    );
+    assert.equal(r.intent.type, "reply_text");
+    if (r.intent.type === "reply_text") {
+      assert.match(r.intent.text, /URU Brewpark/);
+    }
+  });
+});
+
 describe("isLiveResearchAsk", () => {
-  it("detects movie research", async () => {
-    const { isLiveResearchAsk } = await import("./index.js");
+  it("detects movie research", () => {
     assert.equal(isLiveResearchAsk("which Hindi movie is running this week"), true);
     assert.equal(isLiveResearchAsk("Book 2 tickets for VIBE"), false);
   });
 });
 
 describe("sanitizeRecentChat / isLegacyStubReply", () => {
-  it("strips BMS explore stub lines from recent chat", async () => {
-    const { sanitizeRecentChat, isLegacyStubReply } = await import("./index.js");
+  it("strips BMS explore stub lines from recent chat", () => {
     const stub =
       "Amilo: Hindi movies · Bengaluru Open BookMyShow for what's playing (live list): https://in.bookmyshow.com/explore/movies-bengaluru";
     assert.equal(isLegacyStubReply(stub), true);

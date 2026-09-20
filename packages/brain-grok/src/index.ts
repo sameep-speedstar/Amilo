@@ -69,20 +69,125 @@ function loadDocs(brainDir: string): string {
     .join("\n\n");
 }
 
-function extractJson<T>(text: string): T {
+/** Balanced `{…}` / `[…]` slice from openIdx (string-aware). */
+function sliceBalanced(raw: string, openIdx: number): string | null {
+  const open = raw[openIdx];
+  const close = open === "{" ? "}" : open === "[" ? "]" : null;
+  if (!close) return null;
+  let depth = 0;
+  let inString = false;
+  let escape = false;
+  for (let i = openIdx; i < raw.length; i++) {
+    const ch = raw[i]!;
+    if (inString) {
+      if (escape) {
+        escape = false;
+        continue;
+      }
+      if (ch === "\\") {
+        escape = true;
+        continue;
+      }
+      if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+      continue;
+    }
+    if (ch === open) depth++;
+    else if (ch === close) {
+      depth--;
+      if (depth === 0) return raw.slice(openIdx, i + 1);
+    }
+  }
+  return null;
+}
+
+function isUsefulBrainJson(parsed: unknown): boolean {
+  if (Array.isArray(parsed)) {
+    // Skip web_search citation footnotes like [1] / [1,2]
+    if (parsed.length > 0 && parsed.every((x) => typeof x === "number")) return false;
+    return parsed.every((x) => x !== null && typeof x === "object");
+  }
+  return parsed !== null && typeof parsed === "object";
+}
+
+/**
+ * Pull the brain contract JSON out of model text.
+ * Web_search often prefixes citation markers ([1], [1,2]) before the real object —
+ * never treat those as the payload (that caused "non-whitespace after JSON at position 5").
+ */
+export function extractJson<T>(text: string): T {
   const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/);
   let raw = (fenced?.[1] ?? text).trim();
   // Models sometimes wrap JSON in **bold**
   raw = raw.replace(/^\*+/, "").replace(/\*+$/, "").trim();
-  const start =
-    raw.indexOf("{") >= 0 && (raw.indexOf("[") < 0 || raw.indexOf("{") < raw.indexOf("["))
-      ? raw.indexOf("{")
-      : raw.indexOf("[");
-  const end = Math.max(raw.lastIndexOf("}"), raw.lastIndexOf("]"));
-  if (start < 0 || end < 0) {
+
+  const tryParse = (slice: string): T | undefined => {
+    try {
+      const parsed = JSON.parse(slice) as unknown;
+      if (!isUsefulBrainJson(parsed)) return undefined;
+      return parsed as T;
+    } catch {
+      return undefined;
+    }
+  };
+
+  // Prefer the object that contains "intent" (interpret contract).
+  const intentKey = raw.search(/"intent"\s*:/);
+  if (intentKey >= 0) {
+    const brace = raw.lastIndexOf("{", intentKey);
+    if (brace >= 0) {
+      const slice = sliceBalanced(raw, brace);
+      if (slice) {
+        const hit = tryParse(slice);
+        if (hit !== undefined) return hit;
+      }
+    }
+  }
+
+  // Scan every balanced value; prefer objects with intent, then any useful JSON.
+  let fallback: T | undefined;
+  for (let i = 0; i < raw.length; i++) {
+    const ch = raw[i];
+    if (ch !== "{" && ch !== "[") continue;
+    const slice = sliceBalanced(raw, i);
+    if (!slice) continue;
+    const hit = tryParse(slice);
+    if (hit === undefined) continue;
+    if (hit && typeof hit === "object" && !Array.isArray(hit) && "intent" in (hit as object)) {
+      return hit;
+    }
+    fallback ??= hit;
+  }
+  if (fallback !== undefined) return fallback;
+
+  throw new Error("Grok brain returned no JSON");
+}
+
+/** Interpret path: parse contract JSON, or fall back to prose as reply_text. */
+export function interpretFromModelText(text: string): InterpretResult {
+  try {
+    return normalizeInterpret(extractJson<unknown>(text));
+  } catch {
+    const cleaned = text
+      .replace(/```[\s\S]*?```/g, " ")
+      .replace(/^\s*(\[[0-9,\s]+\]\s*)+/gm, "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 700);
+    if (cleaned.length >= 12) {
+      console.error(
+        JSON.stringify({ event: "grok_prose_fallback", chars: cleaned.length }),
+      );
+      return normalizeInterpret({
+        intent: { type: "reply_text", text: cleaned },
+        graphUpdates: [],
+      });
+    }
     throw new Error("Grok brain returned no JSON");
   }
-  return JSON.parse(raw.slice(start, end + 1)) as T;
 }
 
 function sanitizeGraphUpdates(raw: unknown): GraphUpdate[] {
@@ -484,7 +589,7 @@ export function createGrokBrain(cfg: GrokBrainConfig): BrainPort {
             } else {
               if (store) await store.set(ctx.userId, null);
               const text = await chatCompletion(api, system, userPayload + researchHint);
-              return normalizeInterpret(extractJson<unknown>(text));
+              return interpretFromModelText(text);
             }
           }
         } else if ((webSearch || researchAsk) && /tool|web_search|400/i.test(msg)) {
@@ -492,11 +597,11 @@ export function createGrokBrain(cfg: GrokBrainConfig): BrainPort {
         } else {
           if (store) await store.set(ctx.userId, null);
           const text = await chatCompletion(api, system, userPayload + researchHint);
-          return normalizeInterpret(extractJson<unknown>(text));
+          return interpretFromModelText(text);
         }
       }
 
-      let interpreted = normalizeInterpret(extractJson<unknown>(result.text));
+      let interpreted = interpretFromModelText(result.text);
       // Model parroted the BMS explore stub — hard retry with zero chat history + web search.
       if (
         researchAsk &&
@@ -511,7 +616,7 @@ export function createGrokBrain(cfg: GrokBrainConfig): BrainPort {
         const barePayload = buildUserPayload(bareCtx, message);
         try {
           result = await run(null, true, barePayload);
-          interpreted = normalizeInterpret(extractJson<unknown>(result.text));
+          interpreted = interpretFromModelText(result.text);
         } catch {
           /* keep first interpreted */
         }
