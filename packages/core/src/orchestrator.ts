@@ -59,6 +59,7 @@ import {
   diningCitySlug,
   looksLikeMovieTicketAsk,
   isLifeOpsPickableList,
+  parseBookMyShowUrl,
   scopeChatToDining,
   extractUserStatedWhen,
   type LifeOpsResearchIntent,
@@ -2901,7 +2902,71 @@ export async function handleInbound(
       }
 
       if (venue && listKind === "movie") {
-        // Grok owns movie showtimes + the booking-link action. Don't invent BMS/Zomato here.
+        // Letter pick on a movie list → confirm-first BookMyShow handoff (no bare "A" re-ask to Grok).
+        const bms = parseBookMyShowUrl(source);
+        const city =
+          bms?.city ??
+          (/\bchandigarh|elante|ilante|mohali\b/i.test(source) ? "chandigarh" : "bengaluru");
+        const live =
+          bms?.url ??
+          `https://in.bookmyshow.com/explore/movies-${city === "bangalore" ? "bengaluru" : city}`;
+        const showHint =
+          source
+            .split("\n")
+            .find((line) => {
+              const id = pickId.toUpperCase();
+              return new RegExp(`(?:^|\\s)${id}\\)\\s+`, "i").test(line);
+            })
+            ?.match(/\b\d{1,2}(?::\d{2})?\s*[ap]m\b/i)?.[0] ?? null;
+        if (deps.createPending) {
+          const payload: Record<string, unknown> = {
+            domain: "home",
+            channel: "vendor",
+            vendorKind: "movie",
+            moneyCapInr: null,
+            sendOnConfirm: false,
+            venueHint: venue,
+            optionId: pickId,
+            script: [
+              "Open to finish booking (Amilo did not reserve or pay):",
+              `· ${venue}${showHint ? ` · ${showHint}` : ""}`,
+              live,
+            ].join("\n"),
+            summary: [
+              `Movie: ${venue}`,
+              showHint,
+              "Reply yes for the BookMyShow link — Amilo won't reserve or pay.",
+            ]
+              .filter(Boolean)
+              .join(" · "),
+          };
+          const pending = await deps.createPending({
+            userId: msg.userId,
+            kind: "life_ops_handoff",
+            summary: String(payload.summary),
+            payload,
+          });
+          return [
+            {
+              text: [
+                `Got it — ${venue}${showHint ? ` · ${showHint}` : ""}.`,
+                "",
+                pending.summary,
+                "",
+                "Nothing booked or paid yet.",
+              ].join("\n"),
+            },
+          ];
+        }
+        return [
+          {
+            text: [
+              `Got it — ${venue}.`,
+              `Open BookMyShow: ${live}`,
+              "Amilo won't buy seats.",
+            ].join("\n"),
+          },
+        ];
       } else if (venue && listKind === "dining" && !isBookPlatformOnly(venue)) {
         const diningChat = latestDiningThread(recentChatSummary);
         const diningCtx = extractLifeOpsDiningContext(recentChatSummary, text, replyTo);
@@ -4078,9 +4143,12 @@ export async function handleInbound(
       const reply = sanitizeLifeOpsReplyText(result.intent.text.trim(), {
         ...(recentChatSummary != null ? { recentChat: recentChatSummary } : {}),
       });
+      // Bare option picks never re-wrap as a new research list — handoff path owns those.
+      const isBareOptionPick = Boolean(parseLifeOpsOptionPick(text));
       if (
         reply &&
         deps.createPending &&
+        !isBareOptionPick &&
         isLifeOpsPickableList(reply) &&
         (looksLikeMovieTicketAsk(text) ||
           Boolean(parseLifeOpsResearchIntent(text)) ||
@@ -4101,14 +4169,14 @@ export async function handleInbound(
             vendorKind: listKind,
           },
         });
+        // Show Grok findings as normal chat — do not label Proposed (life_ops_research).
         return [
           {
             text: [
-              `Proposed (life_ops_research):`,
               reply,
               "",
               listKind === "movie"
-                ? "Reply with a letter to pick the show. Next I'll give the BookMyShow link — nothing booked yet."
+                ? "Reply with a letter to pick. Next: BookMyShow link (nothing booked yet)."
                 : "Reply with a letter to pick, then any missing day/time. Nothing booked or paid yet.",
             ].join("\n"),
           },

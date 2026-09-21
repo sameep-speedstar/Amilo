@@ -686,15 +686,31 @@ export function sanitizeLifeOpsReplyText(
   // Flag likely invented "every theatre has exactly the user's clock" lists without a real BMS movie URL.
   const hasRealMoviePage = Boolean(parseBookMyShowUrl(t)?.eventCode);
   const clockHits = t.match(/\b\d{1,2}(?::\d{2})?\s*[ap]m\b/gi) ?? [];
-  const uniqueClocks = new Set(clockHits.map((c) => c.toLowerCase().replace(/\s+/g, "")));
+  const normClock = (c: string) =>
+    c
+      .toLowerCase()
+      .replace(/\s+/g, "")
+      .replace(/:00(?=[ap]m)/, "");
+  const uniqueClocks = new Set(clockHits.map(normClock));
   if (
     !hasRealMoviePage &&
     clockHits.length >= 2 &&
     uniqueClocks.size === 1 &&
     /(?:inox|pvr|cinepolis|theatre|theater|showtimes?)/i.test(t)
   ) {
-    if (!/couldn't verify|live seats|do not invent/i.test(t)) {
-      t = `${t.trim()}\n\nTimes above need a live BookMyShow check — I only list clocks when search confirms them. ${fallback}`;
+    // Drop identical invented clocks from option lines; keep theatre names + live page.
+    t = t
+      .replace(
+        /^([A-Z]\)\s+.+?)\s*[—\-–:]\s*\d{1,2}(?::\d{2})?\s*[ap]m\s*(?:show)?\.?\s*$/gim,
+        "$1 — check live showtimes",
+      )
+      .replace(/\(\s*today\s+\d{1,2}(?::\d{2})?\s*[ap]m\s*\)/gi, "(today — live times)")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
+    if (!/couldn't verify|live seats|only list clocks|live BookMyShow/i.test(t)) {
+      t = `${t}\n\nI couldn't confirm identical clocks from search — open live BookMyShow (Amilo won't invent showtimes):\n${fallback}`;
+    } else if (!t.includes(fallback.replace(/^https:\/\//, "")) && !t.includes(fallback)) {
+      t = `${t}\n${fallback}`;
     }
   }
 

@@ -276,6 +276,15 @@ describe("lifeOps", () => {
     assert.equal(formatLifeOpsOptionLines(dinner), dinner);
   });
 
+  it("scrubs invented identical clocks even when written as 8 PM vs 8:00 PM", () => {
+    const invent =
+      "Mirzapur showtimes near Elante (today 8 PM)\nA) INOX Elante Mall — 8:00 PM show.\nB) PVR Centra Mall — 8:00 PM show.\nC) INOX Chandigarh — 8:00 PM show.\nBook via BookMyShow.";
+    const out = sanitizeLifeOpsReplyText(invent);
+    assert.doesNotMatch(out, /A\) INOX Elante Mall — 8:00 PM/);
+    assert.match(out, /check live showtimes|couldn't confirm identical clocks/i);
+    assert.match(out, /bookmyshow\.com/i);
+  });
+
   it("scrubs invented BookMyShow show links", () => {
     const fake =
       "PVR Vega City Mirzapur 8 PM: BookMyShow link — https://in.bookmyshow.com/buytickets/pvr-vega-city-bangalore/movie-bang-ET003XXXX/show-ET003XXXX-20260921-2000";
