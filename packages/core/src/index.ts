@@ -63,6 +63,8 @@ export {
   cleanAppointmentVenue,
   polishEmailDraftPayload,
   rewriteSpokenEmailDirections,
+  pickGmailSendAccount,
+  accountHasGmailSend,
 } from "./emailDraft.js";
 export {
   cleanCalendarDisplayTitle,

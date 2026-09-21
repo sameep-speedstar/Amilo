@@ -14,6 +14,8 @@ import {
   parseBareEmail,
   parseEmailComposeAsk,
   polishEmailDraftPayload,
+  rewriteSpokenEmailDirections,
+  pickGmailSendAccount,
   isEmailRewriteDirection,
   looksLikeAppointmentNotify,
   extractPlaceAddressFromChat,
@@ -935,24 +937,6 @@ async function gmailSendFailOrGeneric(
   return [{ text: `Couldn't complete: ${message}` }];
 }
 
-function accountHasGmailSend(scopes?: string): boolean {
-  return Boolean(scopes && /gmail\.send/i.test(scopes));
-}
-
-function pickGmailSendAccount(
-  accounts: Array<{ label: string; email: string | null; scopes?: string }>,
-  preferred?: string,
-): { label: string; email: string | null; scopes?: string } | null {
-  const sendable = accounts.filter((a) => accountHasGmailSend(a.scopes));
-  if (!sendable.length) return null;
-  const pref = preferred?.trim();
-  if (pref) {
-    const hit = sendable.find((a) => a.label === pref);
-    if (hit) return hit;
-  }
-  return sendable.find((a) => a.label !== "personal") ?? sendable[0] ?? null;
-}
-
 async function gmailSendAuthLeadIn(
   userId: string,
   deps: OrchestratorDeps,
@@ -1677,6 +1661,57 @@ export async function handleInbound(
           },
           { text: formatEmailDraftCopy(openPending.payload) },
         ];
+      }
+      if (
+        openPending.kind === "email_draft" &&
+        emailDraftNeedsRewrite(openPending.payload) &&
+        deps.editPending
+      ) {
+        const source =
+          String(openPending.payload.sourceDirections ?? "") ||
+          (deps.getRecentChatSummary
+            ? await deps.getRecentChatSummary(msg.userId, {
+                ...(msg.messageId ? { excludeMessageId: msg.messageId } : {}),
+              })
+            : "");
+        const userName = deps.resolveUserName ? await deps.resolveUserName(msg.userId) : "";
+        const nextPayload = polishEmailDraftPayload(openPending.payload, {
+          sourceText: source || String(openPending.payload.body ?? ""),
+          userName,
+          toHint: String(openPending.payload.recipientLabel ?? ""),
+        });
+        if (deps.listGoogleAccounts) {
+          const sendAcct = pickGmailSendAccount(
+            await deps.listGoogleAccounts(msg.userId),
+            String(nextPayload.accountLabel ?? "personal"),
+          );
+          if (sendAcct) nextPayload.accountLabel = sendAcct.label;
+        }
+        const summary = `Email draft to ${String(nextPayload.to ?? "?")}: ${String(nextPayload.subject ?? "draft")}`;
+        await deps.editPending(msg.userId, nextPayload, summary);
+        return [
+          {
+            text: "This still looked like your notes — here's the rewrite. Reply yes to send, or edit <change>.",
+          },
+          ...emailDraftMessages(nextPayload, emailDraftMode(nextPayload, null)),
+        ];
+      }
+      if (openPending.kind === "email_draft" && deps.listGoogleAccounts && deps.editPending) {
+        const sendAcct = pickGmailSendAccount(
+          await deps.listGoogleAccounts(msg.userId),
+          String(openPending.payload.accountLabel ?? "personal"),
+        );
+        if (sendAcct && sendAcct.label !== String(openPending.payload.accountLabel ?? "")) {
+          const nextPayload: Record<string, unknown> = {
+            ...openPending.payload,
+            accountLabel: sendAcct.label,
+          };
+          await deps.editPending(
+            msg.userId,
+            nextPayload,
+            `Email draft to ${String(nextPayload.to ?? "?")}: ${String(nextPayload.subject ?? "draft")}`,
+          );
+        }
       }
       const r = await deps.confirmPending(msg.userId);
       if (r.ok) return [{ text: r.message }];

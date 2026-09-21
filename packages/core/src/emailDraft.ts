@@ -16,6 +16,34 @@ export type RewrittenEmailDraft = {
   strippedMeta: boolean;
 };
 
+export type GmailAccountLike = {
+  label: string;
+  email: string | null;
+  scopes?: string;
+};
+
+export function accountHasGmailSend(scopes?: string): boolean {
+  return Boolean(scopes && /gmail\.send/i.test(scopes));
+}
+
+/**
+ * Prefer a send-capable Google account. If preferred has send, use it;
+ * else any non-personal with send, else any with send.
+ */
+export function pickGmailSendAccount(
+  accounts: GmailAccountLike[],
+  preferred?: string,
+): GmailAccountLike | null {
+  const sendable = accounts.filter((a) => accountHasGmailSend(a.scopes));
+  if (!sendable.length) return null;
+  const pref = preferred?.trim();
+  if (pref) {
+    const hit = sendable.find((a) => a.label === pref);
+    if (hit) return hit;
+  }
+  return sendable.find((a) => a.label !== "personal") ?? sendable[0] ?? null;
+}
+
 const EMAIL_RE = /\b([\w.+-]+@[\w.-]+\.\w+)\b/;
 const NOT_A_NAME =
   /^(the|a|an|to|for|and|or|of|my|your|his|her|their|this|that|it|me|us|him|them|chase|send|draft|write|compose|remind|follow|email|mail|another)$/i;
