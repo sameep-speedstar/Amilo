@@ -836,14 +836,26 @@ export function sanitizeLifeOpsReplyText(
     .join("\n");
 
   if (scrubbedFake) {
-    // Drop claims of a specific show deep-link we couldn't verify.
-    t = t.replace(/\bBookMyShow link\s*[—\-–:]\s*/gi, "Live BookMyShow page: ");
-    if (!/I couldn't verify (a|that) show link|search link instead/i.test(t)) {
-      if (/bookmyshow/i.test(t) && /ET0|buytickets/i.test(text)) {
-        t = `${t.trim()}\n\nI couldn't verify that exact show link — open BookMyShow for live seats (Amilo won't invent showtimes or ET codes).`;
-      }
-    }
+    // Drop claims of a specific show deep-link we couldn't verify — no verbose scrub footers.
+    t = t.replace(/\bBookMyShow link\s*[—\-–:]\s*/gi, "");
   }
+
+  // Research-only: strip booking/checkout deep links (deferred until partner booking ships).
+  t = t.replace(
+    /https?:\/\/(?:in\.)?bookmyshow\.com\/[^\s)>\]]*buytickets[^\s)>\]]*/gi,
+    "",
+  );
+  t = t.replace(/\bBook via BookMyShow\.?/gi, "");
+  t = t.replace(/\bNext:\s*BookMyShow link[^\n]*/gi, "");
+  t = t.replace(/\n*Replaced an unverified[^\n]*/gi, "");
+  t = t.replace(/\n*Nothing booked or paid yet\.?/gi, "");
+
+  // One closing pick prompt — drop duplicates from model + wrappers.
+  t = t.replace(
+    /(?:\n|^)Reply with a letter[^\n]*(?:\n+Reply with a letter[^\n]*)+/gi,
+    "\nReply with a letter to pick.",
+  );
+  t = t.replace(/\n{3,}/g, "\n\n").trim();
 
   // Flag likely invented "every theatre has exactly the user's clock" lists without a real BMS movie URL.
   const hasRealMoviePage = Boolean(parseBookMyShowUrl(t)?.eventCode);
@@ -869,10 +881,8 @@ export function sanitizeLifeOpsReplyText(
       .replace(/\(\s*today\s+\d{1,2}(?::\d{2})?\s*[ap]m\s*\)/gi, "(today — live times)")
       .replace(/\n{3,}/g, "\n\n")
       .trim();
-    if (!/couldn't verify|live seats|only list clocks|live BookMyShow/i.test(t)) {
-      t = `${t}\n\nI couldn't confirm identical clocks from search — open live BookMyShow (Amilo won't invent showtimes):\n${fallback}`;
-    } else if (!t.includes(fallback.replace(/^https:\/\//, "")) && !t.includes(fallback)) {
-      t = `${t}\n${fallback}`;
+    if (!/couldn't confirm identical clocks|won't invent showtimes/i.test(t)) {
+      t = `${t}\n\nI couldn't confirm identical clocks from search — Amilo won't invent showtimes. Ask for a theatre or day and I'll research again.`;
     }
   }
 
@@ -1757,8 +1767,8 @@ export function formatMovieResearchReply(opts: {
         "",
         ...lines,
         "",
-        "Want showtimes near you? Paste the BookMyShow movie link or say shows for <title>.",
-        "I can't reserve seats from Amilo yet — ask for a film or theatre to research.",
+        "Want showtimes near you? Say shows for <title> near <area>.",
+        "Research-only for now — Amilo can't book seats yet.",
       ].join("\n"),
       options,
     };
@@ -1775,9 +1785,9 @@ export function formatMovieResearchReply(opts: {
         "Live showtimes:",
         bms,
         "",
-        "BookMyShow blocks automated scrape right now — open that link for today's times.",
+        "Live showtimes aren't scraped here — ask for a title + area and I'll research.",
         hints.area ? `I can still list nearby cinemas around ${hints.area} if useful.` : null,
-        "I can't reserve seats from Amilo yet — open the link above, or ask me to dig into a theatre.",
+        "Research-only — Amilo can't book seats yet.",
       ]
         .filter(Boolean)
         .join("\n"),
@@ -1832,7 +1842,7 @@ export function formatMovieResearchReply(opts: {
       closest.distanceKm != null
         ? `${closest.name} is closest${hints.area ? ` to ${hints.area}` : ""}.`
         : null,
-      `${lifeOpsPickPrompt(LIFE_OPS_DEFAULT_SCHEME, options.length)} I can't reserve seats from Amilo — ask me to dig into a letter if you want more.`,
+      `${lifeOpsPickPrompt(LIFE_OPS_DEFAULT_SCHEME, options.length)} Ask me to dig into a letter if you want more — booking isn't live yet.`,
       hasAnyTimes ? bms : null,
     ]
       .filter(Boolean)

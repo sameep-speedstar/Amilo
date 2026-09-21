@@ -3810,17 +3810,8 @@ export async function handleInbound(
           },
         });
         // Show Grok findings as normal chat — do not label Proposed (life_ops_research).
-        return [
-          {
-            text: [
-              reply,
-              "",
-              listKind === "movie"
-                ? "Reply with a letter to pick. Next: BookMyShow link (nothing booked yet)."
-                : "Reply with a letter to pick, then any missing day/time. Nothing booked or paid yet.",
-            ].join("\n"),
-          },
-        ];
+        // Do not append a second "Reply with a letter…" footer (Grok already ends with one).
+        return [{ text: reply }];
       }
       if (reply) return [{ text: reply }];
       return [

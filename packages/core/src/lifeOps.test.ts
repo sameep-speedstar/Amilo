@@ -200,7 +200,7 @@ describe("lifeOps", () => {
     assert.match(text, /A\)\s+PVR Vega City/i);
     assert.match(text, /closest/i);
     assert.match(text, /Reply with a letter/i);
-    assert.match(text, /can't reserve seats from Amilo/i);
+    assert.match(text, /booking isn't live yet/i);
     assert.doesNotMatch(text, /Reply yes to lock/i);
   });
 
@@ -290,7 +290,7 @@ describe("lifeOps", () => {
     const out = sanitizeLifeOpsReplyText(invent);
     assert.doesNotMatch(out, /A\) INOX Elante Mall — 8:00 PM/);
     assert.match(out, /check live showtimes|couldn't confirm identical clocks/i);
-    assert.match(out, /bookmyshow\.com/i);
+    assert.doesNotMatch(out, /Book via BookMyShow/i);
   });
 
   it("does not treat bond-yield enumerations as dining shortlists", () => {
@@ -346,6 +346,21 @@ describe("lifeOps", () => {
     assert.doesNotMatch(clientScoped, /wife/i);
   });
 
+  it("dedupes Reply-with-a-letter footers and drops legacy scrub lines", () => {
+    const messy = [
+      "A) Olive — Italian; ~₹2000 for two. Maps: https://www.google.com/maps/search/?api=1&query=Olive",
+      "",
+      "Reply with a letter to pick. Day/time/party size?",
+      "",
+      "Replaced an unverified book link with a platform search (Amilo won't invent place URLs).",
+      "",
+      "Reply with a letter to pick, then any missing day/time. Nothing booked or paid yet.",
+    ].join("\n");
+    const out = sanitizeLifeOpsReplyText(messy);
+    assert.equal((out.match(/Reply with a letter/gi) ?? []).length, 1);
+    assert.doesNotMatch(out, /Replaced an unverified|Nothing booked or paid yet/i);
+  });
+
   it("scrubs invented BookMyShow show links", () => {
     const fake =
       "PVR Vega City Mirzapur 8 PM: BookMyShow link — https://in.bookmyshow.com/buytickets/pvr-vega-city-bangalore/movie-bang-ET003XXXX/show-ET003XXXX-20260921-2000";
@@ -358,9 +373,9 @@ describe("lifeOps", () => {
       recentChat:
         "Amilo: https://in.bookmyshow.com/movies/bengaluru/mirzapur-the-movie/ET00417686",
     });
-    assert.doesNotMatch(out, /ET003XXXX/);
+    assert.doesNotMatch(out, /ET003XXXX|buytickets/i);
     assert.match(out, /ET00417686/);
-    assert.match(out, /couldn't verify/i);
+    assert.doesNotMatch(out, /couldn't verify|Replaced an unverified/i);
 
     assert.equal(
       classifyVendorHandoffKind("Book two tickets for Mirzapur near Arekere, Bangalore"),
