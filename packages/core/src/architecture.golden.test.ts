@@ -16,12 +16,15 @@ import {
   classifyOptionListKind,
   classifyVendorHandoffKind,
   coerceOptionPick,
+  isVendorBookOrReserveAsk,
+  looksLikeCalendarBookingAsk,
   looksLikeMovieTicketAsk,
   optionPickSource,
   preferLifeOpsNumberPick,
   resolveActiveDomain,
   resolveListedOptionVenue,
   sanitizeLifeOpsReplyText,
+  vendorBookingUnavailableReply,
 } from "./lifeOps.js";
 
 describe("architecture golden — domain lock + Grok unlock", () => {
@@ -67,6 +70,14 @@ describe("architecture golden — domain lock + Grok unlock", () => {
       true,
     );
     assert.equal(canScriptVendorHandoff("cab", "cab", "Book Uber, flight is at 11 PM"), true);
+  });
+
+  it("2b book/reserve: limitation copy, not pay-link handoff", () => {
+    assert.equal(isVendorBookOrReserveAsk("Book Katani Dhaba Fri 8pm table for 3"), true);
+    assert.equal(looksLikeCalendarBookingAsk("Cool, book 1 hour with Rajeev at 1pm"), true);
+    const copy = vendorBookingUnavailableReply({ vendorKind: "dining", venueHint: "Katani" });
+    assert.match(copy, /can't book or reserve/i);
+    assert.match(copy, /find/i);
   });
 
   it("3 post-grok: scrub fake ET / identical clocks; no Zomato-shaped movie invent", () => {

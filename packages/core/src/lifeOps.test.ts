@@ -40,7 +40,10 @@ import {
   coerceOptionPick,
   classifyVendorHandoffKind,
   cleanBookVenueName,
+  looksLikeCalendarBookingAsk,
   looksLikeMovieTicketAsk,
+  isVendorBookOrReserveAsk,
+  vendorBookingUnavailableReply,
   resolveActiveDomain,
   canScriptVendorHandoff,
   hasStrongDiningCues,
@@ -195,7 +198,7 @@ describe("lifeOps", () => {
     assert.match(text, /A\)\s+PVR Vega City/i);
     assert.match(text, /closest/i);
     assert.match(text, /Reply with a letter/i);
-    assert.match(text, /book <theatre>/i);
+    assert.match(text, /can't reserve seats from Amilo/i);
     assert.doesNotMatch(text, /Reply yes to lock/i);
   });
 
@@ -575,6 +578,24 @@ describe("lifeOps", () => {
 
   it("does not treat book via Zomato as a venue handoff", () => {
     assert.equal(parseLifeOpsHandoffIntent("Book via Zomato"), null);
+  });
+
+  it("vendor book/reserve states limitation; calendar book stays separate", () => {
+    assert.equal(isVendorBookOrReserveAsk("Book Burma Burma"), true);
+    assert.equal(isVendorBookOrReserveAsk("reserve a table at Ebony"), true);
+    assert.equal(isVendorBookOrReserveAsk("Book Uber, flight is at 11 PM"), true);
+    assert.equal(isVendorBookOrReserveAsk("Book two tickets for Mirzapur"), true);
+    assert.equal(looksLikeCalendarBookingAsk("book 1 hour with Rajeev at 1pm"), true);
+    assert.equal(isVendorBookOrReserveAsk("book 1 hour with Rajeev at 1pm"), false);
+    assert.equal(isVendorBookOrReserveAsk("chase the Amazon return"), false);
+    const reply = vendorBookingUnavailableReply({
+      venueHint: "Burma Burma",
+      vendorKind: "dining",
+    });
+    assert.match(reply, /can't book or reserve Burma Burma/i);
+    assert.match(reply, /final pay\/confirm link/i);
+    assert.match(reply, /help find/i);
+    assert.doesNotMatch(reply, /Reply yes for/i);
   });
 
   it("merges life-ops context into calendar block text", () => {

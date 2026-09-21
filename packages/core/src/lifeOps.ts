@@ -986,6 +986,71 @@ export function isBookPlatformOnly(name: string | null | undefined): boolean {
   return Boolean(name && BOOK_PLATFORM_ONLY_RE.test(name.trim()));
 }
 
+/**
+ * Calendar "book meeting / book 1h with X" — not vendor life-ops booking.
+ * Must stay on the Google calendar path.
+ */
+export function looksLikeCalendarBookingAsk(text: string): boolean {
+  const t = text.trim();
+  if (!t || !/\b(book|schedule|block)\b/i.test(t)) return false;
+  if (
+    /\b(table|reservation|tickets?|seats?|uber|ola|rapido|meru|zomato|eazy\s*diner|dineout|restaurant|dinner|lunch|brunch|pub|bar|flight|hotel|train|movie|cinema|showtimes?)\b/i.test(
+      t,
+    )
+  ) {
+    return false;
+  }
+  return (
+    /\b(meeting|call|sync|invite|calendar|\d+\s*(?:min|mins|minutes|hours?|hrs?|hr))\b/i.test(t) ||
+    (/\bwith\s+[A-Za-z]/i.test(t) &&
+      /\b(at\s+\d|\d{1,2}(?::\d{2})?\s*[ap]m|tomorrow|today|tonight)\b/i.test(t))
+  );
+}
+
+/**
+ * User asked to book/reserve a vendor thing (table, tickets, cab, flight).
+ * Partner APIs are off — Amilo states the limit and offers find-only help.
+ */
+export function isVendorBookOrReserveAsk(text: string): boolean {
+  const t = text.trim();
+  if (!t || looksLikeCalendarBookingAsk(t)) return false;
+  if (/\b(return|refund|subscription|plumber|electrician|handyman)\b/i.test(t)) {
+    return false;
+  }
+  if (/\b(reserve(\s+a)?\s+table|book\s+(a\s+)?(table|reservation|tickets?|seats?))\b/i.test(t)) {
+    return true;
+  }
+  if (!/^(?:book|reserve)\b/i.test(t) && !/\bhand\s?off\b/i.test(t)) return false;
+  const h = parseLifeOpsHandoffIntent(t);
+  if (h?.channel === "email") return false;
+  if (h?.channel === "vendor" && (h.venueHint || h.optionId)) return true;
+  const kind = classifyVendorHandoffKind(t);
+  return kind === "dining" || kind === "cab" || kind === "movie" || kind === "travel";
+}
+
+/** Short WA copy: cannot book/reserve or emit a final pay link; offer find help. */
+export function vendorBookingUnavailableReply(opts?: {
+  venueHint?: string | null;
+  vendorKind?: VendorHandoffKind | null;
+}): string {
+  const who = opts?.venueHint?.trim() || null;
+  const kind = opts?.vendorKind ?? null;
+  const head = who
+    ? `I can't book or reserve ${who} from Amilo yet — partner booking APIs aren't live, so I also can't give you a final pay/confirm link.`
+    : `I can't book or reserve from Amilo yet — partner booking APIs aren't live, so I also can't give you a final pay/confirm link.`;
+  const offer =
+    kind === "cab"
+      ? "I can help find cab options though — where/when?"
+      : kind === "movie"
+        ? "I can help find films and showtimes though — what should I look up?"
+        : kind === "travel"
+          ? "I can help find flight/hotel options though — where/when?"
+          : kind === "dining"
+            ? "I can help find places though — area, vibe, or a name to dig into?"
+            : "I can help find options though — dinner, movies, flights, cabs. What should I look up?";
+  return `${head}\n${offer}`;
+}
+
 export type VendorHandoffKind = "dining" | "cab" | "movie" | "travel" | "other";
 
 /** Locked life-ops / brief domain for routing. Null = unlocked → Grok owns the ask. */
@@ -1573,7 +1638,7 @@ export function formatMovieResearchReply(opts: {
         ...lines,
         "",
         "Want showtimes near you? Paste the BookMyShow movie link or say shows for <title>.",
-        "I won't book until you say book <theatre> <time>.",
+        "I can't reserve seats from Amilo yet — ask for a film or theatre to research.",
       ].join("\n"),
       options,
     };
@@ -1592,7 +1657,7 @@ export function formatMovieResearchReply(opts: {
         "",
         "BookMyShow blocks automated scrape right now — open that link for today's times.",
         hints.area ? `I can still list nearby cinemas around ${hints.area} if useful.` : null,
-        "Want me to book one? Say book <theatre> <time> (still needs your yes).",
+        "I can't reserve seats from Amilo yet — open the link above, or ask me to dig into a theatre.",
       ]
         .filter(Boolean)
         .join("\n"),
@@ -1606,8 +1671,8 @@ export function formatMovieResearchReply(opts: {
         },
         {
           id: "B",
-          label: "Book after you pick",
-          detail: "Say book <theatre> <time>",
+          label: "Research a theatre",
+          detail: "Ask for a cinema name or area",
           estInr: null,
         },
       ],
@@ -1647,7 +1712,7 @@ export function formatMovieResearchReply(opts: {
       closest.distanceKm != null
         ? `${closest.name} is closest${hints.area ? ` to ${hints.area}` : ""}.`
         : null,
-      `${lifeOpsPickPrompt(LIFE_OPS_DEFAULT_SCHEME, options.length)} Or say book <theatre> <time> — I won't pay or lock seats without your yes.`,
+      `${lifeOpsPickPrompt(LIFE_OPS_DEFAULT_SCHEME, options.length)} I can't reserve seats from Amilo — ask me to dig into a letter if you want more.`,
       hasAnyTimes ? bms : null,
     ]
       .filter(Boolean)
@@ -2050,7 +2115,7 @@ export function formatFlightResearchReply(opts: {
     {
       id: "B",
       label: hints.morning ? "Morning window" : hints.evening ? "Evening window" : "Flexible time",
-      detail: "Pick on the Flights page, then say book with the flight number",
+      detail: "Open the Flights page to finish booking yourself — Amilo can't reserve",
       estInr: null,
     },
     {
@@ -2069,7 +2134,7 @@ export function formatFlightResearchReply(opts: {
     "",
     ...options.map((o) => `${o.id}) ${o.label} — ${o.detail}`),
     "",
-    "After you pick one, say book Indigo 6E-… or handoff option A — booking still needs your yes.",
+    "I can't book flights from Amilo yet — pick a letter if you want me to dig further, or open the link yourself.",
   ].filter(Boolean) as string[];
   return { text: lines.join("\n"), options };
 }
@@ -2258,7 +2323,7 @@ export function lifeOpsResearchConfirmMessage(payload: Record<string, unknown>):
   const query = String(payload.query ?? "your request");
   return [
     `Shortlist locked for ${domain}: ${query.slice(0, 120)}.`,
-    "Still not booked / paid. Say e.g. book A, or handoff after you pick.",
+    "Still find-only — Amilo can't book or hand a final pay link. Ask me to dig into a letter, or book yourself on the platform.",
   ].join("\n");
 }
 
@@ -2268,18 +2333,14 @@ export function lifeOpsHandoffConfirmMessage(payload: Record<string, unknown>): 
     return "Handoff ready as an email draft next — say send when the draft looks right (or cancel).";
   }
   if (channel === "vendor") {
-    const rawScript = String(
-      payload.script ?? payload.summary ?? "Open the book link for your venue and slot.",
-    ).slice(0, 900);
-    const script = sanitizeLifeOpsReplyText(rawScript);
-    const calNote = payload.calendarHold
-      ? "\n\nCalendar hold proposed next — reply yes to put it on your calendar (still confirm-first)."
-      : "\n\nAfter you've booked on the platform, say block calendar <day time> at <venue> if you want it on Google.";
-    return [
-      "Book links ready (nothing reserved or paid by Amilo):",
-      script,
-      calNote.trim(),
-    ].join("\n");
+    const kind = String(payload.vendorKind ?? "") as VendorHandoffKind;
+    return vendorBookingUnavailableReply({
+      venueHint: String(payload.venueHint ?? "").trim() || null,
+      vendorKind:
+        kind === "dining" || kind === "cab" || kind === "movie" || kind === "travel"
+          ? kind
+          : null,
+    });
   }
   return "Handoff plan locked — nothing spent or sent. Say what to do next.";
 }
