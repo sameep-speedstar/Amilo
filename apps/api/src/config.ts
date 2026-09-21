@@ -10,6 +10,8 @@ export interface Settings {
   wabaPhoneNumberId: string;
   xaiApiKey: string;
   grokModel: string;
+  /** Reasoning / agentic Grok for movies/dining/flights research (web_search). */
+  grokResearchModel: string;
   /** When true, Zepto/BMS browser OTP flows run. Default false — search + deep links only. */
   browserBookingEnabled: boolean;
   cursorApiKey: string;
@@ -81,6 +83,7 @@ export function loadSettings(): Settings {
     wabaPhoneNumberId: req("WABA_PHONE_NUMBER_ID"),
     xaiApiKey: req("XAI_API_KEY"),
     grokModel: req("GROK_MODEL", "grok-4-1-fast-non-reasoning"),
+    grokResearchModel: req("GROK_RESEARCH_MODEL", "grok-4-1-fast-reasoning"),
     /** Browser OTP booking parked until partner APIs — default off. */
     browserBookingEnabled: req("BROWSER_BOOKING_ENABLED", "0") === "1",
     cursorApiKey: req("CURSOR_API_KEY"),

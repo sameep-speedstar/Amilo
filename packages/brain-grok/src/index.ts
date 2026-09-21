@@ -21,6 +21,11 @@ export interface GrokBrainConfig {
   apiKey: string;
   /** Default: grok-4-1-fast-non-reasoning (low-latency WhatsApp chat). */
   model?: string;
+  /**
+   * Model for live research (movies/dining/flights). Prefer a reasoning / agentic
+   * Grok so web_search can dig like grok.com. Default: grok-4-1-fast-reasoning.
+   */
+  researchModel?: string;
   /** Override OpenAI-compatible base URL (default https://api.x.ai/v1). */
   baseUrl?: string;
   /** Absolute path to repo `brain/` docs. Auto-resolved if omitted. */
@@ -364,7 +369,37 @@ export function extractResponsesText(payload: unknown): string {
   return chunks.join("\n").trim();
 }
 
-type ApiCfg = Required<Pick<GrokBrainConfig, "apiKey" | "model" | "baseUrl">>;
+type ApiCfg = {
+  apiKey: string;
+  model: string;
+  baseUrl: string;
+  researchModel?: string;
+};
+
+/** Domain allow-lists for research web_search (max 5 per xAI). */
+export function researchWebSearchDomains(message: string): string[] | null {
+  const t = message.trim();
+  if (!t) return null;
+  if (
+    /\b(movie|movies|film|films|cinema|showtimes?|pvr|inox|cinepolis|bookmyshow|theatre|theater|tickets?)\b/i.test(
+      t,
+    )
+  ) {
+    return ["bookmyshow.com", "in.bookmyshow.com", "pvrcinemas.com", "inoxmovies.com", "google.com"];
+  }
+  if (
+    /\b(dinner|lunch|brunch|restaurant|dining|pub|pubs|cafe|café|zomato|eazydiner)\b/i.test(t)
+  ) {
+    return ["google.com", "maps.google.com", "tripadvisor.com", "timeout.com", "tripadvisor.in"];
+  }
+  if (/\b(flight|flights|hotel|hotels|train|indigo|airline)\b/i.test(t)) {
+    return ["google.com", "makemytrip.com", "goibibo.com", "kayak.com", "skyscanner.co.in"];
+  }
+  if (/\b(uber|ola|cab|cabs|taxi|rapido)\b/i.test(t)) {
+    return ["google.com", "uber.com", "olacabs.com", "maps.google.com"];
+  }
+  return null;
+}
 
 /** Legacy chat/completions — triage / brief (no web tools). */
 async function chatCompletion(cfg: ApiCfg, system: string, user: string): Promise<string> {
@@ -408,6 +443,12 @@ async function responsesCompletion(
     user: string;
     previousResponseId?: string | null;
     webSearch?: boolean;
+    /** When set, web_search is restricted to these domains (max 5). */
+    webSearchAllowedDomains?: string[] | null;
+    /** Override model for this call (research vs chat). */
+    model?: string;
+    /** Longer timeout for research digs (grok.com often takes 30–60s). */
+    timeoutMs?: number;
     imageDataUrl?: string;
   },
 ): Promise<ResponsesResult> {
@@ -429,7 +470,7 @@ async function responsesCompletion(
   }
 
   const body: Record<string, unknown> = {
-    model: cfg.model,
+    model: opts.model ?? cfg.model,
     input,
     store: true,
     temperature: 0.3,
@@ -438,9 +479,18 @@ async function responsesCompletion(
     body.previous_response_id = opts.previousResponseId;
   }
   if (opts.webSearch) {
-    body.tools = [{ type: "web_search" }];
+    const domains = (opts.webSearchAllowedDomains ?? [])
+      .map((d) => d.trim().toLowerCase())
+      .filter(Boolean)
+      .slice(0, 5);
+    body.tools = [
+      domains.length
+        ? { type: "web_search", filters: { allowed_domains: domains } }
+        : { type: "web_search" },
+    ];
   }
 
+  const timeoutMs = opts.timeoutMs ?? 90_000;
   const res = await fetch(`${cfg.baseUrl.replace(/\/$/, "")}/responses`, {
     method: "POST",
     headers: {
@@ -448,7 +498,7 @@ async function responsesCompletion(
       "Content-Type": "application/json",
     },
     body: JSON.stringify(body),
-    signal: AbortSignal.timeout(90_000),
+    signal: AbortSignal.timeout(timeoutMs),
   });
   if (!res.ok) {
     const errBody = await res.text().catch(() => "");
@@ -479,9 +529,9 @@ function buildSystemPrompt(docs: string): string {
     "LIFE OPS / SEARCH (movies, dining, pubs, flights, showtimes, 'what's on'):",
     "- ALWAYS use live web search for these. Do not reuse prior Amilo stub replies from Recent chat.",
     "- Never reply with only an explore/list URL like bookmyshow.com/explore/movies-… — name real titles/venues from search when search returns them.",
-    "- Research-only for dining/movies/cabs/flights: lettered shortlists from web_search. Venue links = Google Maps only (distance/time). Do NOT send BookMyShow buytickets, Zomato, EazyDiner, or Dineout URLs — booking deep links are deferred until partner booking ships.",
+    "- Research-only for dining/movies/cabs/flights: lettered shortlists from web_search. Dining venues → Google Maps only (never Zomato/EazyDiner/Dineout). Movies → include real BookMyShow movie/cinema URLs returned by web_search (…/movies/…/ET###### or cinema pages). Never invent ET codes or buytickets with XXXX. Amilo does not book or pay — browse links only.",
     "- Never invent venues, showtimes, flight numbers, fares, seats, or BookMyShow ET codes.",
-    "- MOVIES / SHOWTIMES (hard rules): Only state a theatre + clock time if web_search results explicitly list that show. If search is thin or blocked, say so and list theatre names only (optional Maps link for the cinema) — NEVER invent ET codes or buytickets URLs, NEVER invent that every theatre has the user's requested time. Do not claim a show exists just because the user asked for that time. No booking/pay links yet.",
+    "- MOVIES / SHOWTIMES (hard rules): Dig with web_search (BookMyShow first). Only state a theatre + clock time if search explicitly lists that show. Prefer the exact BookMyShow movie or cinema URL from search results (like grok.com). If search is thin, say so — NEVER invent ET codes, buytickets with XXXX, or identical clocks at every theatre.",
     "- Never claim booked, paid, reserved, locked, ordered, or tickets held.",
     "- Browser / WhatsApp booking is OFF until partner APIs ship. If the user says book/reserve/buy tickets/table: do NOT propose_action life_ops_handoff and do NOT invent a final pay/confirm link. reply_text: state that Amilo cannot book or hand a final booking link yet, then offer to help find options (venues, showtimes, flights, cabs).",
     "- Format reply_text for WhatsApp: one short headline, then LETTERED options `A) Name — detail` EACH ON ITS OWN LINE (newline before every A)/B)/C)). Never pack A) B) C) onto one line. Prefer A) B) C) over 1) 2) 3) so picks never collide with FOCUS mail. Never bare '- ' bullets for pickable lists. Same rule for movies, cabs, flights, dining, pubs — every pickable list.",
@@ -490,7 +540,7 @@ function buildSystemPrompt(docs: string): string {
     "- NEVER put today's weekday/date in research replies unless the user said today/tonight/a date.",
     "- Keep domains separate: dinner replies must not reuse movie theatres/showtimes from Recent chat (and vice versa).",
     "- Dining OCCASION isolation (hard): client/business dinner ≠ dinner with wife/partner/family/friends. If this Message is a new occasion, ignore prior dining shortlists and constraints from a different occasion in Recent chat — answer only the current ask.",
-    "- Research goal: shortlist options; Maps for venues/theatres (distance/time). No booking deep links yet. Amilo does not book or pay.",
+    "- Research goal: shortlist options; Maps for dining; verified BookMyShow pages for movies/showtimes when search returns them. Amilo does not book or pay.",
     "- Rank options; dining research may use ~900–1200 chars so each lettered line can carry cuisine + ₹ + Maps. Other chat stays shorter. Lead with decision or next action.",
     "- When the user picks a letter/number (or name) but wants to book: state the booking limitation and offer more find help on that pick — do not propose handoff.",
     "- When the user says they already booked (movie/table), propose_action calendar_create for that block (use realistic duration, e.g. film ~2h).",
@@ -587,9 +637,12 @@ export function createGrokBrain(cfg: GrokBrainConfig): BrainPort {
   const brainDir = findBrainDir(cfg.brainDir);
   const docs = loadDocs(brainDir);
   const system = buildSystemPrompt(docs);
+  const chatModel = cfg.model ?? "grok-4-1-fast-non-reasoning";
+  const researchModel = cfg.researchModel ?? "grok-4-1-fast-reasoning";
   const api: ApiCfg = {
     apiKey: cfg.apiKey,
-    model: cfg.model ?? "grok-4-1-fast-non-reasoning",
+    model: chatModel,
+    researchModel,
     baseUrl: cfg.baseUrl ?? "https://api.x.ai/v1",
   };
   const webSearch = cfg.webSearch !== false;
@@ -640,17 +693,25 @@ export function createGrokBrain(cfg: GrokBrainConfig): BrainPort {
 
       const userPayload = buildUserPayload(cleanCtx, message);
       const researchHint = researchAsk
-        ? "\n\nRESEARCH MODE: Use web_search. Name real films/venues/cabs from search. LETTERED options (`A) Name — detail`) EACH ON ITS OWN LINE — never pack A) B) C) on one line. Prefer letters over 1) 2) 3) so picks never collide with FOCUS mail. DINING GOLD FORMAT (required): `A) Name — Cuisine; vibe/rating if known; ~₹X for two. Maps: https://www.google.com/maps/search/?api=1&query=<Name>+<Area>` — 3–5 options. NEVER Zomato/EazyDiner/Dineout — Maps only (distance/time). Client/business/fine-dine → upscale first (not casual pubs). Family → family-friendly. Never invent ₹ or ratings. MOVIES: search the title+city+theatre the user named (e.g. Mirzapur / Elante / Chandigarh). Only list theatre+time if search confirms that show; never invent ET codes or buytickets URLs with XXXX; if unsure, say search was thin and list what you can without inventing times — no buytickets URLs. Never invent today's date/weekday. Never mix movie theatres into dinner (or vice versa). Never mix client/business dinner with wife/partner/family dinner — this Message's occasion wins. End with: Reply with a letter to pick. Put FULL answer in intent.text. Never explore/movies stub only. No Zomato/Dineout/BMS-buy links. End with a single Reply with a letter to pick."
+        ? "\n\nRESEARCH MODE: Use web_search thoroughly (dig like grok.com — multiple sources). Name real films/venues/cabs from search. LETTERED options (`A) Name — detail`) EACH ON ITS OWN LINE — never pack A) B) C) on one line. Prefer letters over 1) 2) 3). DINING GOLD: `A) Name — Cuisine; vibe/rating if known; ~₹X for two. Maps: https://www.google.com/maps/search/?api=1&query=<Name>+<Area>` — NEVER Zomato/EazyDiner/Dineout. Client/business → upscale first. Family → family-friendly. Never invent ₹/ratings. MOVIES: search title + city + theatre on BookMyShow. Only list theatre+time if search confirms. If web_search returns a real BookMyShow movie page (…/movies/<city>/<slug>/ET######) or cinema page, INCLUDE that exact URL — never invent ET codes or buytickets with XXXX. Prefer verified BMS browse links over Maps for showtimes. Amilo does not book/pay; research links help the user open the live page themselves. Never invent today's date. Never mix movie↔dinner or client↔wife occasions. End with ONE line: Reply with a letter to pick. Put FULL answer in intent.text."
         : hasImage
           ? "\n\nIMAGE MODE: An image is attached. Read it carefully and answer in intent.text. If the user only sent the image, briefly say what you see and ask what they need."
           : "";
 
+      const searchDomains = researchAsk ? researchWebSearchDomains(message) : null;
       const run = async (prev: string | null, withSearch: boolean, payload: string) =>
         responsesCompletion(api, {
           ...(prev ? {} : { system }),
           user: payload + researchHint,
           previousResponseId: prev,
           webSearch: withSearch || researchAsk,
+          ...(researchAsk
+            ? {
+                model: api.researchModel ?? api.model,
+                timeoutMs: 150_000,
+                ...(searchDomains ? { webSearchAllowedDomains: searchDomains } : {}),
+              }
+            : {}),
           ...(ctx.imageDataUrl ? { imageDataUrl: ctx.imageDataUrl } : {}),
         });
 
@@ -659,7 +720,33 @@ export function createGrokBrain(cfg: GrokBrainConfig): BrainPort {
         result = await run(previousId, webSearch || researchAsk, userPayload);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        if (previousId && /404|not found|previous_response|invalid/i.test(msg)) {
+        // Domain filter may 400 on some accounts — retry research without domain filter.
+        if (
+          researchAsk &&
+          searchDomains &&
+          /tool|web_search|400|allowed_domains|filters/i.test(msg)
+        ) {
+          try {
+            result = await responsesCompletion(api, {
+              system,
+              user: userPayload + researchHint,
+              previousResponseId: null,
+              webSearch: true,
+              model: api.researchModel ?? api.model,
+              timeoutMs: 150_000,
+              ...(ctx.imageDataUrl ? { imageDataUrl: ctx.imageDataUrl } : {}),
+            });
+          } catch (errDomain) {
+            const msgD = errDomain instanceof Error ? errDomain.message : String(errDomain);
+            if (store) await store.set(ctx.userId, null);
+            if (/tool|web_search|400/i.test(msgD)) {
+              result = await run(null, false, userPayload);
+            } else {
+              const text = await chatCompletion(api, system, userPayload + researchHint);
+              return interpretFromModelText(text);
+            }
+          }
+        } else if (previousId && /404|not found|previous_response|invalid/i.test(msg)) {
           if (store) await store.set(ctx.userId, null);
           previousId = null;
           try {

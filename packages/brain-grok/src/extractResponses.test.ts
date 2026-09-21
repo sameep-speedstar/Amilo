@@ -6,6 +6,7 @@ import {
   interpretFromModelText,
   isLegacyStubReply,
   isLiveResearchAsk,
+  researchWebSearchDomains,
   sanitizeRecentChat,
 } from "./index.js";
 
@@ -93,6 +94,17 @@ describe("isLiveResearchAsk", () => {
       isLiveResearchAsk("suggest good dinner options near Sector 35 Chandigarh"),
       true,
     );
+  });
+
+  it("detects show-for research and movie domain allow-list", () => {
+    assert.equal(isLiveResearchAsk("Find shows for VIBE in PVR Vega City"), true);
+    const domains = researchWebSearchDomains("Find shows for VIBE in PVR Vega City");
+    assert.ok(domains);
+    assert.ok(domains!.includes("bookmyshow.com"));
+    assert.ok(domains!.length <= 5);
+    const dining = researchWebSearchDomains("client dinner near MG Road");
+    assert.ok(dining);
+    assert.ok(dining!.every((d) => !/zomato|eazydiner/i.test(d)));
   });
 });
 

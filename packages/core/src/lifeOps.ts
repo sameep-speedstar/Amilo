@@ -840,10 +840,10 @@ export function sanitizeLifeOpsReplyText(
     t = t.replace(/\bBookMyShow link\s*[—\-–:]\s*/gi, "");
   }
 
-  // Research-only: strip booking/checkout deep links (deferred until partner booking ships).
+  // Research-only: strip invented BMS checkout links; keep real movie/cinema pages.
   t = t.replace(
     /https?:\/\/(?:in\.)?bookmyshow\.com\/[^\s)>\]]*buytickets[^\s)>\]]*/gi,
-    "",
+    (url) => (isFakeBookMyShowUrl(url) ? "" : url),
   );
   t = t.replace(/\bBook via BookMyShow\.?/gi, "");
   t = t.replace(/\bNext:\s*BookMyShow link[^\n]*/gi, "");

@@ -182,6 +182,7 @@ function createBrain(): BrainPort {
     return createGrokBrain({
       apiKey: settings.xaiApiKey,
       model: settings.grokModel,
+      researchModel: settings.grokResearchModel,
       webSearch: true,
       sessionStore: {
         get: (userId) => getGrokResponseId(db, userId),

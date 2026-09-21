@@ -102,6 +102,7 @@ amilo_apply_container_and_settings() {
       CURSOR_BRAIN_REF="${CURSOR_BRAIN_REF:-main}" \
       XAI_API_KEY="${XAI_API_KEY:-}" \
       GROK_MODEL="${GROK_MODEL:-grok-4-1-fast-non-reasoning}" \
+      GROK_RESEARCH_MODEL="${GROK_RESEARCH_MODEL:-grok-4-1-fast-reasoning}" \
       PUBLIC_BASE_URL="${PUBLIC_BASE_URL:-}" \
       GOOGLE_CLIENT_ID="${GOOGLE_CLIENT_ID:-}" \
       GOOGLE_CLIENT_SECRET="${GOOGLE_CLIENT_SECRET:-}" \
