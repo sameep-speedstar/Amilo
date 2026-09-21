@@ -58,6 +58,7 @@ import {
   resolveListedOptionVenue,
   looksLikeMovieTicketAsk,
   isLifeOpsResearchShortlist,
+  scopeRecentChatForResearch,
   type LifeOpsResearchIntent,
 } from "./lifeOps.js";
 import {
@@ -3119,6 +3120,10 @@ export async function handleInbound(
       ? formatMailWorkingSet(storedMailSet)
       : undefined;
 
+  const scopedRecentChat = recentChatSummary
+    ? scopeRecentChatForResearch(recentChatSummary, text)
+    : null;
+
   const interpretCtx = {
     userId: msg.userId,
     name: name || "there",
@@ -3131,7 +3136,7 @@ export async function handleInbound(
       ? { calendarTomorrow: briefCtx.calendarTomorrow }
       : {}),
     contextGraphSummary,
-    ...(recentChatSummary ? { recentChatSummary } : {}),
+    ...(scopedRecentChat ? { recentChatSummary: scopedRecentChat } : {}),
     ...(replyToSummary ? { replyToSummary } : {}),
     recentMail: briefCtx.recentMail,
     googleAccountsSummary,

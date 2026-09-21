@@ -250,7 +250,13 @@ export function shortMapsSearchUrl(
 }
 
 export function zomatoSearchUrl(venue: string, city = "bangalore"): string {
-  return `https://www.zomato.com/${city}/restaurants?q=${encodeURIComponent(venue.trim().slice(0, 80))}`;
+  // "&" inside q= breaks many clients (treated as a new query param). Use "and".
+  const q = venue
+    .trim()
+    .slice(0, 80)
+    .replace(/\s*&\s*/g, " and ")
+    .replace(/\s+/g, " ");
+  return `https://www.zomato.com/${city}/restaurants?q=${encodeURIComponent(q)}`;
 }
 
 /** Best-effort dining book deep links (platform search / open). Exact slot fill needs partner IDs. */
@@ -263,16 +269,13 @@ export function buildDiningBookLinks(opts: {
 }): { zomato: string; dineout: string; eazydiner: string; maps: string } {
   const city = opts.city ?? diningCitySlug(opts.area) ?? "bangalore";
   const venue = opts.venue.trim().slice(0, 80);
-  const qParts = [venue];
-  if (opts.partySize && opts.partySize > 0) qParts.push(`table for ${opts.partySize}`);
-  if (opts.whenHint?.trim()) qParts.push(opts.whenHint.trim());
-  if (opts.area?.trim()) qParts.push(opts.area.trim());
-  const q = qParts.join(" ").slice(0, 120);
+  const zomatoQ = [venue, opts.area?.trim()].filter(Boolean).join(" ");
   const mapsArea = [opts.area, city !== "bangalore" ? city : "Bangalore"].filter(Boolean).join(" ");
+  const safe = (s: string) => s.replace(/\s*&\s*/g, " and ").replace(/\s+/g, " ").trim();
   return {
-    zomato: `https://www.zomato.com/${city}/restaurants?q=${encodeURIComponent(q)}`,
-    dineout: `https://www.dineout.co.in/${city}-restaurants?search=${encodeURIComponent(venue)}`,
-    eazydiner: `https://www.eazydiner.com/${city}/search?query=${encodeURIComponent(venue)}`,
+    zomato: zomatoSearchUrl(zomatoQ, city),
+    dineout: `https://www.dineout.co.in/${city}-restaurants?search=${encodeURIComponent(safe(venue))}`,
+    eazydiner: `https://www.eazydiner.com/${city}/search?query=${encodeURIComponent(safe(venue))}`,
     maps: shortMapsSearchUrl(venue, mapsArea || opts.area),
   };
 }
@@ -456,6 +459,33 @@ const FLIGHT_LINE_RE =
 const DOMAIN_SWITCH_USER_RE =
   /\b(cab|uber|ola|meru|gozo|taxi|airport|movie|movies|film|cinema|showtimes?|flight|flights|hotel|gilt|yield|chart|bond)\b/i;
 
+export type DiningOccasion = "client" | "partner" | "family" | "friends" | "general";
+
+/** Companion/purpose for a dining ask — used to stop client dinner leaking into wife dinner. */
+export function diningOccasion(text: string): DiningOccasion {
+  const t = text.trim();
+  if (!t) return "general";
+  if (
+    /\b(client|clients|business\s+dinner|work\s+dinner|investor|customer\s+dinner|corp(?:orate)?\s+dinner)\b/i.test(
+      t,
+    )
+  ) {
+    return "client";
+  }
+  if (
+    /\b(wife|husband|spouse|partner|girlfriend|boyfriend|date\s*night|anniversary|romantic)\b/i.test(
+      t,
+    )
+  ) {
+    return "partner";
+  }
+  if (/\b(family|kids?|children|parents?|\bmom\b|\bdad\b|in-?laws?)\b/i.test(t)) {
+    return "family";
+  }
+  if (/\b(friends?|mates?|buddies)\b/i.test(t)) return "friends";
+  return "general";
+}
+
 /** Cut a domain thread before the user pivots to another topic. */
 function threadUntilDomainSwitch(lines: string[], start: number, keepDomain: RegExp): string {
   let end = lines.length;
@@ -463,7 +493,19 @@ function threadUntilDomainSwitch(lines: string[], start: number, keepDomain: Reg
     const line = lines[i]!;
     if (!/^User:/i.test(line)) continue;
     if (keepDomain.test(line)) {
-      // same domain continue
+      // same domain continue — but dining occasion switches still cut
+      if (DINING_LINE_RE.test(line) || /\b(dinner|lunch|brunch)\b/i.test(line)) {
+        const startOcc = diningOccasion(lines[start] ?? "");
+        const lineOcc = diningOccasion(line);
+        if (
+          startOcc !== "general" &&
+          lineOcc !== "general" &&
+          startOcc !== lineOcc
+        ) {
+          end = i;
+          break;
+        }
+      }
       continue;
     }
     if (DOMAIN_SWITCH_USER_RE.test(line) && !keepDomain.test(line)) {
@@ -474,24 +516,36 @@ function threadUntilDomainSwitch(lines: string[], start: number, keepDomain: Reg
   return lines.slice(start, end).join("\n");
 }
 
-/** Prefer the latest dining ask + replies (avoids MG Road leaking into Chandigarh). */
-export function latestDiningThread(chat: string | null | undefined): string {
+/** Prefer the latest dining ask + replies (avoids MG Road / client leaking into wife dinner). */
+export function latestDiningThread(
+  chat: string | null | undefined,
+  currentText?: string | null,
+): string {
   const full = (chat ?? "").trim();
   if (!full) return "";
   const lines = full.split("\n");
+  const wantOcc = currentText?.trim() ? diningOccasion(currentText) : "general";
   let start = -1;
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]!;
     if (
-      /^User:/i.test(line) &&
-      /\b(dinner|lunch|brunch|restaurant|dining|table|zomato|eazydiner|dineout|family dinner|client dinner)\b/i.test(
+      !/^User:/i.test(line) ||
+      !/\b(dinner|lunch|brunch|restaurant|dining|table|zomato|eazydiner|dineout|family dinner|client dinner)\b/i.test(
         line,
       )
     ) {
-      start = i;
+      continue;
     }
+    const occ = diningOccasion(line);
+    // Specific occasion (wife/client/…) must not inherit a different dining ask.
+    if (wantOcc !== "general" && occ !== "general" && occ !== wantOcc) continue;
+    start = i;
   }
-  if (start < 0) return scopeChatToDining(full);
+  if (start < 0) {
+    // New occasion (e.g. wife) with only a prior different occasion in chat → blank, don't bleed.
+    if (wantOcc !== "general") return "";
+    return scopeChatToDining(full);
+  }
   return scopeChatToDining(
     threadUntilDomainSwitch(
       lines,
@@ -499,6 +553,26 @@ export function latestDiningThread(chat: string | null | undefined): string {
       /\b(dinner|lunch|brunch|restaurant|dining|table|zomato|family dinner|client dinner)\b/i,
     ),
   );
+}
+
+/**
+ * Scope recent chat for a live research ask so prior occasions/domains don't bleed.
+ * Dining: only the latest matching occasion thread. Movie/cab/travel: domain thread.
+ */
+export function scopeRecentChatForResearch(
+  chat: string | null | undefined,
+  message: string,
+): string {
+  const full = (chat ?? "").trim();
+  if (!full) return "";
+  if (looksLikeMovieTicketAsk(message) || MOVIE_LINE_RE.test(message)) {
+    return latestMovieThread(full) || full;
+  }
+  if (CAB_LINE_RE.test(message)) return latestCabThread(full) || full;
+  if (DINING_LINE_RE.test(message) || /\b(dinner|lunch|brunch)\b/i.test(message)) {
+    return latestDiningThread(full, message) || full;
+  }
+  return full;
 }
 
 /** Latest cab / airport-transfer thread only. */
@@ -655,7 +729,10 @@ function diningSearchReplacement(url: string, venueHint?: string | null): string
   const full = /^https?:\/\//i.test(url.trim()) ? url.trim() : `https://${url.trim()}`;
   const slugVenue =
     full.match(/\/([a-z0-9-]+)\/?(?:\?|$)/i)?.[1]?.replace(/-/g, " ") ?? null;
-  const venue = (venueHint?.trim() || slugVenue || "restaurant").slice(0, 80);
+  const venue = (venueHint?.trim() || slugVenue || "restaurant")
+    .replace(/\s*&\s*/g, " and ")
+    .replace(/\s+/g, " ")
+    .slice(0, 80);
   const citySlug =
     full.match(/eazydiner\.com\/([a-z-]+)\//i)?.[1] ??
     full.match(/zomato\.com\/([a-z-]+)\//i)?.[1] ??
@@ -721,23 +798,34 @@ export function sanitizeLifeOpsReplyText(
     },
   );
 
-  // Invented EazyDiner/Zomato/Dineout place slugs → search URLs (https + bare host).
+  // Any Zomato/EazyDiner/Dineout URL → full https search (bare hosts don't link on WA;
+  // place-slugs and raw "&" in q= are broken).
   t = t
     .split("\n")
     .map((line) => {
       const venueHint = venueNameFromDiningLine(line);
-      return line.replace(
+      let next = line.replace(
         /(?:https?:\/\/(?:www\.)?|(?<![\/\w])(?:www\.)?)(?:eazydiner\.com|zomato\.com|dineout\.co\.in)\/[^\s)>\]]+/gi,
         (matched) => {
-          const hadScheme = /^https?:\/\//i.test(matched);
-          const checkUrl = hadScheme ? matched : `https://${matched}`;
-          if (!isFakeDiningBookUrl(checkUrl)) return matched;
+          const checkUrl = /^https?:\/\//i.test(matched) ? matched : `https://${matched}`;
           scrubbedFake = true;
-          const replacement = diningSearchReplacement(checkUrl, venueHint);
-          if (hadScheme) return replacement;
-          return replacement.replace(/^https:\/\/(?:www\.)?/i, "");
+          return diningSearchReplacement(checkUrl, venueHint);
         },
       );
+      // Dining letter lines: ensure a Maps link when we have a venue (WA-reliable).
+      if (
+        venueHint &&
+        /zomato\.com|eazydiner\.com|dineout\.co\.in/i.test(next) &&
+        !/maps\.(google|app)|google\.com\/maps/i.test(next)
+      ) {
+        const area =
+          next.match(/\bnear\s+([A-Za-z][A-Za-z0-9 &'.-]{2,40})/i)?.[1] ??
+          (/\bmg\s*road\b/i.test(next) || /\bmg\s*road\b/i.test(t)
+            ? "MG Road Bangalore"
+            : "Bangalore");
+        next = `${next} Maps: ${shortMapsSearchUrl(venueHint, area)}`;
+      }
+      return next;
     })
     .join("\n");
 

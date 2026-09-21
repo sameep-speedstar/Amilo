@@ -139,6 +139,8 @@ export {
   isVendorBookOrReserveAsk,
   looksLikeCalendarBookingAsk,
   vendorBookingUnavailableReply,
+  diningOccasion,
+  scopeRecentChatForResearch,
   shortMapsSearchUrl,
   zomatoSearchUrl,
   type DiningResearchHints,

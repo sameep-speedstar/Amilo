@@ -40,10 +40,12 @@ import {
   coerceOptionPick,
   classifyVendorHandoffKind,
   cleanBookVenueName,
+  diningOccasion,
   looksLikeCalendarBookingAsk,
   looksLikeMovieTicketAsk,
   isVendorBookOrReserveAsk,
   vendorBookingUnavailableReply,
+  scopeRecentChatForResearch,
   resolveActiveDomain,
   canScriptVendorHandoff,
   hasStrongDiningCues,
@@ -327,8 +329,26 @@ describe("lifeOps", () => {
     const out = sanitizeLifeOpsReplyText(fake);
     assert.doesNotMatch(out, /olive-bar-and-kitchen-mg-road/);
     assert.doesNotMatch(out, /toscano-mg-road(?!\?)/);
-    assert.match(out, /zomato\.com\/bangalore\/restaurants\?q=/i);
+    assert.match(out, /https:\/\/www\.zomato\.com\/bangalore\/restaurants\?q=/i);
     assert.match(out, /Olive(%20|\+)?Bar/i);
+    assert.doesNotMatch(out, /q=[^&\s]*%26/); // no raw ampersand encoding that breaks clients
+    assert.match(out, /Maps: https:\/\/www\.google\.com\/maps/i);
+  });
+
+  it("isolates client dinner from wife dinner in recent chat", () => {
+    const chat = [
+      "User: Client dinner near MG Road under 3000",
+      "Amilo: A) Olive — fine dine. Zomato: https://www.zomato.com/bangalore/restaurants?q=Olive",
+      "User: Dinner with my wife near Indiranagar",
+    ].join("\n");
+    assert.equal(diningOccasion("Client dinner near MG Road"), "client");
+    assert.equal(diningOccasion("Dinner with my wife near Indiranagar"), "partner");
+    const scoped = scopeRecentChatForResearch(chat, "Dinner with my wife near Indiranagar");
+    assert.doesNotMatch(scoped, /Client dinner|Olive/i);
+    assert.match(scoped, /wife|Indiranagar/i);
+    const clientScoped = scopeRecentChatForResearch(chat, "more client dinner options on MG Road");
+    assert.match(clientScoped, /Client dinner|Olive/i);
+    assert.doesNotMatch(clientScoped, /wife/i);
   });
 
   it("scrubs invented BookMyShow show links", () => {
