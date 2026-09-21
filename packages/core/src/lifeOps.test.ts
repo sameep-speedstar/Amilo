@@ -21,6 +21,9 @@ import {
   parseMovieResearchHints,
   preferLifeOpsNumberPick,
   resolveListedOptionVenue,
+  resolveListedOptionMapsUrl,
+  diningPickAckReply,
+  isDiningCalendarBlockAffirm,
   latestDiningThread,
   diningCitySlug,
   buildDiningBookLinks,
@@ -644,9 +647,42 @@ describe("lifeOps", () => {
       vendorKind: "dining",
     });
     assert.match(reply, /can't book or reserve Burma Burma/i);
-    assert.match(reply, /final pay\/confirm link/i);
+    assert.doesNotMatch(reply, /partner booking APIs|pay\/confirm link/i);
     assert.match(reply, /help find/i);
     assert.doesNotMatch(reply, /Reply yes for/i);
+  });
+
+  it("dining letter pick ack: Maps + calendar ask", () => {
+    const list = [
+      "Dinner near Arekere",
+      "A) URU Brewpark — Indian; mid-range. Maps: https://www.google.com/maps/search/?api=1&query=URU+Brewpark+Arekere+Bangalore",
+      "B) A2B — vegetarian. Maps: https://www.google.com/maps/search/?api=1&query=A2B+Arekere",
+      "Reply with a letter to pick.",
+    ].join("\n");
+    assert.equal(resolveListedOptionVenue(list, "A"), "URU Brewpark");
+    assert.match(
+      resolveListedOptionMapsUrl(list, "A", "URU Brewpark")!,
+      /google\.com\/maps\/search.*URU/,
+    );
+    const ack = diningPickAckReply({
+      venue: "URU Brewpark",
+      mapsUrl: resolveListedOptionMapsUrl(list, "A"),
+      whenHint: null,
+    });
+    assert.match(ack, /Maps: https:\/\/www\.google\.com\/maps/);
+    assert.match(ack, /Shall I block your calendar/i);
+    assert.doesNotMatch(ack, /can't book|partner booking/i);
+    assert.equal(isDiningCalendarBlockAffirm("yes"), true);
+    assert.equal(isDiningCalendarBlockAffirm("yes block it"), true);
+    assert.equal(isDiningCalendarBlockAffirm("book Burma Burma"), false);
+  });
+
+  it("scrubs Western $-band prices from dining lines", () => {
+    const dollar =
+      "A) URU Brewpark — Indian, Brew Pub; family-friendly; $$ - $$$. Maps: https://www.google.com/maps/search/?api=1&query=URU+Brewpark";
+    const out = sanitizeLifeOpsReplyText(dollar);
+    assert.doesNotMatch(out, /\$/);
+    assert.match(out, /mid-range–upscale/i);
   });
 
   it("merges life-ops context into calendar block text", () => {

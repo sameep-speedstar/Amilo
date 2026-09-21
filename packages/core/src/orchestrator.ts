@@ -56,6 +56,10 @@ import {
   parseMoneyCapInr,
   parseCabProvider,
   resolveListedOptionVenue,
+  resolveListedOptionMapsUrl,
+  diningPickAckReply,
+  isDiningCalendarBlockAffirm,
+  shortMapsSearchUrl,
   looksLikeMovieTicketAsk,
   isLifeOpsResearchShortlist,
   scopeRecentChatForResearch,
@@ -893,7 +897,9 @@ async function proposeCalendarCreatePending(
   });
   const confirmHint = conflictNote
     ? "Reply yes to go ahead anyway, alternate for next free, or cancel."
-    : "Reply yes to write to Google Calendar, cancel to drop.";
+    : payload.location
+      ? "Reply yes to write to Google Calendar, cancel to drop. After it's on the calendar I'll send a leave-by travel advisory (travel time + buffer)."
+      : "Reply yes to write to Google Calendar, cancel to drop.";
   return [
     {
       text: [
@@ -2864,17 +2870,62 @@ export async function handleInbound(
       }
 
       if (venue && listKind === "dining" && !isBookPlatformOnly(venue)) {
+        const diningCtx = extractLifeOpsDiningContext(
+          recentChatSummary,
+          text,
+          msg.replyToContent,
+        );
+        const mapsUrl = resolveListedOptionMapsUrl(source, pickId, venue);
         return [
           {
-            text: [
-              `Got it — ${venue}.`,
-              vendorBookingUnavailableReply({
-                venueHint: venue,
-                vendorKind: "dining",
-              }),
-            ].join("\n"),
+            text: diningPickAckReply({
+              venue,
+              mapsUrl,
+              whenHint: diningCtx?.whenHint ?? null,
+              partySize: diningCtx?.partySize ?? null,
+            }),
           },
         ];
+      }
+    }
+  }
+
+  // Soft yes to "Shall I block your calendar?" after a dining pick (venue + when known).
+  if (
+    deps.createPending &&
+    isDiningCalendarBlockAffirm(text) &&
+    /Shall I block your calendar/i.test(recentChatSummary ?? "")
+  ) {
+    const diningCtx = extractLifeOpsDiningContext(
+      recentChatSummary,
+      text,
+      msg.replyToContent,
+    );
+    if (diningCtx?.venue && diningCtx.whenHint) {
+      const calText = mergeCalendarFollowUp(
+        mergeLifeOpsIntoCalendarText(
+          `block calendar Dinner at ${diningCtx.venue} ${diningCtx.whenHint}`,
+          recentChatSummary,
+        ),
+        recentChatSummary,
+        briefCtx.timezone,
+      );
+      const hint = parseCalendarCreateHint(calText, briefCtx.timezone);
+      if (hint) {
+        const location =
+          (await resolveCalendarLocation(msg.userId, calText, deps)) ??
+          diningCtx.venue;
+        return proposeCalendarCreatePending(msg, deps, briefCtx.timezone, {
+          title:
+            diningCtx.vibe === "pub"
+              ? `Drinks at ${diningCtx.venue}`
+              : `Dinner at ${diningCtx.venue}`,
+          start: hint.startIso,
+          end: hint.endIso,
+          startIso: hint.startIso,
+          endIso: hint.endIso,
+          location,
+        });
       }
     }
   }
@@ -2910,17 +2961,18 @@ export async function handleInbound(
         diningCtx.whenHint &&
         !isBookPlatformOnly(diningCtx.venue)
       ) {
+        const mapsUrl = shortMapsSearchUrl(
+          diningCtx.venue,
+          diningCtx.area ?? null,
+        );
         return [
           {
-            text: [
-              `Got it — ${diningCtx.venue} · ${diningCtx.whenHint}${
-                diningCtx.partySize ? ` · table for ${diningCtx.partySize}` : ""
-              }.`,
-              vendorBookingUnavailableReply({
-                venueHint: diningCtx.venue,
-                vendorKind: "dining",
-              }),
-            ].join("\n"),
+            text: diningPickAckReply({
+              venue: diningCtx.venue,
+              mapsUrl,
+              whenHint: diningCtx.whenHint,
+              partySize: diningCtx.partySize,
+            }),
           },
         ];
       }

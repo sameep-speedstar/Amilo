@@ -171,6 +171,90 @@ export function resolveListedOptionVenue(
   return null;
 }
 
+/** Full option line for a letter/number pick (A) … / 1) …). */
+export function resolveListedOptionLine(
+  recentChat: string | null | undefined,
+  optionId: string,
+): string | null {
+  const chat = (recentChat ?? "").trim();
+  if (!chat || !optionId) return null;
+  const id = optionId.trim();
+  const esc = id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const re = new RegExp(
+    `(?:^|\\n)\\s*(?:Amilo:\\s*)?${esc}\\)\\s+[^\\n]+`,
+    "gi",
+  );
+  let found: string | null = null;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(chat)) !== null) {
+    const line = m[0].replace(/^(?:\n)?\s*(?:Amilo:\s*)?/i, "").trim();
+    if (line.length >= 4) found = line;
+  }
+  if (found) return found;
+  // Fallback: same-line packed lists
+  const packed = new RegExp(
+    `(?:^|[^0-9A-Za-z])${esc}\\)\\s+([^\\n]+?)(?=\\s+[A-Z]\\d?\\)|\\s+[1-9]\\)|$)`,
+    "gi",
+  );
+  while ((m = packed.exec(chat)) !== null) {
+    const hit = `${id}) ${m[1]!.trim()}`;
+    if (hit.length >= 4) found = hit;
+  }
+  return found;
+}
+
+/** Maps URL on the picked dining line, or a fresh search URL for the venue. */
+export function resolveListedOptionMapsUrl(
+  recentChat: string | null | undefined,
+  optionId: string,
+  venue?: string | null,
+): string | null {
+  const line = resolveListedOptionLine(recentChat, optionId);
+  if (line) {
+    const m = line.match(
+      /https?:\/\/(?:www\.)?(?:google\.(?:com|co\.\w+)\/maps|maps\.app\.goo\.gl)[^\s)>\]]+/i,
+    );
+    if (m?.[0]) return m[0].replace(/[),.;]+$/, "");
+  }
+  const name = venue?.trim() || resolveListedOptionVenue(recentChat, optionId);
+  if (!name) return null;
+  const area =
+    (recentChat ?? "").match(
+      /\b(?:near|@)\s+([A-Za-z][A-Za-z0-9 &'.\/-]{2,40})/i,
+    )?.[1] ?? null;
+  return shortMapsSearchUrl(name, area);
+}
+
+/**
+ * After a dining letter pick: Maps link + calendar ask (research-only; no book/pay).
+ * Travel leave-by advisory fires once calendar is blocked with time + place.
+ */
+export function diningPickAckReply(opts: {
+  venue: string;
+  mapsUrl?: string | null;
+  whenHint?: string | null;
+  partySize?: number | null;
+}): string {
+  const venue = opts.venue.trim().slice(0, 80);
+  const maps = (opts.mapsUrl?.trim() || shortMapsSearchUrl(venue)).slice(0, 300);
+  const bits = [venue];
+  if (opts.whenHint?.trim()) bits.push(opts.whenHint.trim());
+  if (opts.partySize && opts.partySize > 0) bits.push(`table for ${opts.partySize}`);
+  const calAsk = opts.whenHint?.trim()
+    ? "Shall I block your calendar for then?"
+    : "Shall I block your calendar? Reply with day/time (e.g. tomorrow 8pm).";
+  return [`Got it — ${bits.join(" · ")}.`, `Maps: ${maps}`, calAsk].join("\n");
+}
+
+/** Soft yes to "Shall I block your calendar?" after a dining pick. */
+export function isDiningCalendarBlockAffirm(text: string): boolean {
+  const t = text.trim();
+  if (!t || t.length > 40) return false;
+  return /^(?:(?:yes|yeah|yep|sure|ok|okay|please|y)\b[\s,.]*)+(?:block(?:\s+it)?|do\s+it|go\s+ahead)?\.?$/i.test(
+    t,
+  );
+}
+
 const MONEY_CAP_RE =
   /(?:under|below|max(?:imum)?|cap(?:ped)?(?:\s+at)?|budget(?:\s+of)?|upto|up to)\s*(?:₹|rs\.?|inr)?\s*([\d,]+(?:\.\d+)?)\s*(k|thousand)?/i;
 const RUPEE_RE = /(?:₹|rs\.?|inr)\s*([\d,]+(?:\.\d+)?)\s*(k|thousand)?/i;
@@ -754,6 +838,17 @@ function venueNameFromDiningLine(line: string): string | null {
   return m[1].replace(/\s+/g, " ").trim().slice(0, 80) || null;
 }
 
+/** Western $-band prices (Zomato/Google style) — never send $ on India WA. */
+const DOLLAR_PRICE_BAND_RE = /(\${1,4})\s*[-–—]\s*(\${1,4})/g;
+const DOLLAR_PRICE_SOLO_RE = /(?<![A-Za-z0-9])\${1,4}(?![A-Za-z0-9.])/g;
+
+function dollarBandLabel(n: number): string {
+  if (n >= 4) return "fine-dining";
+  if (n === 3) return "upscale";
+  if (n === 2) return "mid-range";
+  return "budget";
+}
+
 /**
  * Scrub invented showtimes / fake BMS deep-links from outbound life-ops replies.
  * Prefer a verified movie page (ET###### from the same reply or recent chat); else explore.
@@ -799,6 +894,7 @@ export function sanitizeLifeOpsReplyText(
   );
 
   // Dining: strip Zomato/EazyDiner/Dineout — Maps only (distance/time shortlisting).
+  // Also kill Western $-band prices ($$ / $$$) — India copy uses ~₹X for two or mid/upscale words.
   t = t
     .split("\n")
     .map((line) => {
@@ -806,7 +902,7 @@ export function sanitizeLifeOpsReplyText(
       const hadDiningPlatform = /zomato|eazy\s*diner|dineout/i.test(line);
       const looksDiningLine =
         hadDiningPlatform ||
-        /\b(for two|₹|rs\.?|cuisine|rooftop|fine.?dine|restaurant|bistro|dhaba|pub|brewery)\b/i.test(
+        /\$+|₹|rs\.?|for two|cuisine|rooftop|fine.?dine|restaurant|bistro|dhaba|pub|brewery/i.test(
           line,
         );
       let next = line
@@ -815,6 +911,13 @@ export function sanitizeLifeOpsReplyText(
           /(?:https?:\/\/(?:www\.)?|(?<![\/\w])(?:www\.)?)(?:eazydiner\.com|zomato\.com|dineout\.co\.in)\/[^\s)>\]]+/gi,
           "",
         )
+        .replace(DOLLAR_PRICE_BAND_RE, (_, left: string, right?: string) => {
+          const a = dollarBandLabel(left.length);
+          const b = right ? dollarBandLabel(right.length) : null;
+          if (b && b !== a) return `${a}–${b}`;
+          return a;
+        })
+        .replace(DOLLAR_PRICE_SOLO_RE, (m) => dollarBandLabel(m.length))
         .replace(/\s{2,}/g, " ")
         .replace(/\s+([.,;])/g, "$1")
         .trim();
@@ -1158,7 +1261,7 @@ export function isVendorBookOrReserveAsk(text: string): boolean {
   return kind === "dining" || kind === "cab" || kind === "movie" || kind === "travel";
 }
 
-/** Short WA copy: cannot book/reserve or emit a final pay link; offer find help. */
+/** Short WA copy: cannot book/reserve yet; offer find help. */
 export function vendorBookingUnavailableReply(opts?: {
   venueHint?: string | null;
   vendorKind?: VendorHandoffKind | null;
@@ -1166,8 +1269,8 @@ export function vendorBookingUnavailableReply(opts?: {
   const who = opts?.venueHint?.trim() || null;
   const kind = opts?.vendorKind ?? null;
   const head = who
-    ? `I can't book or reserve ${who} from Amilo yet — partner booking APIs aren't live, so I also can't give you a final pay/confirm link.`
-    : `I can't book or reserve from Amilo yet — partner booking APIs aren't live, so I also can't give you a final pay/confirm link.`;
+    ? `I can't book or reserve ${who} from Amilo yet.`
+    : `I can't book or reserve from Amilo yet.`;
   const offer =
     kind === "cab"
       ? "I can help find cab options though — where/when?"

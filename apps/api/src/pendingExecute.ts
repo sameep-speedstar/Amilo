@@ -387,9 +387,16 @@ export async function executePendingAction(
       });
       return {
         ok: true,
-        message: attendees.length
-          ? `Added to Google Calendar (${label}): ${title} — invited ${attendees.join(", ")}`
-          : `Added to Google Calendar (${label}): ${title}`,
+        message: [
+          attendees.length
+            ? `Added to Google Calendar (${label}): ${title} — invited ${attendees.join(", ")}`
+            : `Added to Google Calendar (${label}): ${title}`,
+          created.location
+            ? "I'll send a leave-by travel advisory before you need to head out (travel time + buffer)."
+            : null,
+        ]
+          .filter(Boolean)
+          .join("\n"),
       };
     }
 
