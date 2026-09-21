@@ -83,6 +83,17 @@ describe("isLiveResearchAsk", () => {
     assert.equal(isLiveResearchAsk("Book 2 tickets for VIBE"), true);
     assert.equal(isLiveResearchAsk("Book Katani Dhaba Fri 8pm"), false);
   });
+
+  it("detects dining research including client dinner", () => {
+    assert.equal(
+      isLiveResearchAsk("Have to take my client for a dinner near MG road, suggest options"),
+      true,
+    );
+    assert.equal(
+      isLiveResearchAsk("suggest good dinner options near Sector 35 Chandigarh"),
+      true,
+    );
+  });
 });
 
 describe("sanitizeRecentChat / isLegacyStubReply", () => {
