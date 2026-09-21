@@ -106,6 +106,35 @@ describe("isLiveResearchAsk", () => {
     assert.ok(dining);
     assert.ok(dining!.every((d) => !/zomato|eazydiner/i.test(d)));
   });
+
+  it("auto-searches NSE IPO / gilt / follow-ups (screenshot failures)", () => {
+    assert.equal(
+      isLiveResearchAsk("How much NSE IPO is subscribed as of yesterday?"),
+      true,
+    );
+    assert.equal(
+      isLiveResearchAsk("UK 30 year yield declined last week, read about it for reasons.", {
+        hasImage: true,
+      }),
+      true,
+    );
+    assert.equal(
+      isLiveResearchAsk("Share more details", {
+        recentChat: "Amilo: UK 30Y gilt yield fell…",
+        hasImage: true,
+      }),
+      true,
+    );
+    assert.equal(
+      isLiveResearchAsk("What are the reasons?", {
+        recentChat: "UK 30Y yield declined",
+      }),
+      true,
+    );
+    assert.equal(isLiveResearchAsk("web search and check", {
+      recentChat: "How much NSE IPO is subscribed as of yesterday?",
+    }), true);
+  });
 });
 
 describe("sanitizeRecentChat / isLegacyStubReply", () => {

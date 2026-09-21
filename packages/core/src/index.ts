@@ -161,6 +161,19 @@ export {
   type VendorHandoffKind,
 } from "./lifeOps.js";
 export {
+  extractInstrumentHint,
+  looksLikeFactualMarketText,
+  scrubFactualFiller,
+  fixComparativeConsistency,
+  enforceInstrumentLock,
+  annotateStaleOrWeekendAsOf,
+  ensureSourceOrUnverified,
+  sanitizeFactualReplyText,
+  splitWhatsAppText,
+  outboundTextsFromReply,
+} from "./factualGuard.js";
+export type { FactualGuardOpts } from "./factualGuard.js";
+export {
   DELETE_MENU,
   HOW_IT_WORKS,
   STANDING_HELP,

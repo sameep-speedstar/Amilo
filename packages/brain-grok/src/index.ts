@@ -398,6 +398,19 @@ export function researchWebSearchDomains(message: string): string[] | null {
   if (/\b(uber|ola|cab|cabs|taxi|rapido)\b/i.test(t)) {
     return ["google.com", "uber.com", "olacabs.com", "maps.google.com"];
   }
+  if (
+    /\b(ipo|subscribed|subscription|qib|gilt|yield|bond|cpi|inflation|boe|nifty|sensex|stock)\b/i.test(
+      t,
+    )
+  ) {
+    return [
+      "google.com",
+      "reuters.com",
+      "moneycontrol.com",
+      "chittorgarh.com",
+      "bankofengland.co.uk",
+    ];
+  }
   return null;
 }
 
@@ -548,7 +561,8 @@ function buildSystemPrompt(docs: string): string {
     "- Never return propose_action type life_ops_research — answer in reply_text with live findings.",
     "- Never return propose_action type life_ops_handoff for dining/cab/movie/travel book/reserve — use reply_text with the limitation + find offer.",
     "- intent.text MUST contain the full answer (names, lettered options). Never empty text / noop after search.",
-    "IMAGES: When an image is attached, read it (charts, screenshots, tickets). Answer from what is visible; say if unclear. Still return JSON with reply_text.",
+    "IMAGES: When an image is attached, read the title/legend first (instrument, tenor, timeframe). Lead the reply with that lock (e.g. 'UK 30Y · weekly'). Answer about THAT instrument only — never substitute 10Y for 30Y. For why/reasons/drivers: MUST call web_search for this instrument; every figure/event needs a source from this turn or say couldn't verify. Still return JSON with reply_text.",
+    "FACTUAL / MARKETS / NEWS (IPO, yields, gilts, CPI, rates, 'as of/yesterday/latest'): ALWAYS use web_search this turn. Never answer from memory alone. Every number, %, x-subscription, bp, named event must come from search this turn — else omit or say couldn't verify. End with one short Src: line (outlet + as-of date). If the ask date is a weekend/holiday with no bidding, say so and use the last session's as-of. No filler like 'no other IPOs reported' unless search shows it. Check math: do not say a number is below another when it is higher.",
     "After the user picks from YOUR lettered list: acknowledge the pick and ask only for missing params (day/time/party). Booking handoff is not built yet — if they say book/reserve, state that limitation and keep helping with research. Never invent ET codes or showtimes. Maps only for place links. Never claim reserved.",
     "graphUpdates: only durable facts; empty array if nothing new.",
     "Reply text: short, concrete, ranked; usually under 500 characters for chat; dining/search lists up to ~1200 so gold-format options fit; lettered picks (A) B) C)) for 2+ venues/films; no therapist mode; no sycophancy.",
@@ -676,14 +690,19 @@ export function createGrokBrain(cfg: GrokBrainConfig): BrainPort {
     },
 
     async interpret(ctx: BrainUserContext, message: string): Promise<InterpretResult> {
-      const researchAsk = isLiveResearchAsk(message);
+      const researchKind = liveResearchKind(message, {
+        ...(ctx.recentChatSummary != null ? { recentChat: ctx.recentChatSummary } : {}),
+        hasImage: Boolean(ctx.imageDataUrl),
+      });
+      const researchAsk = researchKind != null;
+      const factualAsk = researchKind === "factual";
+      const lifeOpsAsk = researchKind === "life_ops";
       const hasImage = Boolean(ctx.imageDataUrl);
       const cleanCtx: BrainUserContext = {
         ...ctx,
         recentChatSummary: sanitizeRecentChat(ctx.recentChatSummary) ?? "none yet",
       };
-      // Research asks: always start a fresh Responses thread so we never inherit the
-      // Places-era system prompt or parrot BMS explore stubs from chat history.
+      // Research asks: fresh Responses thread — no stale session invents / BMS stubs.
       let previousId: string | null = null;
       if ((researchAsk || hasImage) && store) {
         await store.set(ctx.userId, null);
@@ -692,13 +711,34 @@ export function createGrokBrain(cfg: GrokBrainConfig): BrainPort {
       }
 
       const userPayload = buildUserPayload(cleanCtx, message);
-      const researchHint = researchAsk
-        ? "\n\nRESEARCH MODE: Use web_search thoroughly (dig like grok.com — multiple sources). Name real films/venues/cabs from search. LETTERED options (`A) Name — detail`) EACH ON ITS OWN LINE — never pack A) B) C) on one line. Prefer letters over 1) 2) 3). DINING GOLD: `A) Name — Cuisine; vibe/rating if known; ~₹X for two. Maps: https://www.google.com/maps/search/?api=1&query=<Name>+<Area>` — NEVER Zomato/EazyDiner/Dineout; NEVER $/$$/$$$ bands (₹ only or mid-range/upscale words). Client/business → upscale first. Family → family-friendly. Never invent ₹/ratings. MOVIES: search title + city + theatre on BookMyShow. Only list theatre+time if search confirms. If web_search returns a real BookMyShow movie page (…/movies/<city>/<slug>/ET######) or cinema page, INCLUDE that exact URL — never invent ET codes or buytickets with XXXX. Prefer verified BMS browse links over Maps for showtimes. Amilo does not book/pay; research links help the user open the live page themselves. Never invent today's date. Never mix movie↔dinner or client↔wife occasions. End with ONE line: Reply with a letter to pick. Put FULL answer in intent.text."
-        : hasImage
-          ? "\n\nIMAGE MODE: An image is attached. Read it carefully and answer in intent.text. If the user only sent the image, briefly say what you see and ask what they need."
-          : "";
+      const lifeOpsHint =
+        "\n\nRESEARCH MODE: Use web_search thoroughly (dig like grok.com — multiple sources). Name real films/venues/cabs from search. LETTERED options (`A) Name — detail`) EACH ON ITS OWN LINE — never pack A) B) C) on one line. Prefer letters over 1) 2) 3). DINING GOLD: `A) Name — Cuisine; vibe/rating if known; ~₹X for two. Maps: https://www.google.com/maps/search/?api=1&query=<Name>+<Area>` — NEVER Zomato/EazyDiner/Dineout; NEVER $/$$/$$$ bands (₹ only or mid-range/upscale words). Client/business → upscale first. Family → family-friendly. Never invent ₹/ratings. MOVIES: search title + city + theatre on BookMyShow. Only list theatre+time if search confirms. If web_search returns a real BookMyShow movie page (…/movies/<city>/<slug>/ET######) or cinema page, INCLUDE that exact URL — never invent ET codes or buytickets with XXXX. Prefer verified BMS browse links over Maps for showtimes. Amilo does not book/pay; research links help the user open the live page themselves. Never invent today's date. Never mix movie↔dinner or client↔wife occasions. End with ONE line: Reply with a letter to pick. Put FULL answer in intent.text.";
+      const factualHint =
+        "\n\nFACTUAL RESEARCH MODE: You MUST call web_search before answering — dig like grok.com. Do not use prior chat inventions. Rules: (1) Lead with the instrument/topic from the question or chart title (e.g. UK 30Y weekly — never swap 10Y for 30Y). (2) Every number, %, subscription multiple, bp move, named event must appear in THIS turn's search hits — else omit or say couldn't verify. (3) Include one short Src: line with outlet + as-of date. (4) If user said yesterday/as of and that day is a weekend/holiday with no market/IPO bidding, say so and use the last session's figures with the correct as-of date. (5) No filler claims ('no other X reported') unless search supports them. (6) Check comparatives: if A > B do not say A is below B. (7) Follow-ups (more details / why / reasons) = fresh deeper search, never invent specifics. Put FULL answer in intent.text.";
+      const imageHint = hasImage
+        ? "\n\nIMAGE MODE: An image is attached. Read the chart/screenshot title and legend FIRST — lock instrument, tenor, timeframe at the top of intent.text. Answer only about that instrument. If the caption asks why/reasons/drivers, you MUST web_search for that instrument's move; do not invent CPI/BoE/LDI figures."
+        : "";
+      const researchHint = lifeOpsAsk
+        ? lifeOpsHint
+        : factualAsk
+          ? factualHint + imageHint
+          : hasImage
+            ? imageHint ||
+              "\n\nIMAGE MODE: An image is attached. Read it carefully and answer in intent.text. If the user only sent the image, briefly say what you see and ask what they need."
+            : "";
 
-      const searchDomains = researchAsk ? researchWebSearchDomains(message) : null;
+      const searchDomains = researchAsk
+        ? researchWebSearchDomains(message) ??
+          (factualAsk
+            ? [
+                "google.com",
+                "reuters.com",
+                "moneycontrol.com",
+                "chittorgarh.com",
+                "bankofengland.co.uk",
+              ]
+            : null)
+        : null;
       const run = async (prev: string | null, withSearch: boolean, payload: string) =>
         responsesCompletion(api, {
           ...(prev ? {} : { system }),
@@ -715,12 +755,19 @@ export function createGrokBrain(cfg: GrokBrainConfig): BrainPort {
           ...(ctx.imageDataUrl ? { imageDataUrl: ctx.imageDataUrl } : {}),
         });
 
+      const factualSearchFail = (): InterpretResult => ({
+        intent: {
+          type: "reply_text",
+          text: "Couldn't run live web search right now — I won't invent market/IPO figures. Try again in a minute.",
+        },
+        graphUpdates: [],
+      });
+
       let result: ResponsesResult;
       try {
         result = await run(previousId, webSearch || researchAsk, userPayload);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        // Domain filter may 400 on some accounts — retry research without domain filter.
         if (
           researchAsk &&
           searchDomains &&
@@ -740,6 +787,7 @@ export function createGrokBrain(cfg: GrokBrainConfig): BrainPort {
             const msgD = errDomain instanceof Error ? errDomain.message : String(errDomain);
             if (store) await store.set(ctx.userId, null);
             if (/tool|web_search|400/i.test(msgD)) {
+              if (factualAsk) return factualSearchFail();
               result = await run(null, false, userPayload);
             } else {
               const text = await chatCompletion(api, system, userPayload + researchHint);
@@ -754,6 +802,7 @@ export function createGrokBrain(cfg: GrokBrainConfig): BrainPort {
           } catch (err2) {
             const msg2 = err2 instanceof Error ? err2.message : String(err2);
             if ((webSearch || researchAsk) && /tool|web_search|400/i.test(msg2)) {
+              if (factualAsk) return factualSearchFail();
               result = await run(null, false, userPayload);
             } else {
               if (store) await store.set(ctx.userId, null);
@@ -762,6 +811,7 @@ export function createGrokBrain(cfg: GrokBrainConfig): BrainPort {
             }
           }
         } else if ((webSearch || researchAsk) && /tool|web_search|400/i.test(msg)) {
+          if (factualAsk) return factualSearchFail();
           result = await run(previousId, false, userPayload);
         } else {
           if (store) await store.set(ctx.userId, null);
@@ -771,9 +821,8 @@ export function createGrokBrain(cfg: GrokBrainConfig): BrainPort {
       }
 
       let interpreted = interpretFromModelText(result.text);
-      // Model parroted the BMS explore stub — hard retry with zero chat history + web search.
       if (
-        researchAsk &&
+        lifeOpsAsk &&
         interpreted.intent.type === "reply_text" &&
         isLegacyStubReply(interpreted.intent.text)
       ) {
@@ -799,15 +848,14 @@ export function createGrokBrain(cfg: GrokBrainConfig): BrainPort {
   };
 }
 
-/** Open web research — movies, dining, flights, showtimes. */
-export function isLiveResearchAsk(message: string): boolean {
+/** Life-ops open web research — movies, dining, flights, showtimes. */
+export function isLifeOpsResearchAsk(message: string): boolean {
   const t = message.trim();
   if (!t) return false;
   const stripped = t.replace(/\bbook\s*my\s*show\b/gi, "BMS");
   const movieTicket =
     /\b(tickets?|seats?)\b/i.test(t) ||
     /\b(movie|movies|film|films|cinema|showtimes?|pvr|inox|cinepolis|theatre|theater)\b/i.test(t);
-  // Dining "book Katani" is a handoff. Movie "book two tickets for Mirzapur" is still research.
   if (/\b(book|buy|order|reserve)\b/i.test(stripped) && !movieTicket) {
     return false;
   }
@@ -819,6 +867,89 @@ export function isLiveResearchAsk(message: string): boolean {
     (/^(which|what)\b/i.test(t) && /\b(near|this\s+week|today|tonight)\b/i.test(t)) ||
     /\b(shows?\s+for|timings?)\b/i.test(t)
   );
+}
+
+/** Market / news / time-sensitive factual questions that must auto-search. */
+export function isFactualMarketAsk(message: string): boolean {
+  const t = message.trim();
+  if (!t) return false;
+  if (isLifeOpsResearchAsk(t)) return false;
+  const timeSensitive =
+    /\b(today|yesterday|tonight|latest|as of|this week|right now|currently|live)\b/i.test(t);
+  const market =
+    /\b(ipo|ipos|subscription|subscribed|qib|nii|hni|retail tranche|gilt|gilts|yield|yields|bond|bonds|boE|bank of england|cpi|inflation|rate cut|rate hike|fed|fomc|rbi|nifty|sensex|equity|equities|stock|stocks|qt\b|treasury|oil price|brent)\b/i.test(
+      t,
+    );
+  const newsy =
+    /\b(why did|reasons?|what (?:drove|caused)|read about|news|headline)\b/i.test(t) &&
+    /\b(yield|gilt|bond|ipo|cpi|rate|market|stock|equity)\b/i.test(t);
+  return market || newsy || (timeSensitive && /\b(ipo|yield|gilt|bond|cpi|nifty|sensex|subscribed)\b/i.test(t));
+}
+
+/** Follow-ups that must re-search — not just elaborate. */
+export function isResearchFollowUpAsk(
+  message: string,
+  opts?: { recentChat?: string | null; hasImage?: boolean },
+): boolean {
+  const t = message.trim();
+  if (!t || t.length > 120) return false;
+  const follow =
+    /^(?:share\s+)?(?:more\s+)?details\b/i.test(t) ||
+    /^(?:what(?:'s| are| is)?\s+)?(?:the\s+)?reasons?\b/i.test(t) ||
+    /^why\b/i.test(t) ||
+    /\b(web\s*search|search\s+(?:and\s+)?check|look\s+it\s+up|google\s+it)\b/i.test(t) ||
+    /^(?:tell me more|go deeper|dig (?:in|deeper)|elaborate)\b/i.test(t);
+  if (!follow) return false;
+  if (opts?.hasImage) return true;
+  const chat = opts?.recentChat ?? "";
+  return (
+    isFactualMarketAsk(chat) ||
+    /\b(yield|gilt|ipo|cpi|bond|subscribed|EMA|chart)\b/i.test(chat) ||
+    Boolean(extractInstrumentFromBlob(chat))
+  );
+}
+
+function extractInstrumentFromBlob(blob: string): string | null {
+  if (/\b30[\s-]*(?:year|yr|y)|30Y\b/i.test(blob) && /\b(UK|gilt|United Kingdom)\b/i.test(blob)) {
+    return "UK 30Y";
+  }
+  if (/\bNSE\s+IPO\b/i.test(blob)) return "NSE IPO";
+  return null;
+}
+
+export type LiveResearchKind = "life_ops" | "factual";
+
+/**
+ * Open web research — life-ops OR market/factual (incl. image chart follow-ups).
+ * When true, interpret forces web_search + reasoning model + fresh session.
+ */
+export function isLiveResearchAsk(
+  message: string,
+  opts?: { recentChat?: string | null; hasImage?: boolean },
+): boolean {
+  return liveResearchKind(message, opts) != null;
+}
+
+export function liveResearchKind(
+  message: string,
+  opts?: { recentChat?: string | null; hasImage?: boolean },
+): LiveResearchKind | null {
+  if (isLifeOpsResearchAsk(message)) return "life_ops";
+  if (isFactualMarketAsk(message)) return "factual";
+  if (isResearchFollowUpAsk(message, opts)) return "factual";
+  // Chart + caption asking why / reasons / read about → factual dig
+  if (
+    opts?.hasImage &&
+    /\b(why|reason|reasons|read about|declined|fell|drop|dropped|drivers?)\b/i.test(message)
+  ) {
+    return "factual";
+  }
+  return null;
+}
+
+/** @deprecated alias — prefer isLiveResearchAsk */
+export function isLiveResearchAskMessage(message: string): boolean {
+  return isLiveResearchAsk(message);
 }
 
 export type BorderlineMail = {

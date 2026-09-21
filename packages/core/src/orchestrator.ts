@@ -66,6 +66,11 @@ import {
   type LifeOpsResearchIntent,
 } from "./lifeOps.js";
 import {
+  looksLikeFactualMarketText,
+  outboundTextsFromReply,
+  sanitizeFactualReplyText,
+} from "./factualGuard.js";
+import {
   DELETE_MENU,
   HOW_IT_WORKS,
   STANDING_HELP,
@@ -3834,9 +3839,22 @@ export async function handleInbound(
       if (composeAsk && deps.createPending) {
         return proposeEmailComposePending(msg, deps, composeAsk, { userName: name });
       }
-      const reply = sanitizeLifeOpsReplyText(result.intent.text.trim(), {
+      const replyRaw = sanitizeLifeOpsReplyText(result.intent.text.trim(), {
         ...(recentChatSummary != null ? { recentChat: recentChatSummary } : {}),
       });
+      const replyFactual =
+        looksLikeFactualMarketText(text) ||
+        looksLikeFactualMarketText(replyRaw) ||
+        looksLikeFactualMarketText(msg.replyToContent) ||
+        Boolean(msg.imageDataUrl)
+          ? sanitizeFactualReplyText(replyRaw, {
+              userText: text,
+              ...(recentChatSummary != null ? { recentChat: recentChatSummary } : {}),
+              ...(msg.replyToContent != null ? { replyToContent: msg.replyToContent } : {}),
+              timeZone: briefCtx.timezone,
+            })
+          : replyRaw;
+      const reply = replyFactual;
       // Bare option picks never re-wrap as a new research list — handoff path owns those.
       // Never wrap macro/IQ numbered lists (bond yields, IPO facts) as life_ops_research.
       const isBareOptionPick = Boolean(parseLifeOpsOptionPick(text));
@@ -3863,9 +3881,9 @@ export async function handleInbound(
         });
         // Show Grok findings as normal chat — do not label Proposed (life_ops_research).
         // Do not append a second "Reply with a letter…" footer (Grok already ends with one).
-        return [{ text: reply }];
+        return outboundTextsFromReply(reply);
       }
-      if (reply) return [{ text: reply }];
+      if (reply) return outboundTextsFromReply(reply);
       return [
         {
           text: result.graphUpdates?.length
