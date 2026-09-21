@@ -60,7 +60,7 @@ import {
   resolveListedOptionVenue,
   diningCitySlug,
   looksLikeMovieTicketAsk,
-  isLifeOpsPickableList,
+  isLifeOpsResearchShortlist,
   parseBookMyShowUrl,
   scopeChatToDining,
   extractUserStatedWhen,
@@ -752,6 +752,15 @@ export function looksLikeNewActionIntent(
   if (isReminderAsk(t)) return true;
   if (parseLifeOpsResearchIntent(t) || parseLifeOpsHandoffIntent(t)) return true;
   if (/\b(send|draft)\b/i.test(t) && /\b(email|mail|invite)\b/i.test(t)) return true;
+  // Macro / markets / general IQ — never trapped behind a life-ops pending.
+  if (
+    /\b(yield|bond|gilt|ipo|nifty|sensex|stock|fed|rbi|inflation|cpi|gdp|earnings|market)\b/i.test(
+      t,
+    ) &&
+    !/\b(dinner|lunch|movie|flight|uber|zomato|book)\b/i.test(t)
+  ) {
+    return true;
+  }
   if (/\bcalendar invite\b/i.test(t)) return true;
   if (/\binvite\b/i.test(t) && /@|\bspeedstar\b|\brajeev\b|\brajiv\b/i.test(t)) return true;
   if (
@@ -3004,7 +3013,13 @@ export async function handleInbound(
         ];
       } else if (venue && listKind === "dining" && !isBookPlatformOnly(venue)) {
         const diningChat = latestDiningThread(recentChatSummary);
-        const diningCtx = extractLifeOpsDiningContext(recentChatSummary, text, replyTo);
+        // Don't inherit "today" / times from a prior movie thread.
+        const diningOnlyChat = scopeChatToDining(diningChat || recentChatSummary);
+        const diningCtx = extractLifeOpsDiningContext(
+          diningOnlyChat,
+          text,
+          replyTo,
+        );
         const city = diningCitySlug(diningCtx?.area ?? diningChat);
         if (!diningCtx?.whenHint) {
           const needParty = diningCtx?.partySize == null;
@@ -4179,18 +4194,16 @@ export async function handleInbound(
         ...(recentChatSummary != null ? { recentChat: recentChatSummary } : {}),
       });
       // Bare option picks never re-wrap as a new research list — handoff path owns those.
+      // Never wrap macro/IQ numbered lists (bond yields, IPO facts) as life_ops_research.
       const isBareOptionPick = Boolean(parseLifeOpsOptionPick(text));
+      const userLifeOpsAsk =
+        looksLikeMovieTicketAsk(text) || Boolean(parseLifeOpsResearchIntent(text));
       if (
         reply &&
         deps.createPending &&
         !isBareOptionPick &&
-        isLifeOpsPickableList(reply) &&
-        (looksLikeMovieTicketAsk(text) ||
-          Boolean(parseLifeOpsResearchIntent(text)) ||
-          classifyOptionListKind(reply) === "movie" ||
-          classifyOptionListKind(reply) === "dining" ||
-          classifyOptionListKind(reply) === "travel" ||
-          classifyOptionListKind(reply) === "cab")
+        userLifeOpsAsk &&
+        isLifeOpsResearchShortlist(reply)
       ) {
         const listKind = classifyOptionListKind(reply);
         await deps.createPending({

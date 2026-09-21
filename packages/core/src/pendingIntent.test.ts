@@ -38,6 +38,14 @@ describe("pending intent routing", () => {
     );
     assert.equal(looksLikeNewActionIntent("reconnect google personal", "Asia/Kolkata"), true);
     assert.equal(looksLikeNewActionIntent("Connect google speedstar", "Asia/Kolkata"), true);
+    assert.equal(
+      looksLikeNewActionIntent("UK 30 year yield declined last week, read about it", "Asia/Kolkata"),
+      true,
+    );
+    assert.equal(
+      looksLikeNewActionIntent("How much NSE IPO is subscribed as of yesterday?", "Asia/Kolkata"),
+      true,
+    );
   });
 
   it("does not treat chatter or yes/cancel as new intents", () => {

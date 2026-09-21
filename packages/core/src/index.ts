@@ -119,6 +119,8 @@ export {
   formatLifeOpsOptionLines,
   sanitizeLifeOpsReplyText,
   isFakeBookMyShowUrl,
+  isFakeDiningBookUrl,
+  isLifeOpsResearchShortlist,
   lifeOpsOptionId,
   lifeOpsPickPrompt,
   LIFE_OPS_DEFAULT_SCHEME,

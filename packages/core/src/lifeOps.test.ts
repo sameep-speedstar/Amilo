@@ -32,6 +32,9 @@ import {
   formatLifeOpsOptionLines,
   sanitizeLifeOpsReplyText,
   isFakeBookMyShowUrl,
+  isFakeDiningBookUrl,
+  isLifeOpsResearchShortlist,
+  isLifeOpsPickableList,
   optionPickSource,
   classifyOptionListKind,
   coerceOptionPick,
@@ -283,6 +286,25 @@ describe("lifeOps", () => {
     assert.doesNotMatch(out, /A\) INOX Elante Mall — 8:00 PM/);
     assert.match(out, /check live showtimes|couldn't confirm identical clocks/i);
     assert.match(out, /bookmyshow\.com/i);
+  });
+
+  it("does not treat bond-yield enumerations as dining shortlists", () => {
+    const bond =
+      "UK 30Y yield drop driven by\n1) BoE dovish tilt\n2) global bond rally\n3) pension-fund buying\n4) reduced gilt supply";
+    assert.equal(classifyOptionListKind(bond), "other");
+    assert.equal(isLifeOpsResearchShortlist(bond), false);
+    assert.equal(isLifeOpsPickableList(bond), true); // numbered — but not a life-ops domain
+  });
+
+  it("scrubs invented EazyDiner place slugs to search URLs", () => {
+    const fake = "Open: https://www.eazydiner.com/bangalore/kai-bar-kitchen-mg-road";
+    assert.equal(
+      isFakeDiningBookUrl("https://www.eazydiner.com/bangalore/kai-bar-kitchen-mg-road"),
+      true,
+    );
+    const out = sanitizeLifeOpsReplyText(fake);
+    assert.doesNotMatch(out, /kai-bar-kitchen-mg-road/);
+    assert.match(out, /eazydiner\.com\/bangalore\/search\?query=/i);
   });
 
   it("scrubs invented BookMyShow show links", () => {

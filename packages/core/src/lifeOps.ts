@@ -631,6 +631,23 @@ export function isFakeBookMyShowUrl(url: string): boolean {
   return false;
 }
 
+/** True when a dining platform URL is inventable / placeholder (never send). */
+export function isFakeDiningBookUrl(url: string): boolean {
+  const u = url.trim();
+  if (!/zomato\.com|dineout\.co\.in|eazydiner\.com/i.test(u)) return false;
+  // Allow search / query URLs we generate.
+  if (/[?&](q|query|search)=/i.test(u)) return false;
+  if (/\/restaurants\?/i.test(u)) return false;
+  if (/\/search\?/i.test(u)) return false;
+  // Bare invented place slugs: /bangalore/kai-bar-kitchen-mg-road
+  if (/eazydiner\.com\/[a-z-]+\/[a-z0-9-]+\/?$/i.test(u) && !/\/search/i.test(u)) return true;
+  if (/zomato\.com\/[a-z-]+\/[a-z0-9-]+\/?$/i.test(u) && !/\/restaurants/i.test(u)) {
+    // Real Zomato place pages exist; only flag if clearly placeholder
+    if (/XXXX|placeholder|example|test-venue/i.test(u)) return true;
+  }
+  return false;
+}
+
 /**
  * Scrub invented showtimes / fake BMS deep-links from outbound life-ops replies.
  * Prefer a verified movie page (ET###### from the same reply or recent chat); else explore.
@@ -675,11 +692,36 @@ export function sanitizeLifeOpsReplyText(
     },
   );
 
+  // Invented EazyDiner/Zomato place slugs → search URLs
+  t = t.replace(
+    /https?:\/\/(?:www\.)?(?:eazydiner\.com|zomato\.com|dineout\.co\.in)\/[^\s)>\]]+/gi,
+    (url) => {
+      if (!isFakeDiningBookUrl(url)) return url;
+      scrubbedFake = true;
+      const venue =
+        url.match(/\/([a-z0-9-]+)\/?$/i)?.[1]?.replace(/-/g, " ") ?? "restaurant";
+      const citySlug = url.match(/eazydiner\.com\/([a-z-]+)\//i)?.[1]
+        ?? url.match(/zomato\.com\/([a-z-]+)\//i)?.[1]
+        ?? "bangalore";
+      if (/eazydiner/i.test(url)) {
+        return `https://www.eazydiner.com/${citySlug}/search?query=${encodeURIComponent(venue)}`;
+      }
+      if (/dineout/i.test(url)) {
+        return `https://www.dineout.co.in/${citySlug}-restaurants?search=${encodeURIComponent(venue)}`;
+      }
+      return zomatoSearchUrl(venue, citySlug);
+    },
+  );
+
   if (scrubbedFake) {
     // Drop claims of a specific show deep-link we couldn't verify.
     t = t.replace(/\bBookMyShow link\s*[—\-–:]\s*/gi, "Live BookMyShow page: ");
-    if (!/I couldn't verify (a|that) show link/i.test(t)) {
-      t = `${t.trim()}\n\nI couldn't verify that exact show link — open BookMyShow for live seats (Amilo won't invent showtimes or ET codes).`;
+    if (!/I couldn't verify (a|that) show link|search link instead/i.test(t)) {
+      if (/bookmyshow/i.test(t) && /ET0|buytickets/i.test(text)) {
+        t = `${t.trim()}\n\nI couldn't verify that exact show link — open BookMyShow for live seats (Amilo won't invent showtimes or ET codes).`;
+      } else if (/eazydiner|zomato|dineout/i.test(text)) {
+        t = `${t.trim()}\n\nReplaced an unverified book link with a platform search (Amilo won't invent place URLs).`;
+      }
     }
   }
 
@@ -832,8 +874,29 @@ export function classifyOptionListKind(text: string | null | undefined): OptionL
   if (FLIGHT_LINE_RE.test(t) && !DINING_LINE_RE.test(t) && !CAB_LINE_RE.test(t)) {
     return "travel";
   }
-  if (DINING_LINE_RE.test(t) || isLifeOpsPickableList(t)) return "dining";
+  if (DINING_LINE_RE.test(t)) return "dining";
+  // Venue shortlist without an explicit "dinner" headline (e.g. quoted "A) Katani Dhaba — Punjabi").
+  // Never classify bare macro enumerations (1) BoE… 2) …) as dining.
+  if (
+    isLifeOpsPickableList(t) &&
+    !MOVIE_LINE_RE.test(t) &&
+    !FLIGHT_LINE_RE.test(t) &&
+    !CAB_LINE_RE.test(t) &&
+    /\b(dhaba|cafe|café|kitchen|bistro|eatery|rooftop|brewery|pub|bar\b|for two|₹|rs\.?|zomato|dineout|biryani|punjabi|cuisine|kebabs?|multi-cuisine|fine dining)\b/i.test(
+      t,
+    )
+  ) {
+    return "dining";
+  }
   return "other";
+}
+
+/** True when reply is a life-ops shortlist worth wrapping as research pending. */
+export function isLifeOpsResearchShortlist(text: string | null | undefined): boolean {
+  const t = (text ?? "").trim();
+  if (!t || !isLifeOpsPickableList(t)) return false;
+  const kind = classifyOptionListKind(t);
+  return kind === "dining" || kind === "movie" || kind === "travel" || kind === "cab";
 }
 
 /** Map "1" ↔ "A" when the bound list used the other scheme. */
@@ -2205,9 +2268,10 @@ export function lifeOpsHandoffConfirmMessage(payload: Record<string, unknown>): 
     return "Handoff ready as an email draft next — say send when the draft looks right (or cancel).";
   }
   if (channel === "vendor") {
-    const script = String(
+    const rawScript = String(
       payload.script ?? payload.summary ?? "Open the book link for your venue and slot.",
-    ).slice(0, 700);
+    ).slice(0, 900);
+    const script = sanitizeLifeOpsReplyText(rawScript);
     const calNote = payload.calendarHold
       ? "\n\nCalendar hold proposed next — reply yes to put it on your calendar (still confirm-first)."
       : "\n\nAfter you've booked on the platform, say block calendar <day time> at <venue> if you want it on Google.";
