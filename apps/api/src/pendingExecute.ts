@@ -32,6 +32,23 @@ function str(v: unknown, fallback = ""): string {
   return v == null ? fallback : String(v).trim();
 }
 
+async function pickSendableGoogleAccount(
+  db: Db,
+  userId: string,
+  preferred: string,
+) {
+  const accounts = await listGoogleAccounts(db, userId);
+  const sendable = accounts.filter((a) => hasGmailSendScope(a.scopes ?? ""));
+  return (
+    sendable.find((a) => a.label === preferred) ??
+    sendable.find((a) => a.label !== "personal") ??
+    sendable[0] ??
+    (await getGoogleAccount(db, userId, preferred)) ??
+    accounts[0] ??
+    null
+  );
+}
+
 function toGoogleWall(iso: string, timezone: string): string {
   const d = parseIsoDate(iso);
   if (!d) return iso;
@@ -93,9 +110,8 @@ export async function executePendingAction(
         cfg
       ) {
         // Fall through to email_draft path by rewriting kind-like payload.
-        const accountLabel = str(payload.accountLabel, "personal");
-        const named = await getGoogleAccount(db, row.userId, accountLabel);
-        const account = named ?? (await listGoogleAccounts(db, row.userId))[0];
+        const preferred = str(payload.accountLabel, "personal");
+        const account = await pickSendableGoogleAccount(db, row.userId, preferred);
         if (!account) throw new Error("No Google account linked. Send: connect google personal");
         if (!hasGmailSendScope(account.scopes ?? "")) {
           return {
@@ -256,9 +272,15 @@ export async function executePendingAction(
 
     if (row.kind === "email_draft" || row.kind === "email_send") {
       if (!cfg) throw new Error("Google OAuth not configured");
-      const accountLabel = str(payload.accountLabel, "personal");
-      const named = await getGoogleAccount(db, row.userId, accountLabel);
-      const account = named ?? (await listGoogleAccounts(db, row.userId))[0];
+      const preferred = str(payload.accountLabel, "personal");
+      const accounts = await listGoogleAccounts(db, row.userId);
+      const sendable = accounts.filter((a) => hasGmailSendScope(a.scopes ?? ""));
+      const account =
+        sendable.find((a) => a.label === preferred) ??
+        sendable.find((a) => a.label !== "personal") ??
+        sendable[0] ??
+        (await getGoogleAccount(db, row.userId, preferred)) ??
+        accounts[0];
       if (!account) throw new Error("No Google account linked. Send: connect google personal");
       if (!hasGmailSendScope(account.scopes ?? "")) {
         return {

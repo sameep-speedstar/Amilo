@@ -1127,7 +1127,11 @@ async function processInbound(rawJson: unknown): Promise<void> {
           replyToScheduled = scheduled;
         }
         const mediaId = prior.meta?.mediaId;
-        if (typeof mediaId === "string" && mediaId.trim()) {
+        if (
+          prior.kind === "image" &&
+          typeof mediaId === "string" &&
+          mediaId.trim()
+        ) {
           replyToMediaId = mediaId.trim();
         }
       }
@@ -1158,7 +1162,10 @@ async function processInbound(rawJson: unknown): Promise<void> {
 
     const toImageDataUrl = async (mediaId: string): Promise<string> => {
       const { bytes, mimeType } = await downloadWhatsAppMedia(wabaCfg, mediaId);
-      const mime = mimeType.startsWith("image/") ? mimeType : "image/jpeg";
+      if (!mimeType.startsWith("image/")) {
+        throw new Error(`not an image (${mimeType})`);
+      }
+      const mime = mimeType;
       // Cap ~4MB raw to keep Responses payloads sane
       if (bytes.length > 4_000_000) {
         throw new Error("image too large");
@@ -1237,12 +1244,13 @@ async function processInbound(rawJson: unknown): Promise<void> {
           continue;
         }
         voiceHeard = content;
+        const sttUnits = Math.max(1, result.chunks ?? 1);
         await recordUsage(db, {
           userId: user.id,
           kind: "stt",
-          units: 1,
-          costMicros: USAGE_COST_MICROS.stt,
-          meta: { model: settings.sarvamModel },
+          units: sttUnits,
+          costMicros: USAGE_COST_MICROS.stt * sttUnits,
+          meta: { model: settings.sarvamModel, chunks: sttUnits },
         });
         await logMessage(db, {
           userId: user.id,
@@ -1255,6 +1263,7 @@ async function processInbound(rawJson: unknown): Promise<void> {
             mediaId: parsed.mediaId,
             asr: "sarvam",
             model: settings.sarvamModel,
+            chunks: sttUnits,
           },
         });
       } catch (err) {

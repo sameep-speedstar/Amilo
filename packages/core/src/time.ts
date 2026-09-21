@@ -345,21 +345,42 @@ export function mergeCalendarFollowUp(
   now: Date = new Date(),
 ): string {
   const t = text.trim();
-  if (
-    !/^(?:(?:ok|okay|yes|sure|please|yeah|yep)\s+)*block(?:\s+(?:it|that|this|the\s+slot))?\.?$/i.test(
+  if (!isCalendarFollowUpAsk(t)) return t;
+  if (!recentChat?.trim()) return t;
+  const fromChat = latestCalendarHintLineFromChat(recentChat, timeZone, now);
+  return fromChat ?? t;
+}
+
+/** "block it" / "add an event to his calendar" — not a standalone create. */
+export function isCalendarFollowUpAsk(text: string): boolean {
+  const t = text.trim();
+  return (
+    /^(?:(?:and|also|ok|okay|yes|sure|please|yeah|yep)\s+)*block(?:\s+(?:it|that|this|the\s+slot))?\.?$/i.test(
+      t,
+    ) ||
+    /^(?:(?:and|also|ok|okay|please)\s+)*add(?:\s+an?)?(?:\s+event|\s+appointment)?(?:\s+to\s+(?:his|her|their|the)(?:\s+google)?\s+calendar)?\.?$/i.test(
       t,
     )
-  ) {
-    return t;
-  }
-  if (!recentChat?.trim()) return t;
+  );
+}
+
+export function isAddToTheirCalendarAsk(text: string): boolean {
+  const t = text.trim();
+  return /\badd\b/i.test(t) && /\b(event|appointment)\b/i.test(t) && /\bcalendar\b/i.test(t);
+}
+
+export function latestCalendarHintLineFromChat(
+  recentChat: string,
+  timeZone: string,
+  now: Date = new Date(),
+): string | null {
   const lines = recentChat.split(/\n/).reverse();
   for (const line of lines) {
     const body = line.replace(/^(?:User|Amilo):\s*/i, "").trim();
-    if (!body || body === t) continue;
+    if (!body) continue;
     if (parseCalendarCreateHint(body, timeZone, now)) return body;
   }
-  return t;
+  return null;
 }
 
 /** "from 12 to 2 PM" / "10-11am" → start+end clocks with shared meridiem inference. */

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { spawnSync } from "node:child_process";
-import { transcodeToWav, transcribeSarvam } from "./pipeline.js";
+import { transcodeToWav, transcribeSarvam, splitWav, isDurationLimitError } from "./pipeline.js";
 
 function hasFfmpeg(): boolean {
   const r = spawnSync("ffmpeg", ["-version"], { encoding: "utf8" });
@@ -76,5 +76,44 @@ describe("voice pipeline", () => {
     } finally {
       globalThis.fetch = original;
     }
+  });
+
+  it("detects Sarvam's 30s duration cap", () => {
+    assert.equal(
+      isDurationLimitError(
+        new Error(
+          'Sarvam STT 400: {"error":{"message":"Audio duration exceeds the maximum limit of 30 seconds."}}',
+        ),
+      ),
+      true,
+    );
+    assert.equal(isDurationLimitError(new Error("Sarvam STT 400: bad wav")), false);
+  });
+
+  it("splits a 35s wav into two Sarvam-sized chunks", async (t) => {
+    if (!hasFfmpeg()) {
+      t.skip("ffmpeg not installed");
+      return;
+    }
+    const gen = spawnSync(
+      "ffmpeg",
+      [
+        "-y",
+        "-f",
+        "lavfi",
+        "-i",
+        "sine=frequency=440:duration=35",
+        "-f",
+        "ogg",
+        "pipe:1",
+      ],
+      { encoding: "buffer", maxBuffer: 4_000_000 },
+    );
+    assert.equal(gen.status, 0, gen.stderr?.toString("utf8")?.slice(-200));
+    const wav = await transcodeToWav(Buffer.from(gen.stdout as Buffer));
+    const chunks = await splitWav(wav, 28);
+    assert.equal(chunks.length, 2);
+    assert.ok(chunks[0]!.length > 1000);
+    assert.ok(chunks[1]!.length > 1000);
   });
 });

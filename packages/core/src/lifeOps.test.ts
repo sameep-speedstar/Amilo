@@ -30,6 +30,9 @@ import {
   lifeOpsPickPrompt,
   LIFE_OPS_DEFAULT_SCHEME,
   formatLifeOpsOptionLines,
+  optionPickSource,
+  classifyOptionListKind,
+  coerceOptionPick,
   classifyVendorHandoffKind,
   cleanBookVenueName,
   extractCabContext,
@@ -278,6 +281,44 @@ describe("lifeOps", () => {
       preferLifeOpsNumberPick({
         text: "2",
         recentChat: "User: brief\nAmilo: FOCUS\n1) Mail A\n2) Mail B",
+      }),
+      false,
+    );
+  });
+
+  it("binds option picks to the latest list unless the user quoted an older one", () => {
+    const chat = [
+      "User: brief",
+      "Amilo: Good morning.\nFOCUS\n1) Invoice from vendor\n2) School PTI",
+      "User: dinner near Sector 35",
+      "Amilo: A) Pashtun — kebabs\nB) Katani Dhaba — Punjabi\nReply with a letter to pick.",
+      "User: flights to Goa under 8k",
+      "Amilo: Flights BLR → GOI\nA) Indigo 6E-6123 — 07:10\nB) Akasa QP-1514 — 09:40\nReply with a letter to pick.",
+    ].join("\n");
+    const latest = optionPickSource({ recentChat: chat });
+    assert.match(latest, /Indigo 6E-6123/);
+    assert.equal(classifyOptionListKind(latest), "travel");
+    assert.equal(resolveListedOptionVenue(latest, "A"), "Indigo 6E-6123");
+    assert.equal(coerceOptionPick("1", latest), "A");
+    assert.equal(classifyVendorHandoffKind("A", chat), "travel");
+    assert.equal(preferLifeOpsNumberPick({ text: "A", recentChat: chat }), true);
+    assert.equal(preferLifeOpsNumberPick({ text: "1", recentChat: chat }), true);
+    assert.equal(extractLifeOpsDiningContext(chat, "A")?.venue ?? null, null);
+
+    const quotedDinner =
+      "A) Pashtun — kebabs\nB) Katani Dhaba — Punjabi\nReply with a letter to pick.";
+    assert.equal(
+      resolveListedOptionVenue(
+        optionPickSource({ recentChat: chat, replyToContent: quotedDinner }),
+        "B",
+      ),
+      "Katani Dhaba",
+    );
+    assert.equal(
+      preferLifeOpsNumberPick({
+        text: "2",
+        recentChat: chat,
+        replyToContent: "FOCUS\n1) Invoice from vendor\n2) School PTI",
       }),
       false,
     );

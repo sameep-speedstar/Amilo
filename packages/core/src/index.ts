@@ -104,6 +104,10 @@ export {
   lifeOpsPickPrompt,
   LIFE_OPS_DEFAULT_SCHEME,
   resolveListedOptionVenue,
+  optionPickSource,
+  classifyOptionListKind,
+  coerceOptionPick,
+  looksLikeBriefOptionList,
   scopeChatToDining,
   latestDiningThread,
   latestCabThread,
@@ -123,6 +127,7 @@ export {
   type LifeOpsResearchIntent,
   type MovieResearchHints,
   type MovieShowVenue,
+  type OptionListKind,
   type VendorHandoffKind,
 } from "./lifeOps.js";
 export {

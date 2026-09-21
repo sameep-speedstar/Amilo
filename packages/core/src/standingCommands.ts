@@ -1,3 +1,8 @@
+import {
+  classifyOptionListKind,
+  optionPickSource,
+} from "./lifeOps.js";
+
 /** Exact / near-exact standing WhatsApp commands (bypass the brain). */
 
 export function normalizeCommandText(raw: string): string {
@@ -676,14 +681,23 @@ export function isBareAffirmative(message: string): boolean {
 
 /**
  * Which brief list a bare 1/2/3 reply should open.
- * Explicit WhatsApp reply-to wins over stored lastBriefNumberContext
- * (so quoting the morning brief still opens FOCUS even after an M).
+ * Quoted WhatsApp reply-to wins; otherwise the latest option list;
+ * stored lastBriefNumberContext is last resort.
  */
 export function briefNumberListTarget(opts: {
   replyToContent?: string | null;
   replyToScheduled?: string | null;
+  recentChat?: string | null;
   numberContext: "focus" | "more";
 }): "focus" | "more" {
+  const source = optionPickSource({
+    recentChat: opts.recentChat,
+    replyToContent: opts.replyToContent,
+  });
+  const kind = classifyOptionListKind(source);
+  if (kind === "brief_more") return "more";
+  if (kind === "brief_focus") return "focus";
+
   const replyTo = (opts.replyToContent ?? "").toLowerCase();
   const scheduled = (opts.replyToScheduled ?? "").toLowerCase();
 

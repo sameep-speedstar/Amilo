@@ -10,6 +10,12 @@ import {
   isShowDraftAsk,
   parseBareEmail,
   parseEmailComposeAsk,
+  isEmailRewriteDirection,
+  looksLikeAppointmentNotify,
+  extractPlaceAddressFromChat,
+  cleanAppointmentVenue,
+  composeAppointmentReminder,
+  latestEmailToHintFromChat,
   type EmailComposeAsk,
 } from "./emailDraft.js";
 import {
@@ -32,6 +38,9 @@ import {
   latestCabThread,
   latestDiningThread,
   preferLifeOpsNumberPick,
+  optionPickSource,
+  classifyOptionListKind,
+  coerceOptionPick,
   mergeLifeOpsIntoCalendarText,
   parseInboxErrandDraftAsk,
   parseLifeOpsHandoffIntent,
@@ -111,6 +120,8 @@ import {
   localDayBoundsUtc,
   parseCalendarCreateHint,
   mergeCalendarFollowUp,
+  isAddToTheirCalendarAsk,
+  latestCalendarHintLineFromChat,
   parseHmInput,
   parseIsoDate,
   parseReminderMessage,
@@ -691,6 +702,8 @@ export function looksLikeNewActionIntent(
   const t = message.trim();
   if (!t || t.length < 4) return false;
   if (/^(yes|y|yeah|yep|ok|okay|confirm|cancel|no|nope|edit|alternate)\b/i.test(t)) return false;
+  if (isEmailRewriteDirection(t)) return false;
+  if (isAddToTheirCalendarAsk(t)) return true;
   if (isBriefRequest(t)) return true;
   if (
     /^(mute|unmute|sync|google|help|commands|pause|resume|briefs|status|pending|open|delete|forget|memory|about|done|drop|snooze|places|home|office|waiting|vip|training|tip)\b/i.test(
@@ -915,26 +928,38 @@ function accountHasGmailSend(scopes?: string): boolean {
   return Boolean(scopes && /gmail\.send/i.test(scopes));
 }
 
+function pickGmailSendAccount(
+  accounts: Array<{ label: string; email: string | null; scopes?: string }>,
+  preferred?: string,
+): { label: string; email: string | null; scopes?: string } | null {
+  const sendable = accounts.filter((a) => accountHasGmailSend(a.scopes));
+  if (!sendable.length) return null;
+  const pref = preferred?.trim();
+  if (pref) {
+    const hit = sendable.find((a) => a.label === pref);
+    if (hit) return hit;
+  }
+  return sendable.find((a) => a.label !== "personal") ?? sendable[0] ?? null;
+}
+
 async function gmailSendAuthLeadIn(
   userId: string,
   deps: OrchestratorDeps,
   payload: Record<string, unknown>,
 ): Promise<OutboundMessage | null> {
   if (!deps.getGoogleAuthUrl) return null;
-  const label = normalizeGoogleLabel(String(payload.accountLabel ?? "personal"));
-  let needsGrant = true;
+  const preferred = normalizeGoogleLabel(String(payload.accountLabel ?? "personal"));
   if (deps.listGoogleAccounts) {
     const accounts = await deps.listGoogleAccounts(userId);
-    const acct = accounts.find((a) => a.label === label) ?? accounts[0];
-    if (acct && accountHasGmailSend(acct.scopes)) needsGrant = false;
+    const sendAcct = pickGmailSendAccount(accounts, preferred);
+    if (sendAcct) return null;
   }
-  if (!needsGrant) return null;
-  const url = await deps.getGoogleAuthUrl(userId, label);
+  const url = await deps.getGoogleAuthUrl(userId, preferred);
   if (!url) return null;
   return {
     text: [
       "Gmail send isn't authorized on this Google link yet.",
-      `Tap to grant Send email as “${label}”:`,
+      `Tap to grant Send email as “${preferred}”:`,
       "",
       url,
       "",
@@ -968,8 +993,13 @@ async function proposeEmailComposePending(
   const composed = composeEmailDraft(ask, extras?.userName);
   const subject = extras?.subject?.trim() || composed.subject;
   const body = extras?.body?.trim() || composed.body;
+  let accountLabel = "personal";
+  if (deps.listGoogleAccounts) {
+    const sendAcct = pickGmailSendAccount(await deps.listGoogleAccounts(msg.userId), "personal");
+    if (sendAcct) accountLabel = sendAcct.label;
+  }
   const payload: Record<string, unknown> = {
-    accountLabel: "personal",
+    accountLabel,
     to,
     subject,
     body,
@@ -1045,6 +1075,103 @@ export function applyPendingEditPatch(
         : String(next.summary ?? "Updated proposal");
 
   return { payload: next, summaryHint };
+}
+
+function recipientFirstFromDraft(payload: Record<string, unknown>): string | null {
+  const label = String(payload.recipientLabel ?? "").trim();
+  if (label && !label.includes("@")) {
+    const first = label.split(/\s+/)[0] ?? "";
+    if (first.length >= 2) return first.replace(/^\w/, (c) => c.toUpperCase());
+  }
+  const local = String(payload.to ?? "").split("@")[0] ?? "";
+  if (/^[a-z]{3,}$/i.test(local)) return local.replace(/^\w/, (c) => c.toUpperCase());
+  return null;
+}
+
+function rewriteEmailDraftFromDirection(opts: {
+  payload: Record<string, unknown>;
+  text: string;
+  recentChat: string;
+  timeZone: string;
+  userName: string;
+}): Record<string, unknown> {
+  const next = { ...opts.payload };
+  const now = new Date();
+  const fromChat = latestCalendarHintLineFromChat(opts.recentChat, opts.timeZone, now);
+  const hint =
+    parseCalendarCreateHint(opts.text, opts.timeZone, now) ??
+    (fromChat ? parseCalendarCreateHint(fromChat, opts.timeZone, now) : null);
+  const hay = `${opts.text}\n${opts.recentChat}\n${String(next.subject ?? "")}\n${String(next.body ?? "")}`;
+  const appointmentish =
+    looksLikeAppointmentNotify(opts.text) || /\bappointment\b/i.test(hay);
+  if (
+    appointmentish &&
+    (hint || looksLikeAppointmentNotify(opts.text) || isEmailRewriteDirection(opts.text))
+  ) {
+    const venue = cleanAppointmentVenue(hint?.title ?? "appointment");
+    const whenLabel = hint
+      ? `${formatLocalWhenFriendly(new Date(hint.startIso), opts.timeZone)}–${formatLocalHm(new Date(hint.endIso), opts.timeZone)}`
+      : "tomorrow";
+    const address = extractPlaceAddressFromChat(`${opts.recentChat}\n${opts.text}`, venue);
+    const composed = composeAppointmentReminder({
+      recipientFirst: recipientFirstFromDraft(next),
+      venue,
+      whenLabel,
+      ...(address ? { address } : {}),
+      userName: opts.userName,
+    });
+    next.subject = composed.subject;
+    next.body = composed.body;
+    next.draftOnly = false;
+  }
+  return next;
+}
+
+function isAppointmentEmailAsk(text: string): boolean {
+  return (
+    looksLikeAppointmentNotify(text) &&
+    !isCalendarInviteIntent(text) &&
+    !isAddToTheirCalendarAsk(text)
+  );
+}
+
+async function proposeAppointmentNotifyPending(
+  msg: InboundMessage,
+  deps: OrchestratorDeps,
+  text: string,
+  recentChat: string,
+  timeZone: string,
+  userName: string,
+): Promise<OutboundMessage[]> {
+  const now = new Date();
+  const fromChat = latestCalendarHintLineFromChat(recentChat, timeZone, now);
+  const hint =
+    parseCalendarCreateHint(text, timeZone, now) ??
+    (fromChat ? parseCalendarCreateHint(fromChat, timeZone, now) : null);
+  const toHint =
+    parseEmailComposeAsk(text)?.toHint ?? latestEmailToHintFromChat(recentChat);
+  const venue = cleanAppointmentVenue(hint?.title ?? "appointment");
+  const whenLabel = hint
+    ? `${formatLocalWhenFriendly(new Date(hint.startIso), timeZone)}–${formatLocalHm(new Date(hint.endIso), timeZone)}`
+    : "tomorrow";
+  const address = extractPlaceAddressFromChat(`${recentChat}\n${text}`, venue);
+  const first =
+    toHint && !toHint.includes("@")
+      ? toHint.split(/\s+/)[0]!.replace(/^\w/, (c) => c.toUpperCase())
+      : null;
+  const composed = composeAppointmentReminder({
+    recipientFirst: first,
+    venue,
+    whenLabel,
+    ...(address ? { address } : {}),
+    userName,
+  });
+  return proposeEmailComposePending(
+    msg,
+    deps,
+    { mode: "send", toHint, about: composed.subject },
+    { subject: composed.subject, body: composed.body, userName },
+  );
 }
 
 function buildStructuredBrief(opts: {
@@ -1253,21 +1380,34 @@ export async function handleInbound(
   }
 
   // Brief follow-ups: 1 / 2 / 3 / M / quieter numbers (must not go to the LLM).
-  // Life-ops pickable lists prefer A–E (letters never enter this block). Digits still
-  // divert here when recent chat has a life-ops numbered list (legacy / Grok).
+  // Option replies bind to the latest option list, or to a quoted WhatsApp message.
   if (/^\d{1,2}$/.test(lower) || lower === "m") {
-    let skipBriefForLifeOps = false;
-    if (lower !== "m" && deps.getRecentChatSummary) {
-      const recentForPick = await deps.getRecentChatSummary(msg.userId, {
+    let recentForPick: string | undefined;
+    if (deps.getRecentChatSummary) {
+      recentForPick = await deps.getRecentChatSummary(msg.userId, {
         ...(msg.messageId ? { excludeMessageId: msg.messageId } : {}),
       });
-      skipBriefForLifeOps = preferLifeOpsNumberPick({
+    }
+    const skipBriefForLifeOps =
+      lower !== "m" &&
+      preferLifeOpsNumberPick({
         text: lower,
         recentChat: recentForPick,
         ...(msg.replyToContent ? { replyToContent: msg.replyToContent } : {}),
       });
-    }
-    if (!skipBriefForLifeOps && deps.getLastBriefItems) {
+    const boundListKind = classifyOptionListKind(
+      optionPickSource({
+        recentChat: recentForPick,
+        replyToContent: msg.replyToContent,
+      }),
+    );
+    const bindToBrief =
+      lower === "m" ||
+      (!skipBriefForLifeOps &&
+        (boundListKind === "brief_focus" ||
+          boundListKind === "brief_more" ||
+          (!recentForPick && !msg.replyToContent)));
+    if (bindToBrief && deps.getLastBriefItems) {
       const stored = await deps.getLastBriefItems(msg.userId);
       if (lower === "m") {
         if (stored.more?.trim()) {
@@ -1294,6 +1434,7 @@ export async function handleInbound(
       const list = briefNumberListTarget({
         ...(msg.replyToContent != null ? { replyToContent: msg.replyToContent } : {}),
         ...(msg.replyToScheduled != null ? { replyToScheduled: msg.replyToScheduled } : {}),
+        ...(recentForPick != null ? { recentChat: recentForPick } : {}),
         numberContext: stored.numberContext,
       });
       const useMore = list === "more";
@@ -1393,6 +1534,70 @@ export async function handleInbound(
         const r = await deps.confirmPending(msg.userId);
         if (r.ok) return [{ text: r.message }];
         return gmailSendFailOrGeneric(msg.userId, r.message, deps, openPending.payload);
+      }
+      if (
+        deps.editPending &&
+        (isEmailRewriteDirection(text) || looksLikeAppointmentNotify(text))
+      ) {
+        const recentChat = deps.getRecentChatSummary
+          ? await deps.getRecentChatSummary(msg.userId, {
+              ...(msg.messageId ? { excludeMessageId: msg.messageId } : {}),
+            })
+          : "";
+        const userName = deps.resolveUserName ? await deps.resolveUserName(msg.userId) : "";
+        const nextPayload = rewriteEmailDraftFromDirection({
+          payload: openPending.payload,
+          text,
+          recentChat,
+          timeZone: tzForPending.timezone,
+          userName,
+        });
+        if (deps.listGoogleAccounts) {
+          const sendAcct = pickGmailSendAccount(
+            await deps.listGoogleAccounts(msg.userId),
+            String(nextPayload.accountLabel ?? "personal"),
+          );
+          if (sendAcct) nextPayload.accountLabel = sendAcct.label;
+        }
+        const summary = `Email draft to ${String(nextPayload.to ?? "?")}: ${String(nextPayload.subject ?? "draft")}`;
+        await deps.editPending(msg.userId, nextPayload, summary);
+        return withGmailSendAuthNotice(
+          msg.userId,
+          deps,
+          nextPayload,
+          emailDraftMessages(nextPayload, emailDraftMode(nextPayload, null)),
+        );
+      }
+      if (isAddToTheirCalendarAsk(text) && deps.createPending) {
+        const recentChat = deps.getRecentChatSummary
+          ? await deps.getRecentChatSummary(msg.userId, {
+              ...(msg.messageId ? { excludeMessageId: msg.messageId } : {}),
+            })
+          : "";
+        const calText = mergeCalendarFollowUp(text, recentChat, tzForPending.timezone);
+        const hint =
+          parseCalendarCreateHint(calText, tzForPending.timezone) ??
+          (latestCalendarHintLineFromChat(recentChat, tzForPending.timezone)
+            ? parseCalendarCreateHint(
+                latestCalendarHintLineFromChat(recentChat, tzForPending.timezone)!,
+                tzForPending.timezone,
+              )
+            : null);
+        if (!hint) {
+          return [{ text: "When should I put it on the calendar — a day and time?" }];
+        }
+        const to = String(openPending.payload.to ?? "");
+        const attendees = to.includes("@") ? [normalizeAttendeeEmail(to)] : [];
+        await deps.rejectPending(msg.userId);
+        const venue = cleanAppointmentVenue(hint.title);
+        return proposeCalendarCreatePending(msg, deps, tzForPending.timezone, {
+          title: venue,
+          start: hint.startIso,
+          end: hint.endIso,
+          startIso: hint.startIso,
+          endIso: hint.endIso,
+          ...(attendees.length ? { attendees } : {}),
+        });
       }
     }
     const affirm = isCancelKind
@@ -2531,17 +2736,124 @@ export async function handleInbound(
 
   // Life-ops research (movies/dining/flights) → Grok session + web search + this user's
   // context graph. Deterministic Places/scrape short-circuit retired.
-  // Numbered pick ("2" / "option 2") from a prior list → lock venue, ask for missing day/time.
+  // Option pick binds to the latest list, or to the WhatsApp message the user quoted.
   {
-    const pickId = parseLifeOpsOptionPick(text);
-    if (pickId && recentChatSummary) {
-      const diningChat = latestDiningThread(recentChatSummary);
-      const venue =
-        resolveListedOptionVenue(diningChat, pickId) ??
-        extractLifeOpsDiningContext(recentChatSummary, `book ${pickId}`)?.venue ??
-        null;
-      if (venue && !isBookPlatformOnly(venue)) {
-        const diningCtx = extractLifeOpsDiningContext(recentChatSummary, text);
+    const pickIdRaw = parseLifeOpsOptionPick(text);
+    if (pickIdRaw) {
+      const source = optionPickSource({
+        recentChat: recentChatSummary,
+        replyToContent: msg.replyToContent,
+      });
+      const pickId = coerceOptionPick(pickIdRaw, source) ?? pickIdRaw;
+      const listKind = classifyOptionListKind(source);
+      const venue = source ? resolveListedOptionVenue(source, pickId) : null;
+      const replyTo = msg.replyToContent;
+
+      if (venue && listKind === "travel") {
+        const url =
+          source.match(/https?:\/\/[^\s]+/i)?.[0]?.replace(/[),.;]+$/g, "") ?? null;
+        if (deps.createPending) {
+          const payload: Record<string, unknown> = {
+            domain: "travel",
+            channel: "vendor",
+            vendorKind: "travel",
+            moneyCapInr: null,
+            sendOnConfirm: false,
+            venueHint: venue,
+            optionId: pickId,
+            script: [
+              "Open to finish booking (Amilo did not reserve or pay):",
+              `· ${venue}`,
+              url ? url : null,
+            ]
+              .filter(Boolean)
+              .join("\n"),
+            summary: [
+              `Travel: ${venue}`,
+              "Reply yes for the booking link — Amilo won't reserve or pay.",
+            ].join(" · "),
+          };
+          const pending = await deps.createPending({
+            userId: msg.userId,
+            kind: "life_ops_handoff",
+            summary: String(payload.summary),
+            payload,
+          });
+          return [
+            {
+              text: [
+                `Proposed (${pending.kind}):`,
+                pending.summary,
+                "",
+                "Nothing sent or spent yet.",
+              ].join("\n"),
+            },
+          ];
+        }
+        return [{ text: `Got it — ${venue}. Say book ${venue} when you want the handoff — I won't pay.` }];
+      }
+
+      if (venue && listKind === "cab" && deps.createPending) {
+        const cabCtx = extractCabContext(recentChatSummary, text, replyTo);
+        const provider = cabCtx?.provider ?? venue;
+        const whenHint = cabCtx?.whenHint ?? extractUserStatedWhen(recentChatSummary, text);
+        const payload: Record<string, unknown> = {
+          domain: "home",
+          channel: "vendor",
+          vendorKind: "cab",
+          moneyCapInr: null,
+          sendOnConfirm: false,
+          venueHint: provider,
+          optionId: pickId,
+          script: buildCabHandoffScript({
+            provider,
+            ...(whenHint ? { whenHint } : {}),
+            ...(cabCtx?.partySize != null ? { partySize: cabCtx.partySize } : {}),
+            ...(cabCtx?.routeHint ? { routeHint: cabCtx.routeHint } : {}),
+          }),
+          summary: [
+            `Cab: ${provider}`,
+            cabCtx?.routeHint ?? null,
+            whenHint ?? null,
+            cabCtx?.partySize ? `${cabCtx.partySize} riders` : null,
+            "Reply yes for the cab app link — Amilo won't reserve or pay.",
+          ]
+            .filter(Boolean)
+            .join(" · "),
+        };
+        const pending = await deps.createPending({
+          userId: msg.userId,
+          kind: "life_ops_handoff",
+          summary: String(payload.summary),
+          payload,
+        });
+        return [
+          {
+            text: [
+              `Proposed (${pending.kind}):`,
+              pending.summary,
+              "",
+              "Nothing sent or spent yet.",
+            ].join("\n"),
+          },
+        ];
+      }
+
+      if (venue && listKind === "movie") {
+        return [
+          {
+            text: [
+              `Got it — ${venue}.`,
+              "Open the BookMyShow link from the showtimes list (or say book <theatre> <time>).",
+              "Amilo won't buy seats — partner booking comes later.",
+            ].join("\n"),
+          },
+        ];
+      }
+
+      if (venue && listKind === "dining" && !isBookPlatformOnly(venue)) {
+        const diningChat = latestDiningThread(recentChatSummary);
+        const diningCtx = extractLifeOpsDiningContext(recentChatSummary, text, replyTo);
         const city = diningCitySlug(diningCtx?.area ?? diningChat);
         if (!diningCtx?.whenHint) {
           const needParty = diningCtx?.partySize == null;
@@ -2556,7 +2868,6 @@ export async function handleInbound(
             },
           ];
         }
-        // Have when (+ optional party) — propose handoff with explicit details only.
         const handoff = parseLifeOpsHandoffIntent(
           [
             "book",
@@ -2638,9 +2949,13 @@ export async function handleInbound(
       if (
         isWhenPartyFollowUp(text) &&
         !parseLifeOpsHandoffIntent(text) &&
-        classifyVendorHandoffKind(text, recentChatSummary) !== "cab"
+        classifyVendorHandoffKind(text, recentChatSummary, msg.replyToContent) !== "cab"
       ) {
-        const diningCtx = extractLifeOpsDiningContext(recentChatSummary, text);
+        const diningCtx = extractLifeOpsDiningContext(
+          recentChatSummary,
+          text,
+          msg.replyToContent,
+        );
         if (diningCtx?.venue && diningCtx.whenHint && !isBookPlatformOnly(diningCtx.venue)) {
           const city = diningCitySlug(diningCtx.area ?? latestDiningThread(recentChatSummary));
           const who = diningCtx.venue;
@@ -2690,22 +3005,34 @@ export async function handleInbound(
 
       const handoff = parseLifeOpsHandoffIntent(text);
       if (handoff) {
-        const vendorKind = classifyVendorHandoffKind(text, recentChatSummary);
+        const vendorKind = classifyVendorHandoffKind(
+          text,
+          recentChatSummary,
+          msg.replyToContent,
+        );
         const diningChat = latestDiningThread(recentChatSummary);
         const cabChat = latestCabThread(recentChatSummary);
+        const pickSource = optionPickSource({
+          recentChat: recentChatSummary,
+          replyToContent: msg.replyToContent,
+        });
         const diningCtx =
           vendorKind === "dining" || vendorKind === "other"
-            ? extractLifeOpsDiningContext(recentChatSummary, text)
+            ? extractLifeOpsDiningContext(recentChatSummary, text, msg.replyToContent)
             : null;
         const cabCtx =
-          vendorKind === "cab" ? extractCabContext(recentChatSummary, text) : null;
+          vendorKind === "cab"
+            ? extractCabContext(recentChatSummary, text, msg.replyToContent)
+            : null;
 
         if (vendorKind === "cab") {
           const provider =
             parseCabProvider(text) ??
             cabCtx?.provider ??
             cleanBookVenueName(handoff.venueHint) ??
-            (handoff.optionId ? resolveListedOptionVenue(cabChat, handoff.optionId) : null);
+            (handoff.optionId
+              ? resolveListedOptionVenue(pickSource || cabChat, handoff.optionId)
+              : null);
           if (!provider) {
             return [
               {
@@ -2813,7 +3140,7 @@ export async function handleInbound(
             ? cleanBookVenueName(handoff.venueHint) ?? handoff.venueHint
             : null) ??
           (handoff.optionId
-            ? resolveListedOptionVenue(diningChat, handoff.optionId)
+            ? resolveListedOptionVenue(pickSource || diningChat, handoff.optionId)
             : null) ??
           (diningCtx?.venue && !isBookPlatformOnly(diningCtx.venue)
             ? diningCtx.venue
@@ -2855,6 +3182,13 @@ export async function handleInbound(
           payload.body = handoff.email.body;
           payload.draftOnly = true;
           payload.accountLabel = "personal";
+          if (deps.listGoogleAccounts) {
+            const sendAcct = pickGmailSendAccount(
+              await deps.listGoogleAccounts(msg.userId),
+              "personal",
+            );
+            if (sendAcct) payload.accountLabel = sendAcct.label;
+          }
         }
         if (handoff.channel === "vendor" && isDiningHandoff && venue) {
           const who = venue;
@@ -2939,6 +3273,31 @@ export async function handleInbound(
           { userName: name },
         );
       }
+
+      const composeAsk = !isCalendarInviteIntent(text) ? parseEmailComposeAsk(text) : null;
+      if (composeAsk && isAppointmentEmailAsk(text)) {
+        return proposeAppointmentNotifyPending(
+          msg,
+          deps,
+          text,
+          recentChatSummary,
+          briefCtx.timezone,
+          name,
+        );
+      }
+      if (composeAsk) {
+        return proposeEmailComposePending(msg, deps, composeAsk, { userName: name });
+      }
+      if (isAppointmentEmailAsk(text)) {
+        return proposeAppointmentNotifyPending(
+          msg,
+          deps,
+          text,
+          recentChatSummary,
+          briefCtx.timezone,
+          name,
+        );
+      }
   }
 
   // Calendar invite by name — resolve stored email, propose calendar_create (not email draft).
@@ -3005,7 +3364,7 @@ export async function handleInbound(
       briefCtx.timezone,
     );
     const hint = parseCalendarCreateHint(calText, briefCtx.timezone);
-    if (hint) {
+    if (hint && !isAppointmentEmailAsk(calText) && !isAppointmentEmailAsk(text)) {
       const diningCtx = extractLifeOpsDiningContext(recentChatSummary, calText);
       const location =
         (await resolveCalendarLocation(msg.userId, calText, deps)) ??
@@ -3231,6 +3590,13 @@ export async function handleInbound(
       const payload: Record<string, unknown> = { ...action };
       delete payload.type;
       if (!payload.accountLabel) payload.accountLabel = "personal";
+      if (kind === "email_draft" && deps.listGoogleAccounts) {
+        const sendAcct = pickGmailSendAccount(
+          await deps.listGoogleAccounts(msg.userId),
+          String(payload.accountLabel),
+        );
+        if (sendAcct) payload.accountLabel = sendAcct.label;
+      }
 
       // Calendar invite phrased as email → real calendar create with attendees.
       if (kind === "email_draft" && isCalendarInviteIntent(text)) {

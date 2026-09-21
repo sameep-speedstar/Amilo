@@ -42,6 +42,10 @@ import {
   briefNumberListTarget,
 } from "./standingCommands.js";
 import {
+  classifyOptionListKind,
+  optionPickSource,
+} from "./lifeOps.js";
+import {
   buildAwaitingReplyAlert,
   emailMatchesWatch,
   isCommitmentStallDue,
@@ -345,6 +349,25 @@ describe("standing commands", () => {
     assert.equal(
       briefNumberListTarget({ numberContext: "focus" }),
       "focus",
+    );
+    assert.equal(
+      briefNumberListTarget({
+        numberContext: "more",
+        recentChat:
+          "User: m\nAmilo: Good morning.\nFOCUS\n1) Invoice\n2) Cosmos overdue",
+      }),
+      "focus",
+    );
+    assert.equal(
+      classifyOptionListKind(
+        optionPickSource({
+          recentChat: [
+            "Amilo: More from your brief:\n1) Quiet",
+            "Amilo: Flights BLR → GOI\nA) Indigo — 07:10\nReply with a letter to pick.",
+          ].join("\n"),
+        }),
+      ),
+      "travel",
     );
   });
 });

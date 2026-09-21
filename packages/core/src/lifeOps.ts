@@ -152,18 +152,21 @@ export function resolveListedOptionVenue(
   const id = optionId.trim();
   const esc = id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const patterns = [
-    new RegExp(
-      `(?:^|[^0-9A-Za-z])${esc}\\)\\s+\\*{0,2}([^*\\n—\\-]+?)\\*{0,2}(?:\\s*[—\\-]|\\s*$|\\s*\\()`,
-      "i",
-    ),
-    new RegExp(
-      `(?:^|[^0-9A-Za-z])${esc}[.:]\\s+\\*{0,2}([^*\\n—\\-]+?)\\*{0,2}`,
-      "i",
-    ),
+    `(?:^|[^0-9A-Za-z])${esc}\\)\\s+\\*{0,2}([^*\\n]+?)\\*{0,2}(?=\\s+[—\\-]\\s+|\\s+[A-Z]\\d?\\)|\\s+[1-9]\\)|\\s*$|\\s*\\()`,
+    `(?:^|[^0-9A-Za-z])${esc}[.:]\\s+\\*{0,2}([^*\\n]+?)\\*{0,2}(?=\\s+[—\\-]\\s+|\\s+[A-Z]\\d?\\)|\\s+[1-9]\\)|\\s*$|\\s*\\()`,
   ];
-  for (const re of patterns) {
-    const hit = chat.match(re)?.[1]?.replace(/\*+/g, "").trim();
-    if (hit && hit.length >= 2 && !isBookPlatformOnly(hit)) return hit.slice(0, 80);
+  for (const src of patterns) {
+    const re = new RegExp(src, "gi");
+    let found: string | null = null;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(chat)) !== null) {
+      const hit = m[1]?.replace(/\*+/g, "").trim();
+      if (hit && hit.length >= 2 && !isBookPlatformOnly(hit)) {
+        found = hit.slice(0, 80);
+      }
+      if (!m[0]) re.lastIndex += 1;
+    }
+    if (found) return found;
   }
   return null;
 }
@@ -293,6 +296,8 @@ const DINING_LINE_RE =
   /\b(dinner|lunch|brunch|restaurant|dining|zomato|eazydiner|dineout|table for|rooftop|fine dining|client dinner|pubs?|brewery)\b/i;
 const CAB_LINE_RE =
   /\b(uber|ola|meru|gozo|rapido|taxi|cabs?|airport\s+(?:cab|taxi|transfer)|outstation)\b/i;
+const FLIGHT_LINE_RE =
+  /\b(flight|flights|hotel|hotels|train|trains|indigo|air\s*india|spicejet|akasa|vistara|google flights|airline|6e-)\b/i;
 
 const DOMAIN_SWITCH_USER_RE =
   /\b(cab|uber|ola|meru|gozo|taxi|airport|movie|movies|film|cinema|showtimes?|flight|flights|hotel|gilt|yield|chart|bond)\b/i;
@@ -463,7 +468,7 @@ export function isLifeOpsPickableList(text: string | null | undefined): boolean 
     /\bFOCUS\b/i.test(t) &&
     !DINING_LINE_RE.test(t) &&
     !MOVIE_LINE_RE.test(t) &&
-    !/\b(flight|flights|hotel|hotels)\b/i.test(t) &&
+    !FLIGHT_LINE_RE.test(t) &&
     !/Reply with a (?:number|letter|code)\b/i.test(t)
   ) {
     return false;
@@ -471,51 +476,144 @@ export function isLifeOpsPickableList(text: string | null | undefined): boolean 
   return (
     DINING_LINE_RE.test(t) ||
     MOVIE_LINE_RE.test(t) ||
-    /\b(flight|flights|hotel|hotels)\b/i.test(t) ||
+    FLIGHT_LINE_RE.test(t) ||
     /Reply with a (?:number|letter|code)\b/i.test(t) ||
-    /(?:^|[^0-9A-Za-z])[A-Z]\d?\)\s+\S/i.test(t)
+    /(?:^|[^0-9A-Za-z])[A-Z]\d?\)\s+\S/i.test(t) ||
+    /(?:^|[^0-9A-Za-z])[1-9]\)\s+\S/.test(t)
   );
+}
+
+export type OptionListKind =
+  | "dining"
+  | "cab"
+  | "movie"
+  | "travel"
+  | "brief_focus"
+  | "brief_more"
+  | "other";
+
+/** Morning/evening FOCUS or quieter-mail lists that own bare 1/2/3. */
+export function looksLikeBriefOptionList(text: string | null | undefined): boolean {
+  const t = (text ?? "").toLowerCase();
+  if (!t.trim()) return false;
+  return (
+    /\bfocus\b/.test(t) ||
+    /\bmore from your brief\b/.test(t) ||
+    /\bhandled yesterday\b/.test(t) ||
+    /\bgood morning\b/.test(t) ||
+    /\bmorning brief\b/.test(t) ||
+    /\bevening wrap\b/.test(t) ||
+    /\bstill open\b/.test(t) ||
+    /\breply m for quieter\b/.test(t) ||
+    (t.includes("quieter") && /\d+\)/.test(t))
+  );
+}
+
+export function parseChatTurns(
+  chat: string | null | undefined,
+): { who: "user" | "amilo"; body: string }[] {
+  const raw = (chat ?? "").trim();
+  if (!raw || /^none yet$/i.test(raw)) return [];
+  const turns: { who: "user" | "amilo"; body: string }[] = [];
+  for (const line of raw.split("\n")) {
+    const m = line.match(/^(User|Amilo):\s*(.*)$/i);
+    if (m) {
+      turns.push({
+        who: m[1]!.toLowerCase() === "user" ? "user" : "amilo",
+        body: m[2] ?? "",
+      });
+    } else if (turns.length) {
+      const last = turns[turns.length - 1]!;
+      last.body += (last.body ? "\n" : "") + line;
+    }
+  }
+  return turns;
+}
+
+/** Most recent Amilo message that is asking the user to pick an option. */
+export function latestAmiloOptionList(recentChat: string | null | undefined): string | null {
+  const turns = parseChatTurns(recentChat);
+  for (let i = turns.length - 1; i >= 0; i--) {
+    const turn = turns[i]!;
+    if (turn.who !== "amilo") continue;
+    const body = turn.body.trim();
+    if (isLifeOpsPickableList(body) || looksLikeBriefOptionList(body)) return body;
+  }
+  return null;
+}
+
+/**
+ * Bind an option reply to one list:
+ * 1) the message the user quoted (WhatsApp reply-to), else
+ * 2) the most recent Amilo option list.
+ */
+export function optionPickSource(opts: {
+  recentChat?: string | null | undefined;
+  replyToContent?: string | null | undefined;
+}): string {
+  const quoted = opts.replyToContent?.trim() ?? "";
+  if (quoted) return quoted;
+  return latestAmiloOptionList(opts.recentChat) ?? "";
+}
+
+export function classifyOptionListKind(text: string | null | undefined): OptionListKind {
+  const t = (text ?? "").trim();
+  if (!t) return "other";
+  const lower = t.toLowerCase();
+  if (
+    /\bmore from your brief\b/.test(lower) ||
+    /\bhandled yesterday\b/.test(lower) ||
+    (lower.includes("quieter") && /\d+\)/.test(t))
+  ) {
+    return "brief_more";
+  }
+  if (looksLikeBriefOptionList(t)) return "brief_focus";
+  if (CAB_LINE_RE.test(t)) return "cab";
+  if (MOVIE_LINE_RE.test(t) && !DINING_LINE_RE.test(t) && !FLIGHT_LINE_RE.test(t)) {
+    return "movie";
+  }
+  if (FLIGHT_LINE_RE.test(t) && !DINING_LINE_RE.test(t) && !CAB_LINE_RE.test(t)) {
+    return "travel";
+  }
+  if (DINING_LINE_RE.test(t) || isLifeOpsPickableList(t)) return "dining";
+  return "other";
+}
+
+/** Map "1" ↔ "A" when the bound list used the other scheme. */
+export function coerceOptionPick(pickId: string, source: string): string | null {
+  const id = pickId.trim();
+  if (!id || !source.trim()) return null;
+  if (resolveListedOptionVenue(source, id)) return id;
+  if (/^[1-9]$/.test(id)) {
+    const letter = String.fromCharCode(64 + Number(id));
+    if (resolveListedOptionVenue(source, letter)) return letter;
+  }
+  if (/^[A-Za-z]$/.test(id)) {
+    const n = id.toUpperCase().charCodeAt(0) - 64;
+    if (n >= 1 && n <= 9 && resolveListedOptionVenue(source, String(n))) return String(n);
+  }
+  return null;
 }
 
 /**
  * Bare digit/letter after a life-ops options list must not steal FOCUS mail numbering.
- * Architecture: FOCUS owns 1–3 + M; life-ops prefers A–E (or combo) and still accepts
- * numeric when Grok/legacy lists used 1).
+ * Only the latest option list counts, unless the user quoted a specific message.
  */
 export function preferLifeOpsNumberPick(opts: {
   text: string;
-  recentChat?: string | null;
-  replyToContent?: string | null;
+  recentChat?: string | null | undefined;
+  replyToContent?: string | null | undefined;
 }): boolean {
   const pickId = parseLifeOpsOptionPick(opts.text);
   if (!pickId) return false;
-  const reply = opts.replyToContent?.trim() ?? "";
-  // Quoted morning FOCUS brief → keep mail numbering (digits only).
-  if (
-    reply &&
-    /\bFOCUS\b/i.test(reply) &&
-    !isLifeOpsPickableList(reply) &&
-    /^[1-9]$/.test(pickId)
-  ) {
-    return false;
+  const source = optionPickSource(opts);
+  if (!source) return false;
+  const kind = classifyOptionListKind(source);
+  if (kind === "brief_focus" || kind === "brief_more") {
+    return !/^[1-9]$/.test(pickId) && Boolean(coerceOptionPick(pickId, source));
   }
-  if (reply && isLifeOpsPickableList(reply) && resolveListedOptionVenue(reply, pickId)) {
-    return true;
-  }
-  const chat = opts.recentChat ?? "";
-  if (!isLifeOpsPickableList(chat)) return false;
-  // Digit 1–3 on a FOCUS-only thread → mail wins.
-  if (
-    /^[1-3]$/.test(pickId) &&
-    /\bFOCUS\b/i.test(chat) &&
-    !DINING_LINE_RE.test(chat) &&
-    !MOVIE_LINE_RE.test(chat)
-  ) {
-    return false;
-  }
-  const thread = latestDiningThread(chat);
-  if (resolveListedOptionVenue(thread, pickId)) return true;
-  return Boolean(resolveListedOptionVenue(chat, pickId));
+  if (!isLifeOpsPickableList(source)) return false;
+  return Boolean(coerceOptionPick(pickId, source));
 }
 
 /** Drop movie/cinema lines so dinner handoff never inherits showtimes / invented "today". */
@@ -604,11 +702,10 @@ export function parseCabProvider(text: string | null | undefined): string | null
 export function classifyVendorHandoffKind(
   text: string,
   recentChat?: string | null,
+  replyToContent?: string | null,
 ): VendorHandoffKind {
   const t = text.trim();
-  const cabThread = latestCabThread(recentChat);
-  const diningThread = latestDiningThread(recentChat);
-  const movieThread = latestMovieThread(recentChat);
+  const source = optionPickSource({ recentChat, replyToContent });
 
   if (CAB_LINE_RE.test(t) || parseCabProvider(t)) return "cab";
   if (
@@ -630,12 +727,16 @@ export function classifyVendorHandoffKind(
   }
 
   const pick = parseLifeOpsOptionPick(t);
-  if (pick) {
-    if (cabThread && resolveListedOptionVenue(cabThread, pick)) return "cab";
-    if (movieThread && resolveListedOptionVenue(movieThread, pick)) return "movie";
-    if (diningThread && resolveListedOptionVenue(diningThread, pick)) return "dining";
+  if (pick && source && coerceOptionPick(pick, source)) {
+    const kind = classifyOptionListKind(source);
+    if (kind === "cab" || kind === "movie" || kind === "dining" || kind === "travel") {
+      return kind;
+    }
   }
   if (/^(?:book|reserve)\b/i.test(t)) {
+    const cabThread = latestCabThread(recentChat);
+    const diningThread = latestDiningThread(recentChat);
+    const movieThread = latestMovieThread(recentChat);
     if (cabThread && CAB_LINE_RE.test(cabThread)) return "cab";
     if (diningThread && DINING_LINE_RE.test(diningThread)) return "dining";
     if (movieThread && MOVIE_LINE_RE.test(movieThread)) return "movie";
@@ -694,21 +795,28 @@ export function buildCabHandoffScript(ctx: {
 export function extractCabContext(
   recentChat: string | null | undefined,
   bookText?: string | null,
+  replyToContent?: string | null,
 ): {
   provider: string | null;
   partySize: number | null;
   whenHint: string | null;
   routeHint: string | null;
 } | null {
-  const chat = latestCabThread(recentChat);
+  const source = optionPickSource({ recentChat, replyToContent });
+  const sourceKind = classifyOptionListKind(source);
+  const thread = latestCabThread(recentChat);
+  const chat = thread || (sourceKind === "cab" ? source : "");
   const book = (bookText ?? "").trim();
   if (!chat && !book) return null;
   if (!CAB_LINE_RE.test(book) && !CAB_LINE_RE.test(chat)) return null;
 
   const pickId = parseLifeOpsOptionPick(book);
+  const listForPick = sourceKind === "cab" ? source || chat : chat;
+  const coerced =
+    pickId && listForPick ? coerceOptionPick(pickId, listForPick) ?? pickId : pickId;
   const provider =
     parseCabProvider(book) ??
-    (pickId ? resolveListedOptionVenue(chat, pickId) : null) ??
+    (coerced ? resolveListedOptionVenue(listForPick, coerced) : null) ??
     parseCabProvider(chat);
 
   const routeHint =
@@ -1114,12 +1222,22 @@ export function formatMovieResearchReply(opts: {
 export function extractLifeOpsDiningContext(
   recentChat: string | null | undefined,
   bookText?: string | null,
+  replyToContent?: string | null,
 ): LifeOpsDiningContext | null {
-  const chat = latestDiningThread(recentChat);
+  const source = optionPickSource({ recentChat, replyToContent });
+  const sourceKind = classifyOptionListKind(source);
+  const thread = latestDiningThread(recentChat);
+  const chat = thread || (sourceKind === "dining" ? source : "");
   const book = (bookText ?? "").trim();
   if (!chat && !book) return null;
   // Cab / rideshare books are not dining — never feed Uber into Zomato context.
   if (book && (CAB_LINE_RE.test(book) || parseCabProvider(book))) return null;
+
+  const optionPick =
+    parseLifeOpsOptionPick(book) ??
+    book.match(/^(?:book|reserve|option)\s*([A-Ea-e1-9])\b/i)?.[1]?.toUpperCase() ??
+    null;
+  if (optionPick && sourceKind !== "dining" && sourceKind !== "other") return null;
 
   const venueFromBook =
     cleanBookVenueName(
@@ -1132,13 +1250,11 @@ export function extractLifeOpsDiningContext(
       ? venueFromBook
       : null;
 
-  const optionPick =
-    parseLifeOpsOptionPick(book) ??
-    book.match(/^(?:book|reserve|option)\s*([A-Ea-e1-9])\b/i)?.[1]?.toUpperCase() ??
-    null;
   let venueFromList: string | null = null;
-  if (optionPick && chat) {
-    venueFromList = resolveListedOptionVenue(chat, optionPick);
+  const listForPick = sourceKind === "dining" ? source || chat : chat;
+  if (optionPick && listForPick) {
+    const coerced = coerceOptionPick(optionPick, listForPick);
+    venueFromList = coerced ? resolveListedOptionVenue(listForPick, coerced) : null;
   }
 
   const handoffVenueRaw =
@@ -1670,6 +1786,14 @@ export function parseInboxErrandDraftAsk(text: string): {
 } | null {
   const t = text.trim();
   if (!/\b(bill|subscription|return|refund|chase|appointment|renewal)\b/i.test(t)) {
+    return null;
+  }
+  // "Send tomorrow's appointment at Clinic 11–1" is a notify/hold, not a dump-the-instruction errand.
+  if (
+    /\bappointment\b/i.test(t) &&
+    (/\b\d{1,2}(?::\d{2})?\s*(?:am|pm)\b/i.test(t) ||
+      /\b(?:from\s+)?\d{1,2}.+\bto\b.+\d{1,2}/i.test(t))
+  ) {
     return null;
   }
   if (!/\b(draft|email|mail|send|chase|follow[- ]?up|cancel|return|refund)\b/i.test(t)) {
