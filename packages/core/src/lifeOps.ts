@@ -633,19 +633,48 @@ export function isFakeBookMyShowUrl(url: string): boolean {
 
 /** True when a dining platform URL is inventable / placeholder (never send). */
 export function isFakeDiningBookUrl(url: string): boolean {
-  const u = url.trim();
-  if (!/zomato\.com|dineout\.co\.in|eazydiner\.com/i.test(u)) return false;
-  // Allow search / query URLs we generate.
-  if (/[?&](q|query|search)=/i.test(u)) return false;
-  if (/\/restaurants\?/i.test(u)) return false;
-  if (/\/search\?/i.test(u)) return false;
-  // Bare invented place slugs: /bangalore/kai-bar-kitchen-mg-road
-  if (/eazydiner\.com\/[a-z-]+\/[a-z0-9-]+\/?$/i.test(u) && !/\/search/i.test(u)) return true;
-  if (/zomato\.com\/[a-z-]+\/[a-z0-9-]+\/?$/i.test(u) && !/\/restaurants/i.test(u)) {
-    // Real Zomato place pages exist; only flag if clearly placeholder
-    if (/XXXX|placeholder|example|test-venue/i.test(u)) return true;
+  const raw = url.trim();
+  if (!raw) return false;
+  const full = /^https?:\/\//i.test(raw) ? raw : `https://${raw.replace(/^\/\//, "")}`;
+  if (!/zomato\.com|dineout\.co\.in|eazydiner\.com/i.test(full)) return false;
+  // Only search / query URLs are trusted — place-slug pages are routinely invented.
+  if (/[?&](q|query|search)=/i.test(full)) return false;
+  if (/\/restaurants\?/i.test(full)) return false;
+  if (/\/search\?/i.test(full)) return false;
+  // City root alone (zomato.com/bangalore) is ok; anything deeper is unverified.
+  if (
+    /(?:zomato\.com|eazydiner\.com|dineout\.co\.in)\/[a-z-]+\/?$/i.test(full) &&
+    !/\/[a-z-]+\/[a-z0-9-]+/i.test(full)
+  ) {
+    return false;
   }
-  return false;
+  return true;
+}
+
+function diningSearchReplacement(url: string, venueHint?: string | null): string {
+  const full = /^https?:\/\//i.test(url.trim()) ? url.trim() : `https://${url.trim()}`;
+  const slugVenue =
+    full.match(/\/([a-z0-9-]+)\/?(?:\?|$)/i)?.[1]?.replace(/-/g, " ") ?? null;
+  const venue = (venueHint?.trim() || slugVenue || "restaurant").slice(0, 80);
+  const citySlug =
+    full.match(/eazydiner\.com\/([a-z-]+)\//i)?.[1] ??
+    full.match(/zomato\.com\/([a-z-]+)\//i)?.[1] ??
+    full.match(/dineout\.co\.in\/([a-z-]+)/i)?.[1]?.replace(/-restaurants$/i, "") ??
+    "bangalore";
+  if (/eazydiner/i.test(full)) {
+    return `https://www.eazydiner.com/${citySlug}/search?query=${encodeURIComponent(venue)}`;
+  }
+  if (/dineout/i.test(full)) {
+    return `https://www.dineout.co.in/${citySlug}-restaurants?search=${encodeURIComponent(venue)}`;
+  }
+  return zomatoSearchUrl(venue, citySlug);
+}
+
+/** Pull venue name from a lettered dining line: `A) Olive Bar & Kitchen — …`. */
+function venueNameFromDiningLine(line: string): string | null {
+  const m = line.match(/^[A-Ea-e1-9]\)\s+([^—\n–-]{2,60})/);
+  if (!m?.[1]) return null;
+  return m[1].replace(/\s+/g, " ").trim().slice(0, 80) || null;
 }
 
 /**
@@ -692,26 +721,25 @@ export function sanitizeLifeOpsReplyText(
     },
   );
 
-  // Invented EazyDiner/Zomato place slugs → search URLs
-  t = t.replace(
-    /https?:\/\/(?:www\.)?(?:eazydiner\.com|zomato\.com|dineout\.co\.in)\/[^\s)>\]]+/gi,
-    (url) => {
-      if (!isFakeDiningBookUrl(url)) return url;
-      scrubbedFake = true;
-      const venue =
-        url.match(/\/([a-z0-9-]+)\/?$/i)?.[1]?.replace(/-/g, " ") ?? "restaurant";
-      const citySlug = url.match(/eazydiner\.com\/([a-z-]+)\//i)?.[1]
-        ?? url.match(/zomato\.com\/([a-z-]+)\//i)?.[1]
-        ?? "bangalore";
-      if (/eazydiner/i.test(url)) {
-        return `https://www.eazydiner.com/${citySlug}/search?query=${encodeURIComponent(venue)}`;
-      }
-      if (/dineout/i.test(url)) {
-        return `https://www.dineout.co.in/${citySlug}-restaurants?search=${encodeURIComponent(venue)}`;
-      }
-      return zomatoSearchUrl(venue, citySlug);
-    },
-  );
+  // Invented EazyDiner/Zomato/Dineout place slugs → search URLs (https + bare host).
+  t = t
+    .split("\n")
+    .map((line) => {
+      const venueHint = venueNameFromDiningLine(line);
+      return line.replace(
+        /(?:https?:\/\/(?:www\.)?|(?<![\/\w])(?:www\.)?)(?:eazydiner\.com|zomato\.com|dineout\.co\.in)\/[^\s)>\]]+/gi,
+        (matched) => {
+          const hadScheme = /^https?:\/\//i.test(matched);
+          const checkUrl = hadScheme ? matched : `https://${matched}`;
+          if (!isFakeDiningBookUrl(checkUrl)) return matched;
+          scrubbedFake = true;
+          const replacement = diningSearchReplacement(checkUrl, venueHint);
+          if (hadScheme) return replacement;
+          return replacement.replace(/^https:\/\/(?:www\.)?/i, "");
+        },
+      );
+    })
+    .join("\n");
 
   if (scrubbedFake) {
     // Drop claims of a specific show deep-link we couldn't verify.

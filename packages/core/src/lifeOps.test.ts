@@ -310,6 +310,27 @@ describe("lifeOps", () => {
     assert.match(out, /eazydiner\.com\/bangalore\/search\?query=/i);
   });
 
+  it("scrubs invented bare Zomato place slugs to search URLs", () => {
+    const fake = [
+      "Client dinner near MG Road",
+      "A) Olive Bar & Kitchen — Mediterranean; ~₹3000 for two. Zomato: zomato.com/bangalore/olive-bar-and-kitchen-mg-road",
+      "B) Toscano — Italian; ~₹2800 for two. Zomato: zomato.com/bangalore/toscano-mg-road",
+    ].join("\n");
+    assert.equal(
+      isFakeDiningBookUrl("zomato.com/bangalore/olive-bar-and-kitchen-mg-road"),
+      true,
+    );
+    assert.equal(
+      isFakeDiningBookUrl("https://www.zomato.com/bangalore/restaurants?q=Olive%20Bar"),
+      false,
+    );
+    const out = sanitizeLifeOpsReplyText(fake);
+    assert.doesNotMatch(out, /olive-bar-and-kitchen-mg-road/);
+    assert.doesNotMatch(out, /toscano-mg-road(?!\?)/);
+    assert.match(out, /zomato\.com\/bangalore\/restaurants\?q=/i);
+    assert.match(out, /Olive(%20|\+)?Bar/i);
+  });
+
   it("scrubs invented BookMyShow show links", () => {
     const fake =
       "PVR Vega City Mirzapur 8 PM: BookMyShow link — https://in.bookmyshow.com/buytickets/pvr-vega-city-bangalore/movie-bang-ET003XXXX/show-ET003XXXX-20260921-2000";
