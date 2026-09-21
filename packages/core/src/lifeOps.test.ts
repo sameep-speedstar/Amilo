@@ -301,18 +301,19 @@ describe("lifeOps", () => {
     assert.equal(isLifeOpsPickableList(bond), true); // numbered — but not a life-ops domain
   });
 
-  it("scrubs invented EazyDiner place slugs to search URLs", () => {
-    const fake = "Open: https://www.eazydiner.com/bangalore/kai-bar-kitchen-mg-road";
+  it("scrubs invented EazyDiner place slugs to Maps", () => {
+    const fake =
+      "A) Kai — rooftop; ~₹2500 for two. Open: https://www.eazydiner.com/bangalore/kai-bar-kitchen-mg-road";
     assert.equal(
       isFakeDiningBookUrl("https://www.eazydiner.com/bangalore/kai-bar-kitchen-mg-road"),
       true,
     );
     const out = sanitizeLifeOpsReplyText(fake);
-    assert.doesNotMatch(out, /kai-bar-kitchen-mg-road/);
-    assert.match(out, /eazydiner\.com\/bangalore\/search\?query=/i);
+    assert.doesNotMatch(out, /eazydiner\.com/i);
+    assert.match(out, /Maps: https:\/\/www\.google\.com\/maps/i);
   });
 
-  it("scrubs invented bare Zomato place slugs to search URLs", () => {
+  it("scrubs invented bare Zomato place slugs to Maps-only links", () => {
     const fake = [
       "Client dinner near MG Road",
       "A) Olive Bar & Kitchen — Mediterranean; ~₹3000 for two. Zomato: zomato.com/bangalore/olive-bar-and-kitchen-mg-road",
@@ -322,17 +323,11 @@ describe("lifeOps", () => {
       isFakeDiningBookUrl("zomato.com/bangalore/olive-bar-and-kitchen-mg-road"),
       true,
     );
-    assert.equal(
-      isFakeDiningBookUrl("https://www.zomato.com/bangalore/restaurants?q=Olive%20Bar"),
-      false,
-    );
     const out = sanitizeLifeOpsReplyText(fake);
-    assert.doesNotMatch(out, /olive-bar-and-kitchen-mg-road/);
-    assert.doesNotMatch(out, /toscano-mg-road(?!\?)/);
-    assert.match(out, /https:\/\/www\.zomato\.com\/bangalore\/restaurants\?q=/i);
-    assert.match(out, /Olive(%20|\+)?Bar/i);
-    assert.doesNotMatch(out, /q=[^&\s]*%26/); // no raw ampersand encoding that breaks clients
+    assert.doesNotMatch(out, /zomato\.com|eazydiner|dineout/i);
+    assert.doesNotMatch(out, /\bZomato:/i);
     assert.match(out, /Maps: https:\/\/www\.google\.com\/maps/i);
+    assert.match(out, /Olive%20Bar/i);
   });
 
   it("isolates client dinner from wife dinner in recent chat", () => {
@@ -597,9 +592,9 @@ describe("lifeOps", () => {
     assert.match(script, /tomorrow 8pm/);
     assert.match(script, /table for 2/);
     assert.doesNotMatch(script, /flight/i);
-    assert.match(script, /zomato\.com/i);
-    assert.match(script, /dineout\.co\.in/i);
-    assert.match(script, /Open to finish booking/i);
+    assert.match(script, /maps\/search/i);
+    assert.doesNotMatch(script, /zomato\.com|dineout|eazydiner/i);
+    assert.match(script, /Open Maps to check distance/i);
   });
 
   it("ignores movie chat when extracting dinner when/venue", () => {

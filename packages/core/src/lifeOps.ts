@@ -798,24 +798,30 @@ export function sanitizeLifeOpsReplyText(
     },
   );
 
-  // Any Zomato/EazyDiner/Dineout URL → full https search (bare hosts don't link on WA;
-  // place-slugs and raw "&" in q= are broken).
+  // Dining: strip Zomato/EazyDiner/Dineout — Maps only (distance/time shortlisting).
   t = t
     .split("\n")
     .map((line) => {
       const venueHint = venueNameFromDiningLine(line);
-      let next = line.replace(
-        /(?:https?:\/\/(?:www\.)?|(?<![\/\w])(?:www\.)?)(?:eazydiner\.com|zomato\.com|dineout\.co\.in)\/[^\s)>\]]+/gi,
-        (matched) => {
-          const checkUrl = /^https?:\/\//i.test(matched) ? matched : `https://${matched}`;
-          scrubbedFake = true;
-          return diningSearchReplacement(checkUrl, venueHint);
-        },
-      );
-      // Dining letter lines: ensure a Maps link when we have a venue (WA-reliable).
+      const hadDiningPlatform = /zomato|eazy\s*diner|dineout/i.test(line);
+      const looksDiningLine =
+        hadDiningPlatform ||
+        /\b(for two|₹|rs\.?|cuisine|rooftop|fine.?dine|restaurant|bistro|dhaba|pub|brewery)\b/i.test(
+          line,
+        );
+      let next = line
+        .replace(/\b(?:Zomato|Eazy\s*Diner|Dineout)\s*:\s*/gi, "")
+        .replace(
+          /(?:https?:\/\/(?:www\.)?|(?<![\/\w])(?:www\.)?)(?:eazydiner\.com|zomato\.com|dineout\.co\.in)\/[^\s)>\]]+/gi,
+          "",
+        )
+        .replace(/\s{2,}/g, " ")
+        .replace(/\s+([.,;])/g, "$1")
+        .trim();
+      if (hadDiningPlatform) scrubbedFake = true;
       if (
         venueHint &&
-        /zomato\.com|eazydiner\.com|dineout\.co\.in/i.test(next) &&
+        looksDiningLine &&
         !/maps\.(google|app)|google\.com\/maps/i.test(next)
       ) {
         const area =
@@ -835,8 +841,6 @@ export function sanitizeLifeOpsReplyText(
     if (!/I couldn't verify (a|that) show link|search link instead/i.test(t)) {
       if (/bookmyshow/i.test(t) && /ET0|buytickets/i.test(text)) {
         t = `${t.trim()}\n\nI couldn't verify that exact show link — open BookMyShow for live seats (Amilo won't invent showtimes or ET codes).`;
-      } else if (/eazydiner|zomato|dineout/i.test(text)) {
-        t = `${t.trim()}\n\nReplaced an unverified book link with a platform search (Amilo won't invent place URLs).`;
       }
     }
   }
@@ -1996,11 +2000,8 @@ export function buildDiningHandoffScript(ctx: {
     ctx.area ? `near ${ctx.area}` : null,
   ].filter(Boolean);
   return [
-    `Open to finish booking (Amilo did not reserve or pay):`,
+    `Open Maps to check distance/time (Amilo did not reserve or pay):`,
     `· ${bits.join(" · ")}`,
-    `Zomato: ${links.zomato}`,
-    `Dineout: ${links.dineout}`,
-    `EazyDiner: ${links.eazydiner}`,
     `Maps: ${links.maps}`,
   ].join("\n");
 }
