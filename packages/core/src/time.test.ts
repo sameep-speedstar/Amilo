@@ -342,4 +342,20 @@ describe("timezone helpers", () => {
     assert.ok(hint);
     assert.match(hint!.title, /dental/i);
   });
+
+  it("reuses the prior appointment when adding an event to their calendar", () => {
+    const now = new Date("2026-09-20T16:55:00.000Z");
+    const prior =
+      "Send tomorrow's appointment at Clinic 11 from 11 to 1 along with address details";
+    const merged = mergeCalendarFollowUp(
+      "And add an event to his google calendar",
+      `User: Send mail to sameep\nUser: ${prior}`,
+      "Asia/Kolkata",
+      now,
+    );
+    assert.equal(merged, prior);
+    const hint = parseCalendarCreateHint(merged, "Asia/Kolkata", now);
+    assert.ok(hint);
+    assert.match(hint!.title, /clinic/i);
+  });
 });

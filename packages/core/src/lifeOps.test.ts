@@ -510,4 +510,13 @@ describe("lifeOps", () => {
     assert.ok(e);
     assert.equal(e!.kind, "bill");
   });
+
+  it("does not dump a timed appointment notify as an errand email", () => {
+    assert.equal(
+      parseInboxErrandDraftAsk(
+        "Send tomorrow's appointment at Clinic 11 from 11 to 1 along with address details",
+      ),
+      null,
+    );
+  });
 });

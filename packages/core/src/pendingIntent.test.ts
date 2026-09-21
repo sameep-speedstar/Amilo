@@ -24,6 +24,18 @@ describe("pending intent routing", () => {
     );
     assert.equal(looksLikeNewActionIntent("show draft", "Asia/Kolkata"), false);
     assert.equal(looksLikeNewActionIntent("send", "Asia/Kolkata"), false);
+    assert.equal(
+      looksLikeNewActionIntent("take these as my directions", "Asia/Kolkata"),
+      false,
+    );
+    assert.equal(
+      looksLikeNewActionIntent("This is wrong mail composition", "Asia/Kolkata"),
+      false,
+    );
+    assert.equal(
+      looksLikeNewActionIntent("And add an event to his google calendar", "Asia/Kolkata"),
+      true,
+    );
     assert.equal(looksLikeNewActionIntent("reconnect google personal", "Asia/Kolkata"), true);
     assert.equal(looksLikeNewActionIntent("Connect google speedstar", "Asia/Kolkata"), true);
   });

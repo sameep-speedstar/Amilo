@@ -3280,7 +3280,7 @@ export async function handleInbound(
           msg,
           deps,
           text,
-          recentChatSummary,
+          recentChatSummary ?? "",
           briefCtx.timezone,
           name,
         );
@@ -3293,7 +3293,7 @@ export async function handleInbound(
           msg,
           deps,
           text,
-          recentChatSummary,
+          recentChatSummary ?? "",
           briefCtx.timezone,
           name,
         );

@@ -160,9 +160,15 @@ export function extractPlaceAddressFromChat(
     if (!re.test(line)) continue;
     const paren = line.match(/\(([^)]{8,90})\)/);
     const sector = line.match(/Sector\s+\d+[A-Z]?/i)?.[0];
-    if (paren) return [sector, paren[1].trim()].filter(Boolean).join(", ");
-    const sco = line.match(/SCO[^,.\n]{3,70}/i);
-    if (sco) return [sector, sco[0].trim()].filter(Boolean).join(", ");
+    if (paren) {
+      const addr = (paren[1] ?? "").trim();
+      if (sector && !new RegExp(sector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i").test(addr)) {
+        return `${sector}, ${addr}`;
+      }
+      return addr;
+    }
+    const sco = line.match(/SCO[^,.\n]{3,70}/i)?.[0]?.trim();
+    if (sco) return [sector, sco].filter(Boolean).join(", ");
   }
   return null;
 }

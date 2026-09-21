@@ -273,14 +273,7 @@ export async function executePendingAction(
     if (row.kind === "email_draft" || row.kind === "email_send") {
       if (!cfg) throw new Error("Google OAuth not configured");
       const preferred = str(payload.accountLabel, "personal");
-      const accounts = await listGoogleAccounts(db, row.userId);
-      const sendable = accounts.filter((a) => hasGmailSendScope(a.scopes ?? ""));
-      const account =
-        sendable.find((a) => a.label === preferred) ??
-        sendable.find((a) => a.label !== "personal") ??
-        sendable[0] ??
-        (await getGoogleAccount(db, row.userId, preferred)) ??
-        accounts[0];
+      const account = await pickSendableGoogleAccount(db, row.userId, preferred);
       if (!account) throw new Error("No Google account linked. Send: connect google personal");
       if (!hasGmailSendScope(account.scopes ?? "")) {
         return {

@@ -52,6 +52,12 @@ export {
   isShowDraftAsk,
   parseBareEmail,
   parseEmailComposeAsk,
+  isEmailRewriteDirection,
+  looksLikeAppointmentNotify,
+  composeAppointmentReminder,
+  latestEmailToHintFromChat,
+  extractPlaceAddressFromChat,
+  cleanAppointmentVenue,
 } from "./emailDraft.js";
 export {
   cleanCalendarDisplayTitle,
@@ -232,6 +238,8 @@ export {
   minutesToHm,
   parseCalendarCreateHint,
   mergeCalendarFollowUp,
+  isCalendarFollowUpAsk,
+  isAddToTheirCalendarAsk,
   parseClockRange,
   parseHmInput,
   parseIsoDate,
