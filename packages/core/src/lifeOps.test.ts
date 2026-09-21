@@ -37,6 +37,10 @@ import {
   coerceOptionPick,
   classifyVendorHandoffKind,
   cleanBookVenueName,
+  looksLikeMovieTicketAsk,
+  resolveActiveDomain,
+  canScriptVendorHandoff,
+  hasStrongDiningCues,
   extractCabContext,
   isWhenPartyFollowUp,
   isWeakLifeOpsHandoffSummary,
@@ -44,6 +48,57 @@ import {
 } from "./lifeOps.js";
 
 describe("lifeOps", () => {
+  it("resolves active domain lock — quote / latest list / lexical / unlocked", () => {
+    const dinnerThenFlights = [
+      "User: suggest dinner near Sector 35",
+      "Amilo: A) Katani Dhaba — Punjabi",
+      "User: flights to Goa tomorrow morning",
+      "Amilo: Goa flights:\nA) IndiGo 06:15 — ₹4200\nB) Air India 09:40 — ₹5100\nReply with a letter to pick.",
+    ].join("\n");
+    assert.equal(
+      resolveActiveDomain({ text: "A", recentChat: dinnerThenFlights }),
+      "travel",
+    );
+    assert.equal(
+      resolveActiveDomain({
+        text: "A",
+        recentChat: dinnerThenFlights,
+        replyToContent: "A) Katani Dhaba — Punjabi",
+      }),
+      "dining",
+    );
+    assert.equal(
+      resolveActiveDomain({
+        text: "Book two tickets for Mirzapur today in Ilante Chandigarh Mall",
+      }),
+      "movie",
+    );
+    assert.equal(
+      resolveActiveDomain({ text: "Book Uber, flight is at 11 PM" }),
+      "cab",
+    );
+    assert.equal(
+      resolveActiveDomain({ text: "Book Katani Dhaba Fri 8pm table for 3" }),
+      "dining",
+    );
+    // Bare named book without dining/movie cues → unlocked (Grok).
+    assert.equal(resolveActiveDomain({ text: "Book Burma Burma" }), null);
+    assert.equal(
+      canScriptVendorHandoff("movie", "dining", "Book two tickets for Mirzapur"),
+      false,
+    );
+    assert.equal(
+      canScriptVendorHandoff(null, "other", "Book Burma Burma"),
+      false,
+    );
+    assert.equal(
+      canScriptVendorHandoff("cab", "cab", "Book Uber, flight is at 11 PM"),
+      true,
+    );
+    assert.equal(hasStrongDiningCues("Book Katani Dhaba Fri 8pm table for 3"), true);
+    assert.equal(hasStrongDiningCues("Book two tickets for Mirzapur"), false);
+  });
+
   it("parses money caps", () => {
     assert.equal(parseMoneyCapInr("flights to Goa under 8k"), 8000);
     assert.equal(parseMoneyCapInr("hotel under ₹12,000"), 12000);
@@ -241,6 +296,19 @@ describe("lifeOps", () => {
       classifyVendorHandoffKind("Book two tickets for Mirzapur near Arekere, Bangalore"),
       "movie",
     );
+    assert.equal(
+      classifyVendorHandoffKind(
+        "Book two tickets for Mirzapur today in Ilante Chandigarh Mall",
+      ),
+      "movie",
+    );
+    assert.equal(
+      looksLikeMovieTicketAsk(
+        "Book two tickets for Mirzapur today in Ilante Chandigarh Mall",
+      ),
+      true,
+    );
+    assert.equal(looksLikeMovieTicketAsk("Book Katani Dhaba Fri 8pm"), false);
   });
 
   it("resolves 4, for 3 people, 8 PM against Chandigarh list — not stale Bangalore handoff", () => {

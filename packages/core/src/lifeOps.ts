@@ -285,9 +285,163 @@ export function buildBookMyShowBuyLink(opts: {
   dateYmd: string;
 }): string {
   const city = opts.citySlug ?? "bengaluru";
-  const slug = (opts.movieSlug ?? "movie").replace(/[^a-z0-9-]/gi, "-").toLowerCase();
+  const slug = (opts.movieSlug ?? "movie").replace(/[^\w]+/g, "-").replace(/^-|-$/g, "").toLowerCase();
   const day = opts.dateYmd.replace(/-/g, "").slice(0, 8);
   return `https://in.bookmyshow.com/movies/${city}/${slug}/buytickets/${opts.eventCode}/${day}`;
+}
+
+export type MovieTicketAsk = {
+  title: string | null;
+  venue: string | null;
+  city: string;
+  dateYmd: string | null;
+  dateHint: string | null;
+  tickets: number | null;
+  showTime: string | null;
+  eventCode: string | null;
+};
+
+const THEATRE_ALIAS: Record<string, string> = {
+  ilante: "Elante",
+  elante: "Elante",
+};
+
+export function looksLikeMovieTicketAsk(text: string): boolean {
+  const t = text.trim();
+  if (!t) return false;
+  if (/\b(tickets?|seats?)\b/i.test(t) && /\bbook\b/i.test(t)) return true;
+  if (
+    /\b(movie|cinema|showtimes?|pvr|inox|cinepolis|bookmyshow|theatre|theater)\b/i.test(t) &&
+    /\b(book|tickets?|seats?)\b/i.test(t)
+  ) {
+    return true;
+  }
+  return false;
+}
+
+function slugMovieTitle(title: string): string {
+  return title
+    .trim()
+    .toLowerCase()
+    .replace(/['’]/g, "")
+    .replace(/[^\w]+/g, "-")
+    .replace(/^-|-$/g, "")
+    .slice(0, 60);
+}
+
+function localYmd(timeZone: string, now: Date): string {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(now);
+}
+
+function addCalendarDay(ymd: string, days: number): string {
+  const [y, m, d] = ymd.split("-").map(Number);
+  const dt = new Date(Date.UTC(y ?? 2026, (m ?? 1) - 1, (d ?? 1) + days));
+  return dt.toISOString().slice(0, 10);
+}
+
+export function normalizeTheatreName(raw: string | null | undefined): string | null {
+  if (!raw?.trim()) return null;
+  let v = raw
+    .replace(/\b(today|tomorrow|tonight)\b/gi, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!v) return null;
+  v = v.replace(/\b(ilante|elante)\b/gi, (m) => THEATRE_ALIAS[m.toLowerCase()] ?? m);
+  return v.replace(/\b\w/g, (c) => c.toUpperCase()).slice(0, 80);
+}
+
+export function parseMovieTicketAsk(
+  text: string,
+  recentChat?: string | null,
+  timeZone = "Asia/Kolkata",
+  now: Date = new Date(),
+): MovieTicketAsk {
+  const t = text.trim();
+  const hay = `${t}\n${recentChat ?? ""}`;
+  const bms = parseBookMyShowUrl(hay);
+  const ticketsWord = t.match(/\b(two|three|four|five|\d{1,2})\s+tickets?\b/i)?.[1];
+  const ticketsN =
+    ticketsWord == null
+      ? null
+      : /two/i.test(ticketsWord)
+        ? 2
+        : /three/i.test(ticketsWord)
+          ? 3
+          : /four/i.test(ticketsWord)
+            ? 4
+            : /five/i.test(ticketsWord)
+              ? 5
+              : Number(ticketsWord);
+  const title =
+    t.match(/\btickets?\s+for\s+(.+?)(?:\s+(?:today|tomorrow|tonight|on\b|in\b|at\b|near\b|,))/i)?.[1]?.trim() ??
+    t.match(/\b(?:movie|film)\s+([A-Za-z0-9][A-Za-z0-9 :'-]{1,40}?)(?:\s+(?:today|tomorrow|tonight|in|at|near|,)|$)/i)?.[1]?.trim() ??
+    recentChat?.match(/\btickets?\s+for\s+(.+?)(?:\s+(?:today|tomorrow|tonight|in|at|near|,))/i)?.[1]?.trim() ??
+    (bms ? bms.slug.replace(/-/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()) : null);
+  const venueRaw =
+    t.match(/\b(?:in|at)\s+(.+?)$/i)?.[1]?.trim() ??
+    t.match(/\b(?:pvr|inox|cinepolis|elante|ilante)[^,]{0,50}/i)?.[0]?.trim() ??
+    null;
+  const dateHint =
+    t.match(/\b(today|tomorrow|tonight)\b/i)?.[1]?.toLowerCase() ??
+    recentChat?.match(/\b(today|tomorrow|tonight)\b/i)?.[1]?.toLowerCase() ??
+    null;
+  let dateYmd: string | null = null;
+  if (dateHint === "today" || dateHint === "tonight") dateYmd = localYmd(timeZone, now);
+  else if (dateHint === "tomorrow") dateYmd = addCalendarDay(localYmd(timeZone, now), 1);
+  const showTime =
+    t.match(/\b\d{1,2}(?::\d{2})?\s*[ap]m\b/i)?.[0]?.trim() ??
+    (/\b\d{1,2}(?::\d{2})?\s*[ap]m\b/i.test(title ?? "") ? null : null);
+  const city = movieCitySlug(`${t} ${recentChat ?? ""} ${venueRaw ?? ""}`);
+  return {
+    title: title && title.length >= 2 ? title.replace(/\s+/g, " ").slice(0, 60) : null,
+    venue: normalizeTheatreName(venueRaw),
+    city,
+    dateYmd,
+    dateHint,
+    tickets: ticketsN && Number.isFinite(ticketsN) && ticketsN > 0 && ticketsN < 20 ? ticketsN : null,
+    showTime,
+    eventCode: bms?.eventCode ?? null,
+  };
+}
+
+export function buildBookMyShowBookingLink(ask: MovieTicketAsk): string {
+  const city = ask.city || "bengaluru";
+  const slug = ask.title ? slugMovieTitle(ask.title) : "movies";
+  if (ask.eventCode && ask.dateYmd) {
+    return buildBookMyShowBuyLink({
+      citySlug: city,
+      movieSlug: slug,
+      eventCode: ask.eventCode,
+      dateYmd: ask.dateYmd,
+    });
+  }
+  if (ask.eventCode) {
+    return `https://in.bookmyshow.com/movies/${city}/${slug}/${ask.eventCode}`;
+  }
+  if (ask.title) {
+    return `https://in.bookmyshow.com/movies/${city}/${slug}`;
+  }
+  return `https://in.bookmyshow.com/explore/movies-${city}`;
+}
+
+export function buildMovieHandoffScript(ask: MovieTicketAsk, url: string): string {
+  const bits = [
+    ask.title ?? "movie",
+    ask.venue,
+    ask.dateHint ?? (ask.dateYmd ? ask.dateYmd : null),
+    ask.showTime,
+    ask.tickets ? `${ask.tickets} tickets` : null,
+  ].filter(Boolean);
+  return [
+    `Open BookMyShow to finish (Amilo did not buy seats or pay):`,
+    `· ${bits.join(" · ")}`,
+    url,
+  ].join("\n");
 }
 
 const MOVIE_LINE_RE =
@@ -388,13 +542,18 @@ export function latestMovieThread(chat: string | null | undefined): string {
 
 export function diningCitySlug(areaOrText?: string | null): string {
   const t = (areaOrText ?? "").toLowerCase();
-  if (/chandigarh|mohali|panchkula|sector\s*\d+/i.test(t)) return "chandigarh";
+  if (/chandigarh|mohali|panchkula|elante|ilante|sector\s*\d+/i.test(t)) return "chandigarh";
   if (/\bmumbai\b|\bbombay\b/i.test(t)) return "mumbai";
   if (/\bdelhi\b|\bgurgaon\b|\bnoida\b|\bncr\b/i.test(t)) return "ncr";
   if (/\bhyderabad\b/i.test(t)) return "hyderabad";
   if (/\bchennai\b/i.test(t)) return "chennai";
   if (/\bpune\b/i.test(t)) return "pune";
   return "bangalore";
+}
+
+export function movieCitySlug(areaOrText?: string | null): string {
+  const city = diningCitySlug(areaOrText);
+  return city === "bangalore" ? "bengaluru" : city === "ncr" ? "national-capital-region-ncr" : city;
 }
 
 export function parsePartySize(text: string | null | undefined): number | null {
@@ -750,6 +909,124 @@ export function isBookPlatformOnly(name: string | null | undefined): boolean {
 
 export type VendorHandoffKind = "dining" | "cab" | "movie" | "travel" | "other";
 
+/** Locked life-ops / brief domain for routing. Null = unlocked → Grok owns the ask. */
+export type ActiveDomain =
+  | "dining"
+  | "cab"
+  | "movie"
+  | "travel"
+  | "brief"
+  | "email"
+  | "calendar"
+  | null;
+
+function domainFromOptionListKind(kind: OptionListKind): ActiveDomain {
+  if (kind === "dining" || kind === "cab" || kind === "movie" || kind === "travel") return kind;
+  if (kind === "brief_focus" || kind === "brief_more") return "brief";
+  return null;
+}
+
+function domainFromVendorKind(kind: string | null | undefined): ActiveDomain {
+  const k = (kind ?? "").toLowerCase();
+  if (k === "dining" || k === "cab" || k === "movie" || k === "travel") return k;
+  return null;
+}
+
+/** Strong dining wording on this turn (not mere "book <name>"). */
+export function hasStrongDiningCues(text: string): boolean {
+  const t = text.trim();
+  if (!t) return false;
+  if (looksLikeMovieTicketAsk(t)) return false;
+  if (CAB_LINE_RE.test(t) || parseCabProvider(t)) return false;
+  return (
+    DINING_LINE_RE.test(t) ||
+    /\b(table\s+for|party\s+of|dinner|lunch|brunch|restaurant|reserve\s+a\s+table)\b/i.test(t)
+  );
+}
+
+/**
+ * Single domain lock for life-ops / brief routing.
+ * Priority: quote → open pending → latest option list → strong lexical → unlocked (null).
+ */
+export function resolveActiveDomain(opts: {
+  text: string;
+  recentChat?: string | null;
+  replyToContent?: string | null;
+  openPending?: { kind: string; payload?: Record<string, unknown>; summary?: string } | null;
+}): ActiveDomain {
+  const t = opts.text.trim();
+  const quoted = opts.replyToContent?.trim() ?? "";
+  if (quoted) {
+    const fromQuote = domainFromOptionListKind(classifyOptionListKind(quoted));
+    if (fromQuote) return fromQuote;
+  }
+
+  const pending = opts.openPending;
+  if (pending) {
+    if (pending.kind === "email_draft") return "email";
+    if (pending.kind.startsWith("calendar_")) return "calendar";
+    if (pending.kind === "life_ops_research" || pending.kind === "life_ops_handoff") {
+      const fromPayload = domainFromVendorKind(String(pending.payload?.vendorKind ?? ""));
+      if (fromPayload) return fromPayload;
+      const blob = [
+        String(pending.payload?.findings ?? ""),
+        String(pending.payload?.script ?? ""),
+        String(pending.summary ?? ""),
+      ]
+        .filter(Boolean)
+        .join("\n");
+      const fromBlob = domainFromOptionListKind(classifyOptionListKind(blob));
+      if (fromBlob) return fromBlob;
+    }
+  }
+
+  const latest = latestAmiloOptionList(opts.recentChat);
+  if (latest) {
+    const fromLatest = domainFromOptionListKind(classifyOptionListKind(latest));
+    if (fromLatest) return fromLatest;
+  }
+
+  if (looksLikeMovieTicketAsk(t)) return "movie";
+  if (
+    (MOVIE_LINE_RE.test(t) || /\bbook\s+(?:tickets?|seats?)\b/i.test(t)) &&
+    !DINING_LINE_RE.test(t) &&
+    !CAB_LINE_RE.test(t)
+  ) {
+    return "movie";
+  }
+  if (CAB_LINE_RE.test(t) || parseCabProvider(t)) return "cab";
+  if (
+    /\b(flight|indigo|air\s*india|spicejet|hotel|train)\b/i.test(t) &&
+    !CAB_LINE_RE.test(t) &&
+    !DINING_LINE_RE.test(t) &&
+    !/\btickets?\b/i.test(t)
+  ) {
+    return "travel";
+  }
+  if (hasStrongDiningCues(t)) return "dining";
+
+  // Bare "book <name>" with no lock / no strong cues → unlocked (Grok).
+  return null;
+}
+
+/** True when orchestrator may run a scripted vendor handoff (not Grok-first). */
+export function canScriptVendorHandoff(
+  domain: ActiveDomain,
+  vendorKind: VendorHandoffKind,
+  text: string,
+): boolean {
+  if (looksLikeMovieTicketAsk(text) || domain === "movie" || vendorKind === "movie") {
+    return false;
+  }
+  if (domain === "cab" || vendorKind === "cab") return true;
+  if (domain === "travel" || vendorKind === "travel") return true;
+  if (domain === "dining" || (vendorKind === "dining" && hasStrongDiningCues(text))) {
+    return true;
+  }
+  // Locked dining list + bare book / letter pick already handled via domain === "dining".
+  return false;
+}
+
 /** Strip timing/party/flight clauses from "Book Uber, flight is at 11 PM". */
 export function cleanBookVenueName(raw: string | null | undefined): string | null {
   if (!raw?.trim()) return null;
@@ -798,15 +1075,7 @@ export function classifyVendorHandoffKind(
   ) {
     return "travel";
   }
-  // "Book two tickets for Mirzapur" / seat asks — movie, never dining "table for 3".
-  if (
-    /\b(tickets?|seats?)\b/i.test(t) &&
-    (MOVIE_LINE_RE.test(t) ||
-      /\b(pvr|inox|cinepolis|theatre|theater|mirzapur)\b/i.test(t) ||
-      /\bbook\b[\s\S]{0,40}\btickets?\b/i.test(t))
-  ) {
-    return "movie";
-  }
+  if (looksLikeMovieTicketAsk(t)) return "movie";
   if (
     (MOVIE_LINE_RE.test(t) || /\bbook\s+(?:tickets?|seats?)\b/i.test(t)) &&
     !DINING_LINE_RE.test(t) &&
@@ -832,10 +1101,8 @@ export function classifyVendorHandoffKind(
     if (cabThread && CAB_LINE_RE.test(cabThread)) return "cab";
     if (diningThread && DINING_LINE_RE.test(diningThread)) return "dining";
     if (movieThread && MOVIE_LINE_RE.test(movieThread)) return "movie";
-    // Named place book with no other domain cue → dining (restaurants/pubs).
-    if (cleanBookVenueName(t.match(/^(?:book|reserve)\s+(.+)$/i)?.[1] ?? null)) {
-      return "dining";
-    }
+    // Named place alone is unlocked — Grok researches; do not assume dining.
+    if (hasStrongDiningCues(t)) return "dining";
   }
   return "other";
 }

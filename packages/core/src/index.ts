@@ -47,17 +47,22 @@ export { looksLikeNewActionIntent, applyPendingEditPatch } from "./orchestrator.
 export {
   composeEmailDraft,
   emailDraftIntro,
+  emailDraftNeedsRewrite,
   formatEmailDraftCopy,
   isSendDraftAsk,
   isShowDraftAsk,
   parseBareEmail,
   parseEmailComposeAsk,
   isEmailRewriteDirection,
+  isPersistableContactLabel,
+  cleanPersonLabel,
   looksLikeAppointmentNotify,
   composeAppointmentReminder,
   latestEmailToHintFromChat,
   extractPlaceAddressFromChat,
   cleanAppointmentVenue,
+  polishEmailDraftPayload,
+  rewriteSpokenEmailDirections,
 } from "./emailDraft.js";
 export {
   cleanCalendarDisplayTitle,
@@ -97,6 +102,10 @@ export {
   parseMovieResearchHints,
   classifyVendorHandoffKind,
   cleanBookVenueName,
+  looksLikeMovieTicketAsk,
+  resolveActiveDomain,
+  canScriptVendorHandoff,
+  hasStrongDiningCues,
   extractCabContext,
   extractUserStatedWhen,
   isWhenPartyFollowUp,
@@ -136,6 +145,7 @@ export {
   type MovieResearchHints,
   type MovieShowVenue,
   type OptionListKind,
+  type ActiveDomain,
   type VendorHandoffKind,
 } from "./lifeOps.js";
 export {

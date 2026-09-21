@@ -14,6 +14,9 @@ import {
   looksLikeFakeDraftAck,
   parseBareEmail,
   parseEmailComposeAsk,
+  emailDraftNeedsRewrite,
+  isPersistableContactLabel,
+  polishEmailDraftPayload,
 } from "./emailDraft.js";
 
 describe("email compose parse", () => {
@@ -121,9 +124,63 @@ describe("email compose parse", () => {
       ),
       "SCO 11, Sector 11D",
     );
-    assert.equal(
-      latestEmailToHintFromChat("User: Send mail to sameep\nAmilo: Draft ready"),
-      "sameep",
+    assert.match(
+      latestEmailToHintFromChat("User: Send mail to sameep\nAmilo: Draft ready") ?? "",
+      /sameep/i,
     );
+  });
+
+  it("rewrites Nisha voice notes instead of dumping them", () => {
+    const sameer =
+      "Draft an email for Sameer. Tell him that I've started using Amilo for the first time. It has helped me answer few of the generic queries. However, I'm yet to test for my daily use, for example, using Amilo for voice notes or reminders. I like the searchings in the restaurant and also for movie booking. However, it would be ideal if Amilo can also give me final booking link. Needless to say, it is good that I'm able to use small language models inside WhatsApp. I don't have to switch screens. I wish all the best to Amilo. Thank you.";
+    const ask = parseEmailComposeAsk(sameer);
+    assert.ok(ask);
+    assert.equal(ask.toHint, "Sameer");
+    assert.equal(isPersistableContactLabel(ask.toHint!), true);
+    const composed = composeEmailDraft(ask, "Nisha");
+    assert.doesNotMatch(composed.subject, /^Reminder:/);
+    assert.doesNotMatch(composed.subject, /answer f$/i);
+    assert.match(composed.body, /^Hi Sameer,/);
+    assert.doesNotMatch(composed.body, /Hi Sameer\.,/);
+    assert.match(composed.body, /booking link/i);
+    assert.match(composed.body, /Nisha/);
+
+    const sameep =
+      "Draft another email for Sameep. In this email, I'm just checking if the random words that I'm saying is getting drafted by Amilo to sound professional. And also this email has to sound very professional saying that Amilo is doing a great job, all the best.";
+    const ask2 = parseEmailComposeAsk(sameep);
+    assert.ok(ask2);
+    assert.equal(ask2.toHint, "Sameep");
+    const composed2 = composeEmailDraft(ask2, "Nisha");
+    assert.doesNotMatch(composed2.body, /random words/i);
+    assert.doesNotMatch(composed2.body, /sound professional/i);
+    assert.doesNotMatch(composed2.subject, /i'm saying is getting drafted/i);
+    assert.match(composed2.body, /great job/i);
+    assert.match(composed2.body, /^Hi Sameep,/);
+
+    const dump = {
+      to: "sameep@speedstar.ai",
+      subject: "I'm saying is getting drafted by Amilo to sound professional. And also",
+      body: "Hi Sameep.,\n\nI'm saying is getting drafted by Amilo to sound professional. And also this email has to sound very professional saying that Amilo is doing a great job, all the best.\n\nNisha",
+      recipientLabel: "Sameep. In this , I'm just checking if the random words",
+    };
+    assert.equal(emailDraftNeedsRewrite(dump, sameep), true);
+    assert.equal(isPersistableContactLabel(String(dump.recipientLabel)), false);
+    const polished = polishEmailDraftPayload(dump, { sourceText: sameep, userName: "Nisha" });
+    assert.equal(polished.recipientLabel, "Sameep");
+    assert.doesNotMatch(String(polished.body), /random words/i);
+    assert.equal(emailDraftNeedsRewrite(polished, sameep), false);
+
+    const mahesh =
+      "Send another email to Mahesh saying that I am working on LinkedIn. I have created certain posts which I'm going to post today. The post is about control released of funds in escrow.";
+    const ask3 = parseEmailComposeAsk(mahesh);
+    assert.ok(ask3);
+    assert.equal(ask3.toHint, "Mahesh");
+    const composed3 = composeEmailDraft(ask3, "Nisha");
+    assert.doesNotMatch(composed3.body, /^That I/m);
+    assert.match(composed3.body, /controlled release of funds/i);
+    assert.doesNotMatch(composed3.subject, /which I'm$/i);
+    const intro = emailDraftIntro({ mode: "send", recipientLabel: "Sameer. Tell him" });
+    assert.match(intro, /need Sameer's email/i);
+    assert.doesNotMatch(intro, /Tell him/i);
   });
 });

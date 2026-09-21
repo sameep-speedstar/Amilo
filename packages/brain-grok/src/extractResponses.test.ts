@@ -76,7 +76,12 @@ Want showtimes near Arekere?`;
 describe("isLiveResearchAsk", () => {
   it("detects movie research", () => {
     assert.equal(isLiveResearchAsk("which Hindi movie is running this week"), true);
-    assert.equal(isLiveResearchAsk("Book 2 tickets for VIBE"), false);
+    assert.equal(
+      isLiveResearchAsk("Book two tickets for Mirzapur today in Ilante Chandigarh Mall"),
+      true,
+    );
+    assert.equal(isLiveResearchAsk("Book 2 tickets for VIBE"), true);
+    assert.equal(isLiveResearchAsk("Book Katani Dhaba Fri 8pm"), false);
   });
 });
 

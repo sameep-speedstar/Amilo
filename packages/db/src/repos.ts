@@ -892,7 +892,13 @@ export async function rememberPersonEmail(
   opts: { label: string; email: string; attrs?: Record<string, unknown> },
 ): Promise<ContextNodeRow> {
   const email = opts.email.trim().toLowerCase();
-  const label = normalizeLabel(opts.label);
+  let label = normalizeLabel(opts.label);
+  if (/[.,:;!?]/.test(label) || label.split(/\s+/).length > 3 || label.length > 40) {
+    const first = label.split(/[.,:;!?\s]+/).find((t) => /^[A-Za-z]{2,}$/.test(t));
+    label = first
+      ? first.replace(/^\w/, (c) => c.toUpperCase())
+      : (email.split("@")[0] ?? "contact");
+  }
   const node = await upsertNode(
     db,
     userId,
@@ -927,6 +933,9 @@ export async function resolvePersonEmail(
 
   for (const n of nodes) {
     const labelNorm = n.label.toLowerCase().replace(/[^a-z]/g, "");
+    if (!labelNorm || n.label.trim().split(/\s+/).length > 3 || /[.,:;!?]/.test(n.label)) {
+      continue;
+    }
     const attrs = (n.attrs ?? {}) as Record<string, unknown>;
     const emailRaw = typeof attrs.email === "string" ? attrs.email.trim().toLowerCase() : "";
     const aliases = Array.isArray(attrs.aliases)

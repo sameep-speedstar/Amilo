@@ -488,7 +488,7 @@ function buildSystemPrompt(docs: string): string {
     "- End pickable lists with: Reply with a letter to pick. Then ask for any missing day/time/party size — NEVER invent or assume date, time, covers, or 'today'. Movie tickets: ask day/time (not 'table for N').",
     "- NEVER put today's weekday/date in research replies unless the user said today/tonight/a date.",
     "- Keep domains separate: dinner replies must not reuse movie theatres/showtimes from Recent chat (and vice versa).",
-    "- Goal after venue + day/time (+ party): give platform deep links (Zomato / Dineout / EazyDiner / BookMyShow) so the user opens a page as close as possible to pay/confirm — Amilo does not book or pay.",
+    "- Goal after venue + day/time (+ party, or movie + theatre + show): give platform deep links (Zomato / Dineout / EazyDiner for dining; BookMyShow movie/show URL for tickets) so the user opens a page as close as possible to pay/confirm — Amilo does not book or pay.",
     "- Rank options; stay WhatsApp-short (usually under ~700 chars). Lead with decision or next action.",
     "- When the user picks a letter/number (or name) but day/time is missing: acknowledge the venue and ask only for what's missing. Do not propose handoff/calendar until day+time are stated.",
     "- When the user says they already booked (movie/table), propose_action calendar_create for that block (use realistic duration, e.g. film ~2h).",
@@ -496,7 +496,7 @@ function buildSystemPrompt(docs: string): string {
     "- Never return propose_action type life_ops_research — answer in reply_text with live findings.",
     "- intent.text MUST contain the full answer (names, lettered options). Never empty text / noop after search.",
     "IMAGES: When an image is attached, read it (charts, screenshots, tickets). Answer from what is visible; say if unclear. Still return JSON with reply_text.",
-    "For vendor book links after they pick a place AND gave day/time (not a ticket purchase), propose_action {\"type\":\"life_ops_handoff\",...} is ok — still confirm-first; never claim reserved; never invent time; prefer deep links over call scripts.",
+    "After the user picks from YOUR lettered list (or already stated movie + theatre + day/show), propose_action {\"type\":\"life_ops_handoff\",\"vendorKind\":\"movie\"|\"dining\",\"summary\":\"…\",\"script\":\"Open …\\nhttps://…\"} with the real deep link from web_search (BookMyShow for tickets, Zomato/Dineout for dining). Still confirm-first. Never Zomato for movies. Never invent ET codes or showtimes. Never claim reserved.",
     "graphUpdates: only durable facts; empty array if nothing new.",
     "Reply text: short, concrete, ranked; usually under 500 characters for chat, up to ~700 for search results; lettered picks (A) B) C)) for 2+ venues/films; no therapist mode; no sycophancy.",
     "When the user asks to mute/ignore/hide mail matching a phrase, return propose_action with action {\"type\":\"mute\",\"pattern\":\"...\"} (do not only say muted in reply_text).",
@@ -504,7 +504,7 @@ function buildSystemPrompt(docs: string): string {
     "When the user asks to add/change/cancel a calendar event, return propose_action with action {\"type\":\"calendar_create\"|\"calendar_update\"|\"calendar_cancel\",\"accountLabel\":\"personal\",\"title\":\"clean event title only\",\"start\":\"ISO-8601 with correct year from Now line\",\"end\":\"ISO-8601\",\"eventId\":\"from Calendar today [id:…] if present\",\"attendees\":[\"email@…\"]}. Do NOT claim it was written — orchestrator will ask for yes/cancel. Prefer ISO with offset for the user timezone. For cancel/update always include eventId from Calendar today when available, and title matching the event.",
     "Strip acknowledgements and instruction verbs from calendar titles: ignore Cool/Ok/Sure/Thanks; book/add/schedule are instructions not title words; 'book 1 hour with Rajeev at 1pm' → title like 'Meeting with Rajeev', start 1pm, end +1h.",
     "When the user asks to send a calendar invite / invite someone to a meeting, use calendar_create with attendees (emails). If Silent context graph has person email=…, use that — do not ask them to restate the email. Never use email_draft for calendar invites.",
-    "When the user asks to send/email someone (not a calendar invite), return propose_action with action {\"type\":\"email_draft\",\"to\":\"...\",\"subject\":\"...\",\"body\":\"full draft in user voice\"}. Orchestrator shows the draft. If they said send, yes sends via Gmail; if they only asked to draft, they must say send. Resolve to= from context graph person email when only a name is given. If the address is unknown, still fill subject+body and put the name in to (do not invent an @ address). Never say \"draft ready\" or \"email ready to send\" in reply_text — that hides the body.",
+    "When the user asks to send/email someone (not a calendar invite), return propose_action with action {\"type\":\"email_draft\",\"to\":\"...\",\"subject\":\"...\",\"body\":\"recipient-ready prose\"}. The user's words are DIRECTIONS, not the email. Strip 'tell him that', 'saying that', 'in this email I'm just checking', 'sound professional', and any test of whether Amilo rewrites. Put facts in the mail; keep test-talk off the email (the orchestrator can mention it on WhatsApp). Subject: ≤8 words, never a truncated transcript, never 'Reminder:' unless they asked to remind the recipient. Greeting: 'Hi Name,' with no extra punctuation. Resolve to= from context graph person email when only a name is given. If the address is unknown, still fill subject+body and put the name in to (do not invent an @ address). Never say \"draft ready\" or \"email ready to send\" in reply_text — that hides the body. graphUpdates person labels are 1–3 name tokens only — never a sentence.",
     "When the user states a recurring personal window they do NOT want on Google Calendar (school pickup, gym, golf), upsert graph kind schedule with attrs days/startHm/endHm — not calendar_create. Prefer schedule over constraint for timed windows.",
     "When the user extends a schedule or says don't book (e.g. pickup till 5), the orchestrator handles holds; still ack briefly if you reply.",
     "All times the user mentions are in their timezone (see User line). Never assume UTC.",
@@ -637,7 +637,7 @@ export function createGrokBrain(cfg: GrokBrainConfig): BrainPort {
 
       const userPayload = buildUserPayload(cleanCtx, message);
       const researchHint = researchAsk
-        ? "\n\nRESEARCH MODE: Use web_search. Name real films/venues/cabs from search. LETTERED options (`A) Name — detail`) EACH ON ITS OWN LINE — never pack A) B) C) on one line. Prefer letters over 1) 2) 3) so picks never collide with FOCUS mail. Same for movies, cabs, flights, dining. MOVIES: only list theatre+time if search confirms that show; never invent ET codes or buytickets URLs with XXXX; if unsure, give the real BookMyShow movie page only. Never invent today's date/weekday. Never mix movie theatres into dinner (or vice versa). End with: Reply with a letter to pick. Put FULL answer in intent.text. Never explore/movies stub only."
+        ? "\n\nRESEARCH MODE: Use web_search. Name real films/venues/cabs from search. LETTERED options (`A) Name — detail`) EACH ON ITS OWN LINE — never pack A) B) C) on one line. Prefer letters over 1) 2) 3) so picks never collide with FOCUS mail. Same for movies, cabs, flights, dining. MOVIES: search the title+city+theatre the user named (e.g. Mirzapur / Elante / Chandigarh). Only list theatre+time if search confirms that show; never invent ET codes or buytickets URLs with XXXX; if unsure, give the real BookMyShow movie page only. Never invent today's date/weekday. Never mix movie theatres into dinner (or vice versa). End with: Reply with a letter to pick. Put FULL answer in intent.text. Never explore/movies stub only. Never Zomato/Dineout for a movie ticket ask."
         : hasImage
           ? "\n\nIMAGE MODE: An image is attached. Read it carefully and answer in intent.text. If the user only sent the image, briefly say what you see and ask what they need."
           : "";
@@ -713,12 +713,17 @@ export function createGrokBrain(cfg: GrokBrainConfig): BrainPort {
 export function isLiveResearchAsk(message: string): boolean {
   const t = message.trim();
   if (!t) return false;
-  if (/\b(book|buy|order|reserve)\b/i.test(t.replace(/\bbook\s*my\s*show\b/gi, "BMS"))) {
-    // Explicit book may still want search first if "book" means research follow-up — keep false
+  const stripped = t.replace(/\bbook\s*my\s*show\b/gi, "BMS");
+  const movieTicket =
+    /\b(tickets?|seats?)\b/i.test(t) ||
+    /\b(movie|movies|film|films|cinema|showtimes?|pvr|inox|cinepolis|theatre|theater)\b/i.test(t);
+  // Dining "book Katani" is a handoff. Movie "book two tickets for Mirzapur" is still research.
+  if (/\b(book|buy|order|reserve)\b/i.test(stripped) && !movieTicket) {
     return false;
   }
   return (
-    /\b(movie|movies|film|films|cinema|showtimes?|what's\s+on|whats\s+on|dinner|lunch|brunch|pub|pubs|restaurant|flight|flights|playing|running|showing)\b/i.test(
+    movieTicket ||
+    /\b(dinner|lunch|brunch|pub|pubs|restaurant|flight|flights|playing|running|showing|what's\s+on|whats\s+on)\b/i.test(
       t,
     ) ||
     (/^(which|what)\b/i.test(t) && /\b(near|this\s+week|today|tonight)\b/i.test(t)) ||

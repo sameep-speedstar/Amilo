@@ -4,12 +4,16 @@ import type { OnboardingState } from "./onboardingGuide.js";
 import {
   composeEmailDraft,
   emailDraftIntro,
+  emailDraftNeedsRewrite,
   formatEmailDraftCopy,
   isDraftOnlyPayload,
+  isPersistableContactLabel,
+  cleanPersonLabel,
   isSendDraftAsk,
   isShowDraftAsk,
   parseBareEmail,
   parseEmailComposeAsk,
+  polishEmailDraftPayload,
   isEmailRewriteDirection,
   looksLikeAppointmentNotify,
   extractPlaceAddressFromChat,
@@ -28,6 +32,8 @@ import {
   buildCabHandoffScript,
   classifyVendorHandoffKind,
   cleanBookVenueName,
+  canScriptVendorHandoff,
+  resolveActiveDomain,
   extractCabContext,
   extractLifeOpsDiningContext,
   formatMoneyCapNote,
@@ -49,9 +55,10 @@ import {
   parseLifeOpsResearchIntent,
   parseMoneyCapInr,
   parseCabProvider,
-  parseBookMyShowUrl,
   resolveListedOptionVenue,
   diningCitySlug,
+  looksLikeMovieTicketAsk,
+  isLifeOpsPickableList,
   scopeChatToDining,
   extractUserStatedWhen,
   type LifeOpsResearchIntent,
@@ -906,6 +913,7 @@ function emailDraftMessages(payload: Record<string, unknown>, mode: "draft" | "s
         mode,
         to: String(payload.to ?? ""),
         recipientLabel: String(payload.recipientLabel ?? ""),
+        rewroteFromNotes: payload.rewroteFromNotes === true,
       }),
     },
     { text: formatEmailDraftCopy(payload) },
@@ -987,9 +995,10 @@ async function proposeEmailComposePending(
   ask: EmailComposeAsk,
   extras?: { to?: string; subject?: string; body?: string; userName?: string },
 ): Promise<OutboundMessage[]> {
+  const toHint = ask.toHint && isPersistableContactLabel(ask.toHint) ? ask.toHint : ask.toHint;
   let to = extras?.to?.trim() || (ask.toHint?.includes("@") ? ask.toHint : "");
-  if (!to && ask.toHint && deps.resolveContactEmail) {
-    const hit = await deps.resolveContactEmail(msg.userId, ask.toHint);
+  if (!to && toHint && deps.resolveContactEmail) {
+    const hit = await deps.resolveContactEmail(msg.userId, toHint);
     if (hit?.email) to = hit.email;
   }
   const composed = composeEmailDraft(ask, extras?.userName);
@@ -1000,25 +1009,38 @@ async function proposeEmailComposePending(
     const sendAcct = pickGmailSendAccount(await deps.listGoogleAccounts(msg.userId), "personal");
     if (sendAcct) accountLabel = sendAcct.label;
   }
-  const payload: Record<string, unknown> = {
+  let payload: Record<string, unknown> = {
     accountLabel,
     to,
     subject,
     body,
     draftOnly: ask.mode === "draft",
-    ...(ask.toHint ? { recipientLabel: ask.toHint } : {}),
+    sourceDirections: ask.sourceText,
+    rewroteFromNotes: !extras?.body,
+    ...(toHint ? { recipientLabel: toHint } : {}),
   };
+  if (!extras?.body) {
+    payload = polishEmailDraftPayload(payload, {
+      sourceText: ask.sourceText,
+      ...(extras?.userName ? { userName: extras.userName } : {}),
+      ...(toHint != null ? { toHint } : {}),
+    });
+    payload.draftOnly = ask.mode === "draft";
+    payload.to = to;
+    if (accountLabel) payload.accountLabel = accountLabel;
+  }
   if (!deps.createPending) {
     return emailDraftMessages(payload, ask.mode);
   }
   await deps.createPending({
     userId: msg.userId,
     kind: "email_draft",
-    summary: `Email draft to ${to || ask.toHint || "?"}: ${subject}`,
+    summary: `Email draft to ${to || toHint || "?"}: ${String(payload.subject ?? subject)}`,
     payload,
   });
-  if (to && deps.rememberContactEmail && ask.toHint && !ask.toHint.includes("@")) {
-    await deps.rememberContactEmail(msg.userId, { label: ask.toHint, email: to });
+  const persistLabel = String(payload.recipientLabel ?? toHint ?? "");
+  if (to && deps.rememberContactEmail && isPersistableContactLabel(persistLabel)) {
+    await deps.rememberContactEmail(msg.userId, { label: persistLabel, email: to });
   }
   return withGmailSendAuthNotice(
     msg.userId,
@@ -1080,10 +1102,10 @@ export function applyPendingEditPatch(
 }
 
 function recipientFirstFromDraft(payload: Record<string, unknown>): string | null {
-  const label = String(payload.recipientLabel ?? "").trim();
-  if (label && !label.includes("@")) {
-    const first = label.split(/\s+/)[0] ?? "";
-    if (first.length >= 2) return first.replace(/^\w/, (c) => c.toUpperCase());
+  const cleaned = cleanPersonLabel(String(payload.recipientLabel ?? ""));
+  if (cleaned) {
+    const first = cleaned.split(/\s+/)[0] ?? "";
+    if (first.length >= 2) return first;
   }
   const local = String(payload.to ?? "").split("@")[0] ?? "";
   if (/^[a-z]{3,}$/i.test(local)) return local.replace(/^\w/, (c) => c.toUpperCase());
@@ -1125,8 +1147,15 @@ function rewriteEmailDraftFromDirection(opts: {
     next.subject = composed.subject;
     next.body = composed.body;
     next.draftOnly = false;
+    return next;
   }
-  return next;
+  const source = `${opts.recentChat}\n${opts.text}`.trim();
+  const polished = polishEmailDraftPayload(next, {
+    sourceText: source || opts.text,
+    userName: opts.userName,
+    toHint: String(next.recipientLabel ?? ""),
+  });
+  return polished;
 }
 
 function isAppointmentEmailAsk(text: string): boolean {
@@ -1171,7 +1200,7 @@ async function proposeAppointmentNotifyPending(
   return proposeEmailComposePending(
     msg,
     deps,
-    { mode: "send", toHint, about: composed.subject },
+    { mode: "send", toHint, about: composed.subject, sourceText: text },
     { subject: composed.subject, body: composed.body, userName },
   );
 }
@@ -1523,15 +1552,39 @@ export async function handleInbound(
         const summary = `Email draft to ${to}: ${String(nextPayload.subject ?? "draft")}`;
         await deps.editPending(msg.userId, nextPayload, summary);
         const label = String(nextPayload.recipientLabel ?? "").trim();
-        if (label && deps.rememberContactEmail) {
+        if (label && isPersistableContactLabel(label) && deps.rememberContactEmail) {
           await deps.rememberContactEmail(msg.userId, { label, email: to });
         }
         return emailDraftMessages(nextPayload, emailDraftMode(nextPayload, null));
       }
       if (isSendDraftAsk(text)) {
         if (!String(openPending.payload.to ?? "").includes("@")) {
-          const who = String(openPending.payload.recipientLabel ?? "the recipient");
+          const who =
+            cleanPersonLabel(String(openPending.payload.recipientLabel ?? "")) || "the recipient";
           return [{ text: `Need ${who}'s email before I can send.` }];
+        }
+        if (emailDraftNeedsRewrite(openPending.payload) && deps.editPending) {
+          const source =
+            String(openPending.payload.sourceDirections ?? "") ||
+            (deps.getRecentChatSummary
+              ? await deps.getRecentChatSummary(msg.userId, {
+                  ...(msg.messageId ? { excludeMessageId: msg.messageId } : {}),
+                })
+              : "");
+          const userName = deps.resolveUserName ? await deps.resolveUserName(msg.userId) : "";
+          const nextPayload = polishEmailDraftPayload(openPending.payload, {
+            sourceText: source || String(openPending.payload.body ?? ""),
+            userName,
+            toHint: String(openPending.payload.recipientLabel ?? ""),
+          });
+          const summary = `Email draft to ${String(nextPayload.to ?? "?")}: ${String(nextPayload.subject ?? "draft")}`;
+          await deps.editPending(msg.userId, nextPayload, summary);
+          return [
+            {
+              text: "This still looked like your notes — here's the rewrite. Say send if this is the one.",
+            },
+            ...emailDraftMessages(nextPayload, emailDraftMode(nextPayload, null)),
+          ];
         }
         const r = await deps.confirmPending(msg.userId);
         if (r.ok) return [{ text: r.message }];
@@ -1784,6 +1837,12 @@ export async function handleInbound(
       Boolean(parseConnectGoogleCommand(text));
     if (inspectOnly) {
       // fall through
+    } else if (
+      (openPending.kind === "life_ops_research" || openPending.kind === "life_ops_handoff") &&
+      parseLifeOpsOptionPick(text)
+    ) {
+      await deps.rejectPending(msg.userId);
+      // Letter pick from Grok findings — continue routing.
     } else if (looksLikeNewActionIntent(text, tzForPending.timezone)) {
       await deps.rejectPending(msg.userId);
       // fall through to normal routing
@@ -2842,23 +2901,8 @@ export async function handleInbound(
       }
 
       if (venue && listKind === "movie") {
-        const fromChat = parseBookMyShowUrl(recentChatSummary ?? "");
-        const city = fromChat?.city ?? diningCitySlug(recentChatSummary);
-        const live =
-          fromChat?.url ??
-          `https://in.bookmyshow.com/explore/movies-${city === "bangalore" ? "bengaluru" : city}`;
-        return [
-          {
-            text: [
-              `Got it — ${venue}.`,
-              `Live BookMyShow (no invented times): ${live}`,
-              "Open that page for real showtimes/seats — Amilo won't buy tickets.",
-            ].join("\n"),
-          },
-        ];
-      }
-
-      if (venue && listKind === "dining" && !isBookPlatformOnly(venue)) {
+        // Grok owns movie showtimes + the booking-link action. Don't invent BMS/Zomato here.
+      } else if (venue && listKind === "dining" && !isBookPlatformOnly(venue)) {
         const diningChat = latestDiningThread(recentChatSummary);
         const diningCtx = extractLifeOpsDiningContext(recentChatSummary, text, replyTo);
         const city = diningCitySlug(diningCtx?.area ?? diningChat);
@@ -2951,19 +2995,35 @@ export async function handleInbound(
   }
 
   // Handoff scripts still confirm-first. Domain-scoped: dining ≠ cab ≠ movie.
+  // Scripts run only when the domain is locked (or strong lexical); else Grok.
   if (deps.createPending) {
+      const activeDomain = resolveActiveDomain({
+        text,
+        ...(recentChatSummary != null ? { recentChat: recentChatSummary } : {}),
+        ...(msg.replyToContent != null ? { replyToContent: msg.replyToContent } : {}),
+        ...(openPending != null ? { openPending } : {}),
+      });
       // Day/time follow-up after venue locked (e.g. "8 PM today for 3") → create dining pending.
       if (
         isWhenPartyFollowUp(text) &&
         !parseLifeOpsHandoffIntent(text) &&
-        classifyVendorHandoffKind(text, recentChatSummary, msg.replyToContent) !== "cab"
+        (activeDomain === "dining" || activeDomain === null) &&
+        !looksLikeMovieTicketAsk(text)
       ) {
         const diningCtx = extractLifeOpsDiningContext(
           recentChatSummary,
           text,
           msg.replyToContent,
         );
-        if (diningCtx?.venue && diningCtx.whenHint && !isBookPlatformOnly(diningCtx.venue)) {
+        const diningLocked =
+          activeDomain === "dining" ||
+          Boolean(diningCtx?.venue && latestDiningThread(recentChatSummary));
+        if (
+          diningLocked &&
+          diningCtx?.venue &&
+          diningCtx.whenHint &&
+          !isBookPlatformOnly(diningCtx.venue)
+        ) {
           const city = diningCitySlug(diningCtx.area ?? latestDiningThread(recentChatSummary));
           const who = diningCtx.venue;
           const payload: Record<string, unknown> = {
@@ -3011,12 +3071,13 @@ export async function handleInbound(
       }
 
       const handoff = parseLifeOpsHandoffIntent(text);
-      if (handoff) {
-        const vendorKind = classifyVendorHandoffKind(
-          text,
-          recentChatSummary,
-          msg.replyToContent,
-        );
+      const vendorKind = classifyVendorHandoffKind(
+        text,
+        recentChatSummary,
+        msg.replyToContent,
+      );
+      // Unlocked / movie → Grok+web_search. Scripted cab/dining/travel only when canScript.
+      if (handoff && canScriptVendorHandoff(activeDomain, vendorKind, text)) {
         const diningChat = latestDiningThread(recentChatSummary);
         const cabChat = latestCabThread(recentChatSummary);
         const pickSource = optionPickSource({
@@ -3024,15 +3085,17 @@ export async function handleInbound(
           replyToContent: msg.replyToContent,
         });
         const diningCtx =
-          vendorKind === "dining" || vendorKind === "other"
+          vendorKind === "dining" ||
+          activeDomain === "dining" ||
+          vendorKind === "other"
             ? extractLifeOpsDiningContext(recentChatSummary, text, msg.replyToContent)
             : null;
         const cabCtx =
-          vendorKind === "cab"
+          vendorKind === "cab" || activeDomain === "cab"
             ? extractCabContext(recentChatSummary, text, msg.replyToContent)
             : null;
 
-        if (vendorKind === "cab") {
+        if (vendorKind === "cab" || activeDomain === "cab") {
           const provider =
             parseCabProvider(text) ??
             cabCtx?.provider ??
@@ -3085,23 +3148,6 @@ export async function handleInbound(
                 pending.summary,
                 "",
                 "Nothing sent or spent yet.",
-              ].join("\n"),
-            },
-          ];
-        }
-
-        if (vendorKind === "movie") {
-          const fromChat = parseBookMyShowUrl(recentChatSummary ?? "");
-          const city = fromChat?.city ?? diningCitySlug(recentChatSummary);
-          const live =
-            fromChat?.url ??
-            `https://in.bookmyshow.com/explore/movies-${city === "bangalore" ? "bengaluru" : city}`;
-          return [
-            {
-              text: [
-                "I won't invent showtimes or seat links.",
-                `Open live BookMyShow: ${live}`,
-                "Pick theatre + time there — Amilo doesn't buy seats yet.",
               ].join("\n"),
             },
           ];
@@ -3163,7 +3209,7 @@ export async function handleInbound(
 
         const isDiningHandoff =
           handoff.channel === "vendor" &&
-          vendorKind === "dining" &&
+          (vendorKind === "dining" || activeDomain === "dining") &&
           Boolean(venue) &&
           !/\b(flight|hotel|train|indigo)\b/i.test(text);
 
@@ -3282,25 +3328,12 @@ export async function handleInbound(
             mode: errand.mode,
             toHint: errand.toHint,
             about: errand.about,
+            sourceText: text,
           },
           { userName: name },
         );
       }
 
-      const composeAsk = !isCalendarInviteIntent(text) ? parseEmailComposeAsk(text) : null;
-      if (composeAsk && isAppointmentEmailAsk(text)) {
-        return proposeAppointmentNotifyPending(
-          msg,
-          deps,
-          text,
-          recentChatSummary ?? "",
-          briefCtx.timezone,
-          name,
-        );
-      }
-      if (composeAsk) {
-        return proposeEmailComposePending(msg, deps, composeAsk, { userName: name });
-      }
       if (isAppointmentEmailAsk(text)) {
         return proposeAppointmentNotifyPending(
           msg,
@@ -3611,6 +3644,45 @@ export async function handleInbound(
         if (sendAcct) payload.accountLabel = sendAcct.label;
       }
 
+      // Domain mismatch: never accept Zomato/dining handoff for a movie ticket ask.
+      if (kind === "life_ops_handoff") {
+        const askDomain = resolveActiveDomain({
+          text,
+          ...(recentChatSummary != null ? { recentChat: recentChatSummary } : {}),
+          ...(msg.replyToContent != null ? { replyToContent: msg.replyToContent } : {}),
+          ...(openPending != null ? { openPending } : {}),
+        });
+        const scriptBlob = [
+          String(payload.script ?? ""),
+          String(payload.summary ?? ""),
+          String(action.summary ?? ""),
+        ].join("\n");
+        const looksDiningScript =
+          /zomato|dineout|eazydiner|table for/i.test(scriptBlob) &&
+          !/bookmyshow|showtimes?/i.test(scriptBlob);
+        if (
+          (askDomain === "movie" || looksLikeMovieTicketAsk(text)) &&
+          (looksDiningScript || String(payload.vendorKind ?? "").toLowerCase() === "dining")
+        ) {
+          return [
+            {
+              text: "That looked like a movie ticket ask — I’ll research showtimes instead of restaurant links. Ask again with the film + city (or theatre).",
+            },
+          ];
+        }
+        if (looksLikeMovieTicketAsk(text) || askDomain === "movie") {
+          payload.vendorKind = "movie";
+        }
+        const handoffSummary = String(payload.summary ?? action.summary ?? "").trim();
+        if (isWeakLifeOpsHandoffSummary(handoffSummary) && !String(payload.script ?? "").trim()) {
+          return [
+            {
+              text: "What should I hand off? Say e.g. Book Uber, or pick a letter from the last list.",
+            },
+          ];
+        }
+      }
+
       // Calendar invite phrased as email → real calendar create with attendees.
       if (kind === "email_draft" && isCalendarInviteIntent(text)) {
         const calHint = parseCalendarCreateHint(text, briefCtx.timezone);
@@ -3661,21 +3733,24 @@ export async function handleInbound(
           payload.recipientLabel = composeAsk.toHint;
         }
         if (composeAsk?.mode === "draft") payload.draftOnly = true;
-        const bodyNow = strPayload(payload.body) || strPayload(payload.body_draft);
-        if (!bodyNow && composeAsk) {
-          const filled = composeEmailDraft(composeAsk, name);
-          if (!strPayload(payload.subject)) payload.subject = filled.subject;
-          payload.body = filled.body;
-        }
+        const polished = polishEmailDraftPayload(payload, {
+          sourceText: text,
+          userName: name,
+          toHint: composeAsk?.toHint ?? strPayload(payload.recipientLabel),
+        });
+        Object.assign(payload, polished);
         if (strPayload(payload.to) && deps.rememberContactEmail) {
           const names = [
             ...(composeAsk?.toHint && !composeAsk.toHint.includes("@") ? [composeAsk.toHint] : []),
             ...extractInviteeNames(text),
-          ];
-          await deps.rememberContactEmail(msg.userId, {
-            label: names[0] ?? "Contact",
-            email: strPayload(payload.to),
-          });
+          ].map((n) => cleanPersonLabel(n) ?? n);
+          const label = names.find((n) => isPersistableContactLabel(n));
+          if (label) {
+            await deps.rememberContactEmail(msg.userId, {
+              label,
+              email: strPayload(payload.to),
+            });
+          }
         }
       }
 
@@ -4003,6 +4078,42 @@ export async function handleInbound(
       const reply = sanitizeLifeOpsReplyText(result.intent.text.trim(), {
         ...(recentChatSummary != null ? { recentChat: recentChatSummary } : {}),
       });
+      if (
+        reply &&
+        deps.createPending &&
+        isLifeOpsPickableList(reply) &&
+        (looksLikeMovieTicketAsk(text) ||
+          Boolean(parseLifeOpsResearchIntent(text)) ||
+          classifyOptionListKind(reply) === "movie" ||
+          classifyOptionListKind(reply) === "dining" ||
+          classifyOptionListKind(reply) === "travel" ||
+          classifyOptionListKind(reply) === "cab")
+      ) {
+        const listKind = classifyOptionListKind(reply);
+        await deps.createPending({
+          userId: msg.userId,
+          kind: "life_ops_research",
+          summary: reply.slice(0, 480),
+          payload: {
+            domain: listKind === "travel" ? "travel" : "home",
+            query: text,
+            findings: reply,
+            vendorKind: listKind,
+          },
+        });
+        return [
+          {
+            text: [
+              `Proposed (life_ops_research):`,
+              reply,
+              "",
+              listKind === "movie"
+                ? "Reply with a letter to pick the show. Next I'll give the BookMyShow link — nothing booked yet."
+                : "Reply with a letter to pick, then any missing day/time. Nothing booked or paid yet.",
+            ].join("\n"),
+          },
+        ];
+      }
       if (reply) return [{ text: reply }];
       return [
         {
