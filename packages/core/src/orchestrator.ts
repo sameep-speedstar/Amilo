@@ -32,6 +32,7 @@ import {
   extractLifeOpsDiningContext,
   formatMoneyCapNote,
   formatLifeOpsOptionLines,
+  sanitizeLifeOpsReplyText,
   isBookPlatformOnly,
   isWhenPartyFollowUp,
   isWeakLifeOpsHandoffSummary,
@@ -48,6 +49,7 @@ import {
   parseLifeOpsResearchIntent,
   parseMoneyCapInr,
   parseCabProvider,
+  parseBookMyShowUrl,
   resolveListedOptionVenue,
   diningCitySlug,
   scopeChatToDining,
@@ -2840,12 +2842,17 @@ export async function handleInbound(
       }
 
       if (venue && listKind === "movie") {
+        const fromChat = parseBookMyShowUrl(recentChatSummary ?? "");
+        const city = fromChat?.city ?? diningCitySlug(recentChatSummary);
+        const live =
+          fromChat?.url ??
+          `https://in.bookmyshow.com/explore/movies-${city === "bangalore" ? "bengaluru" : city}`;
         return [
           {
             text: [
               `Got it — ${venue}.`,
-              "Open the BookMyShow link from the showtimes list (or say book <theatre> <time>).",
-              "Amilo won't buy seats — partner booking comes later.",
+              `Live BookMyShow (no invented times): ${live}`,
+              "Open that page for real showtimes/seats — Amilo won't buy tickets.",
             ].join("\n"),
           },
         ];
@@ -3084,11 +3091,17 @@ export async function handleInbound(
         }
 
         if (vendorKind === "movie") {
+          const fromChat = parseBookMyShowUrl(recentChatSummary ?? "");
+          const city = fromChat?.city ?? diningCitySlug(recentChatSummary);
+          const live =
+            fromChat?.url ??
+            `https://in.bookmyshow.com/explore/movies-${city === "bangalore" ? "bengaluru" : city}`;
           return [
             {
               text: [
-                "For movie tickets, open the BookMyShow link from the showtimes list (or say book <theatre> <time>).",
-                "Amilo won't buy seats — partner booking comes later.",
+                "I won't invent showtimes or seat links.",
+                `Open live BookMyShow: ${live}`,
+                "Pick theatre + time there — Amilo doesn't buy seats yet.",
               ].join("\n"),
             },
           ];
@@ -3987,7 +4000,9 @@ export async function handleInbound(
       if (composeAsk && deps.createPending) {
         return proposeEmailComposePending(msg, deps, composeAsk, { userName: name });
       }
-      const reply = formatLifeOpsOptionLines(result.intent.text.trim());
+      const reply = sanitizeLifeOpsReplyText(result.intent.text.trim(), {
+        ...(recentChatSummary != null ? { recentChat: recentChatSummary } : {}),
+      });
       if (reply) return [{ text: reply }];
       return [
         {

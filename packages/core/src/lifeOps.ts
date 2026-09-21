@@ -460,6 +460,88 @@ export function formatLifeOpsOptionLines(text: string): string {
   return parts.join("\n").replace(/\n{3,}/g, "\n\n").trim();
 }
 
+/** True when a BookMyShow URL is invented / placeholder (never send to the user). */
+export function isFakeBookMyShowUrl(url: string): boolean {
+  const u = url.trim();
+  if (!/bookmyshow\.com/i.test(u)) return false;
+  if (/ET0*X|XXXX|placeholder|example\.com|ET\d*X+/i.test(u)) return true;
+  // buytickets / show deep-links need a real ET###### code
+  if (/\/buytickets\//i.test(u) && !/ET\d{6,}/i.test(u)) return true;
+  if (/show-ET/i.test(u) && !/ET\d{6,}/i.test(u)) return true;
+  if (/movie-[a-z]+-ET[^/\s]*X/i.test(u)) return true;
+  return false;
+}
+
+/**
+ * Scrub invented showtimes / fake BMS deep-links from outbound life-ops replies.
+ * Prefer a verified movie page (ET###### from the same reply or recent chat); else explore.
+ */
+export function sanitizeLifeOpsReplyText(
+  text: string,
+  opts?: { recentChat?: string | null; citySlug?: string },
+): string {
+  let t = formatLifeOpsOptionLines(text);
+  if (!t) return t;
+
+  const realFromText = parseBookMyShowUrl(t);
+  const realFromChat = opts?.recentChat ? parseBookMyShowUrl(opts.recentChat) : null;
+  const real = realFromText ?? realFromChat;
+  const city =
+    real?.city ??
+    opts?.citySlug ??
+    (/\bchandigarh|mohali|panchkula\b/i.test(t) ? "chandigarh" : "bengaluru");
+
+  const fallback =
+    real?.url ??
+    `https://in.bookmyshow.com/explore/movies-${city}`;
+
+  let scrubbedFake = false;
+  t = t.replace(
+    /https?:\/\/(?:in\.)?bookmyshow\.com\/[^\s)>\]]+/gi,
+    (url) => {
+      if (!isFakeBookMyShowUrl(url)) return url;
+      scrubbedFake = true;
+      return fallback;
+    },
+  );
+  // Bare host links without scheme
+  t = t.replace(
+    /(?:^|[\s(])((?:in\.)?bookmyshow\.com\/[^\s)>\]]+)/gi,
+    (full, path: string) => {
+      const url = `https://${path}`;
+      if (!isFakeBookMyShowUrl(url)) return full;
+      scrubbedFake = true;
+      const prefix = full.slice(0, full.length - path.length);
+      return `${prefix}${fallback.replace(/^https:\/\//, "")}`;
+    },
+  );
+
+  if (scrubbedFake) {
+    // Drop claims of a specific show deep-link we couldn't verify.
+    t = t.replace(/\bBookMyShow link\s*[—\-–:]\s*/gi, "Live BookMyShow page: ");
+    if (!/I couldn't verify (a|that) show link/i.test(t)) {
+      t = `${t.trim()}\n\nI couldn't verify that exact show link — open BookMyShow for live seats (Amilo won't invent showtimes or ET codes).`;
+    }
+  }
+
+  // Flag likely invented "every theatre has exactly the user's clock" lists without a real BMS movie URL.
+  const hasRealMoviePage = Boolean(parseBookMyShowUrl(t)?.eventCode);
+  const clockHits = t.match(/\b\d{1,2}(?::\d{2})?\s*[ap]m\b/gi) ?? [];
+  const uniqueClocks = new Set(clockHits.map((c) => c.toLowerCase().replace(/\s+/g, "")));
+  if (
+    !hasRealMoviePage &&
+    clockHits.length >= 2 &&
+    uniqueClocks.size === 1 &&
+    /(?:inox|pvr|cinepolis|theatre|theater|showtimes?)/i.test(t)
+  ) {
+    if (!/couldn't verify|live seats|do not invent/i.test(t)) {
+      t = `${t.trim()}\n\nTimes above need a live BookMyShow check — I only list clocks when search confirms them. ${fallback}`;
+    }
+  }
+
+  return t.replace(/\n{3,}/g, "\n\n").trim();
+}
+
 /** True when chat looks like a pickable life-ops list (any domain), not FOCUS mail. */
 export function isLifeOpsPickableList(text: string | null | undefined): boolean {
   const t = (text ?? "").trim();
@@ -711,9 +793,19 @@ export function classifyVendorHandoffKind(
   if (
     /\b(flight|indigo|air\s*india|spicejet|hotel|train)\b/i.test(t) &&
     !CAB_LINE_RE.test(t) &&
-    !DINING_LINE_RE.test(t)
+    !DINING_LINE_RE.test(t) &&
+    !/\btickets?\b/i.test(t)
   ) {
     return "travel";
+  }
+  // "Book two tickets for Mirzapur" / seat asks — movie, never dining "table for 3".
+  if (
+    /\b(tickets?|seats?)\b/i.test(t) &&
+    (MOVIE_LINE_RE.test(t) ||
+      /\b(pvr|inox|cinepolis|theatre|theater|mirzapur)\b/i.test(t) ||
+      /\bbook\b[\s\S]{0,40}\btickets?\b/i.test(t))
+  ) {
+    return "movie";
   }
   if (
     (MOVIE_LINE_RE.test(t) || /\bbook\s+(?:tickets?|seats?)\b/i.test(t)) &&

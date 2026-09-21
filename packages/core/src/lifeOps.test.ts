@@ -30,6 +30,8 @@ import {
   lifeOpsPickPrompt,
   LIFE_OPS_DEFAULT_SCHEME,
   formatLifeOpsOptionLines,
+  sanitizeLifeOpsReplyText,
+  isFakeBookMyShowUrl,
   optionPickSource,
   classifyOptionListKind,
   coerceOptionPick,
@@ -217,6 +219,28 @@ describe("lifeOps", () => {
     // Already vertical — unchanged shape
     const dinner = "Picks\nA) Pashtun — kebabs\nB) Peddlers — vibe\nReply with a letter to pick.";
     assert.equal(formatLifeOpsOptionLines(dinner), dinner);
+  });
+
+  it("scrubs invented BookMyShow show links", () => {
+    const fake =
+      "PVR Vega City Mirzapur 8 PM: BookMyShow link — https://in.bookmyshow.com/buytickets/pvr-vega-city-bangalore/movie-bang-ET003XXXX/show-ET003XXXX-20260921-2000";
+    assert.equal(isFakeBookMyShowUrl("https://in.bookmyshow.com/buytickets/pvr-vega-city-bangalore/movie-bang-ET003XXXX/show-ET003XXXX-20260921-2000"), true);
+    assert.equal(
+      isFakeBookMyShowUrl("https://in.bookmyshow.com/movies/bengaluru/mirzapur-the-movie/ET00417686"),
+      false,
+    );
+    const out = sanitizeLifeOpsReplyText(fake, {
+      recentChat:
+        "Amilo: https://in.bookmyshow.com/movies/bengaluru/mirzapur-the-movie/ET00417686",
+    });
+    assert.doesNotMatch(out, /ET003XXXX/);
+    assert.match(out, /ET00417686/);
+    assert.match(out, /couldn't verify/i);
+
+    assert.equal(
+      classifyVendorHandoffKind("Book two tickets for Mirzapur near Arekere, Bangalore"),
+      "movie",
+    );
   });
 
   it("resolves 4, for 3 people, 8 PM against Chandigarh list — not stale Bangalore handoff", () => {

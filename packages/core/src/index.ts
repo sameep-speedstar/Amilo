@@ -106,6 +106,8 @@ export {
   preferLifeOpsNumberPick,
   isLifeOpsPickableList,
   formatLifeOpsOptionLines,
+  sanitizeLifeOpsReplyText,
+  isFakeBookMyShowUrl,
   lifeOpsOptionId,
   lifeOpsPickPrompt,
   LIFE_OPS_DEFAULT_SCHEME,
