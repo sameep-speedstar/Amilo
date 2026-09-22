@@ -111,6 +111,30 @@ export function parseEmailComposeAsk(text: string): EmailComposeAsk | null {
   return { mode, toHint, about: facts.facts, sourceText: t };
 }
 
+/**
+ * "Send mail to X and block calendar …" is two asks. The mail source keeps
+ * the recipient and the topic, and drops the calendar clause.
+ */
+export function mailAskBesideCalendar(text: string): EmailComposeAsk | null {
+  const ask = parseEmailComposeAsk(text);
+  if (!ask) return null;
+  if (!/\b(block|calendar|schedule|invite)\b/i.test(text)) return null;
+  const purpose =
+    text.match(/\bdiscussing(?:\s+on)?\s+([^.]+)/i)?.[1]?.trim() ??
+    text.match(/\b(?:about|regarding)\s+([^.]+?)(?:\s+and\s+block\b|$)/i)?.[1]?.trim() ??
+    null;
+  const topic = purpose
+    ?.replace(/\s+and\s+block[\s\S]*$/i, "")
+    .replace(/\s+(?:today|tomorrow|tonight)\b[\s\S]*$/i, "")
+    .trim();
+  const who = ask.toHint ?? "them";
+  const sourceText = topic
+    ? `Send mail to ${who} about ${topic}`
+    : `Send mail to ${who}`;
+  const facts = extractEmailFacts(sourceText, ask.toHint);
+  return { mode: ask.mode, toHint: ask.toHint, about: facts.facts, sourceText };
+}
+
 export function composeEmailDraft(
   ask: EmailComposeAsk,
   userName?: string,

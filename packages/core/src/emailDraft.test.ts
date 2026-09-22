@@ -14,6 +14,7 @@ import {
   looksLikeFakeDraftAck,
   parseBareEmail,
   parseEmailComposeAsk,
+  mailAskBesideCalendar,
   emailDraftNeedsRewrite,
   isPersistableContactLabel,
   polishEmailDraftPayload,
@@ -69,6 +70,23 @@ describe("email compose parse", () => {
     assert.equal(composed.subject, "Follow up");
     assert.match(composed.body, /Hi Sameep,/);
     assert.doesNotMatch(composed.body, /To sameep/i);
+  });
+
+  it("keeps the mail topic when the same message also blocks a calendar", () => {
+    const ask = mailAskBesideCalendar(
+      "Send mail to sameep and block his calendar for today 4pm for discussing on seriousprep",
+    );
+    assert.ok(ask);
+    assert.equal(ask!.toHint?.toLowerCase(), "sameep");
+    assert.equal(ask!.mode, "send");
+    const composed = composeEmailDraft(ask!, "Rajeev");
+    assert.match(composed.subject, /seriousprep/i);
+    assert.match(composed.body, /seriousprep/i);
+    assert.doesNotMatch(composed.body, /block|calendar|4pm/i);
+    assert.equal(
+      mailAskBesideCalendar("Send mail to sameep about the deck"),
+      null,
+    );
   });
 
   it("treats rewrite directions as composition notes, not a new dump", () => {

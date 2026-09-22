@@ -24,6 +24,8 @@ import {
   preferLifeOpsNumberPick,
   resolveListedOptionVenue,
   resolveListedOptionMapsUrl,
+  resolveListedOptionBookMyShowUrl,
+  moviePickLinkReply,
   diningPickAckReply,
   isDiningCalendarBlockAffirm,
   latestDiningThread,
@@ -652,6 +654,23 @@ describe("lifeOps", () => {
     assert.doesNotMatch(reply, /partner booking APIs|pay\/confirm link/i);
     assert.match(reply, /help find/i);
     assert.doesNotMatch(reply, /Reply yes for/i);
+  });
+
+  it("movie letter pick returns the verified BookMyShow url on that option", () => {
+    const chat = [
+      "Amilo: Mirzapur · Elante",
+      "A) PVR Elante — 7:30 PM",
+      "https://in.bookmyshow.com/movies/chandigarh/mirzapur/ET00417686",
+      "B) INOX — times on BookMyShow",
+      "https://in.bookmyshow.com/buytickets/x/movie-bang-ET003XXXX",
+    ].join("\n");
+    const url = resolveListedOptionBookMyShowUrl(chat, "A");
+    assert.equal(url, "https://in.bookmyshow.com/movies/chandigarh/mirzapur/ET00417686");
+    assert.equal(resolveListedOptionBookMyShowUrl(chat, "B"), null);
+    const reply = moviePickLinkReply({ venue: "PVR Elante", url });
+    assert.match(reply, /ET00417686/);
+    assert.match(reply, /did not reserve or pay/i);
+    assert.doesNotMatch(reply, /can't book/i);
   });
 
   it("dining letter pick ack: Maps + calendar ask", () => {

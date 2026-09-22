@@ -225,6 +225,42 @@ export function resolveListedOptionMapsUrl(
   return shortMapsSearchUrl(name, area);
 }
 
+/** Verified BookMyShow URL on the picked option. Never invents an ET code. */
+export function resolveListedOptionBookMyShowUrl(
+  recentChat: string | null | undefined,
+  optionId: string,
+): string | null {
+  const chat = (recentChat ?? "").trim();
+  if (!chat || !optionId) return null;
+  const line = resolveListedOptionLine(chat, optionId);
+  if (!line) return null;
+  const at = chat.lastIndexOf(line);
+  const tail = at >= 0 ? chat.slice(at) : line;
+  const next = tail.slice(line.length).search(/\n\s*(?:Amilo:\s*)?[A-E]\)\s/i);
+  const window = (next >= 0 ? tail.slice(0, line.length + next) : tail).slice(0, 800);
+  const urls = window.match(/https?:\/\/(?:in\.)?bookmyshow\.com\/[^\s)>\]]+/gi) ?? [];
+  for (const raw of urls) {
+    const url = raw.replace(/[),.;]+$/, "");
+    if (!isFakeBookMyShowUrl(url)) return url;
+  }
+  return null;
+}
+
+/** After a movie letter pick: the real BookMyShow page from that option, or say it's missing. */
+export function moviePickLinkReply(opts: { venue: string; url: string | null }): string {
+  if (opts.url) {
+    return [
+      `Got it — ${opts.venue}.`,
+      "Open this BookMyShow page to finish. Amilo did not reserve or pay:",
+      opts.url,
+    ].join("\n");
+  }
+  return [
+    `Got it — ${opts.venue}.`,
+    "That option has no verified BookMyShow link. Ask me to look the show up again.",
+  ].join("\n");
+}
+
 /**
  * After a dining letter pick: Maps link + calendar ask (research-only; no book/pay).
  * Travel leave-by advisory fires once calendar is blocked with time + place.

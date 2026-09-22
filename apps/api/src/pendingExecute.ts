@@ -50,6 +50,48 @@ async function pickSendableGoogleAccount(
   );
 }
 
+/** Mail bundled onto a calendar_create. Calendar is already written; mail failure is reported, not rolled back. */
+async function sendBundledCalendarEmail(
+  db: Db,
+  cfg: GoogleOAuthConfig | null,
+  userId: string,
+  alsoEmail: unknown,
+): Promise<string | null> {
+  if (!alsoEmail || typeof alsoEmail !== "object") return null;
+  const mail = alsoEmail as Record<string, unknown>;
+  const to = str(mail.to);
+  const subject = str(mail.subject, "(no subject)");
+  const body = str(mail.body ?? mail.body_draft);
+  const who = str(mail.recipientLabel, "the recipient");
+  if (mail.draftOnly === true) return "Mail left as a draft — not sent.";
+  if (!to.includes("@")) return `Mail not sent — I still need an email for ${who}.`;
+  if (!cfg) return "Calendar is on Google. Mail didn't send: Google isn't configured.";
+  const preferred = str(mail.accountLabel, "personal");
+  const account = await pickSendableGoogleAccount(db, userId, preferred);
+  if (!account || !hasGmailSendScope(account.scopes ?? "")) {
+    return "Calendar is on Google. Gmail send isn't authorized yet — reconnect google, then ask me to send the mail.";
+  }
+  try {
+    const { accessToken } = await ensureAccessToken(db, cfg, account);
+    const sent = await sendGmailMessage(accessToken, {
+      to,
+      subject,
+      body,
+      ...(account.email ? { from: account.email } : {}),
+    });
+    await appendAudit(db, {
+      userId,
+      action: "email_send",
+      detail: { to, subject, messageId: sent.id, accountLabel: account.label, bundledWith: "calendar_create" },
+      confirmed: true,
+    });
+    return `Sent to ${to}: ${subject}`;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return `Calendar is on Google. Mail didn't send: ${message}`;
+  }
+}
+
 function toGoogleWall(iso: string, timezone: string): string {
   const d = parseIsoDate(iso);
   if (!d) return iso;
@@ -424,18 +466,16 @@ export async function executePendingAction(
         note: "calendar_create",
         meta: { pendingId: row.id, eventId: created.id },
       });
+      const calendarLine = attendees.length
+        ? `Added to Google Calendar (${label}): ${title} — invited ${attendees.join(", ")}`
+        : `Added to Google Calendar (${label}): ${title}`;
+      const leaveBy = created.location
+        ? "I'll send a leave-by travel advisory before you need to head out (travel time + buffer)."
+        : null;
+      const mailNote = await sendBundledCalendarEmail(db, cfg, row.userId, payload.alsoEmail);
       return {
         ok: true,
-        message: [
-          attendees.length
-            ? `Added to Google Calendar (${label}): ${title} — invited ${attendees.join(", ")}`
-            : `Added to Google Calendar (${label}): ${title}`,
-          created.location
-            ? "I'll send a leave-by travel advisory before you need to head out (travel time + buffer)."
-            : null,
-        ]
-          .filter(Boolean)
-          .join("\n"),
+        message: [calendarLine, leaveBy, mailNote].filter(Boolean).join("\n"),
       };
     }
 

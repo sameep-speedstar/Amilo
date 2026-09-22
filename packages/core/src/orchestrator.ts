@@ -13,6 +13,7 @@ import {
   isShowDraftAsk,
   parseBareEmail,
   parseEmailComposeAsk,
+  mailAskBesideCalendar,
   polishEmailDraftPayload,
   rewriteSpokenEmailDirections,
   pickGmailSendAccount,
@@ -58,6 +59,8 @@ import {
   parseCabProvider,
   resolveListedOptionVenue,
   resolveListedOptionMapsUrl,
+  resolveListedOptionBookMyShowUrl,
+  moviePickLinkReply,
   diningPickAckReply,
   isDiningCalendarBlockAffirm,
   shortMapsSearchUrl,
@@ -915,12 +918,18 @@ async function proposeCalendarCreatePending(
     summary,
     payload,
   });
-  const confirmHint = conflictNote
-    ? "Reply yes to go ahead anyway, alternate for next free, or cancel."
-    : payload.location
-      ? "Reply yes to write to Google Calendar, cancel to drop. After it's on the calendar I'll send a leave-by travel advisory (travel time + buffer)."
-      : "Reply yes to write to Google Calendar, cancel to drop.";
-  return [
+  const alsoEmail =
+    payload.alsoEmail && typeof payload.alsoEmail === "object"
+      ? (payload.alsoEmail as Record<string, unknown>)
+      : null;
+  const confirmHint = alsoEmail
+    ? "Reply yes to write the calendar hold and send the mail, cancel to drop both."
+    : conflictNote
+      ? "Reply yes to go ahead anyway, alternate for next free, or cancel."
+      : payload.location
+        ? "Reply yes to write to Google Calendar, cancel to drop. After it's on the calendar I'll send a leave-by travel advisory (travel time + buffer)."
+        : "Reply yes to write to Google Calendar, cancel to drop.";
+  const out: OutboundMessage[] = [
     {
       text: [
         ...(conflictNote ? [conflictNote, ""] : []),
@@ -931,6 +940,10 @@ async function proposeCalendarCreatePending(
       ].join("\n"),
     },
   ];
+  if (alsoEmail) {
+    out.push({ text: formatEmailDraftCopy(alsoEmail) });
+  }
+  return out;
 }
 
 function emailDraftMode(payload: Record<string, unknown>, fallback: EmailComposeAsk | null): "draft" | "send" {
@@ -2905,7 +2918,18 @@ export async function handleInbound(
       const listKind = classifyOptionListKind(source);
       const venue = source ? resolveListedOptionVenue(source, pickId) : null;
 
-      if (venue && (listKind === "travel" || listKind === "cab" || listKind === "movie")) {
+      if (venue && listKind === "movie") {
+        return [
+          {
+            text: moviePickLinkReply({
+              venue,
+              url: resolveListedOptionBookMyShowUrl(source, pickId),
+            }),
+          },
+        ];
+      }
+
+      if (venue && (listKind === "travel" || listKind === "cab")) {
         return [
           {
             text: [
@@ -3195,6 +3219,32 @@ export async function handleInbound(
             : withName
               ? `Meeting with ${withName}`
               : hint.title;
+      const beside = mailAskBesideCalendar(text);
+      let alsoEmail: Record<string, unknown> | null = null;
+      if (beside) {
+        const composed = composeEmailDraft(beside, name);
+        let to = beside.toHint?.includes("@") ? beside.toHint : "";
+        if (!to && beside.toHint && deps.resolveContactEmail) {
+          const hit = await deps.resolveContactEmail(msg.userId, beside.toHint);
+          if (hit?.email) to = hit.email;
+        }
+        let accountLabel = "personal";
+        if (deps.listGoogleAccounts) {
+          const sendAcct = pickGmailSendAccount(
+            await deps.listGoogleAccounts(msg.userId),
+            "personal",
+          );
+          if (sendAcct) accountLabel = sendAcct.label;
+        }
+        alsoEmail = {
+          to,
+          subject: composed.subject,
+          body: composed.body,
+          accountLabel,
+          draftOnly: beside.mode === "draft",
+          ...(beside.toHint ? { recipientLabel: beside.toHint } : {}),
+        };
+      }
       return proposeCalendarCreatePending(msg, deps, briefCtx.timezone, {
         title,
         start: hint.startIso,
@@ -3203,6 +3253,7 @@ export async function handleInbound(
         endIso: hint.endIso,
         ...(attendees.length ? { attendees } : {}),
         ...(location ? { location } : {}),
+        ...(alsoEmail ? { alsoEmail } : {}),
       });
     }
   }
