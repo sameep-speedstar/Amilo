@@ -112,6 +112,9 @@ amilo_apply_container_and_settings() {
       SARVAM_MODEL="${SARVAM_MODEL:-saarika:v2.5}" \
       SARVAM_LANGUAGE_CODE="${SARVAM_LANGUAGE_CODE:-unknown}" \
       GOOGLE_MAPS_API_KEY="${GOOGLE_MAPS_API_KEY:-}" \
+      UBER_CLIENT_ID="${UBER_CLIENT_ID:-}" \
+      UBER_CLIENT_SECRET="${UBER_CLIENT_SECRET:-}" \
+      UBER_REDIRECT_URI="${UBER_REDIRECT_URI:-}" \
       ADMIN_TOKEN="${ADMIN_TOKEN:-}" \
       ADMIN_EMAIL="${ADMIN_EMAIL:-sameep@speedstar.ai}" \
       ADMIN_PASSWORD="${ADMIN_PASSWORD:-}" \

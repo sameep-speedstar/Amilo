@@ -45,6 +45,6 @@ export const PARTNER_API_BD_TRACK = [
   { merchant: "zomato", need: "Table reservation API" },
   { merchant: "eazydiner", need: "Reservation partner API" },
   { merchant: "bookmyshow", need: "Seat hold + payment-link API" },
-  { merchant: "uber", need: "Ride quote + book API" },
+  { merchant: "uber", need: "Ride quote + book API (Riders API — request scope; Limited Access OK for founder)" },
   { merchant: "ola", need: "Ride quote + book API" },
 ] as const;

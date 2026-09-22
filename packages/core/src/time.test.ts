@@ -327,6 +327,22 @@ describe("timezone helpers", () => {
     );
   });
 
+  it("titles a mail-and-calendar ask from its own subject", () => {
+    const now = new Date("2026-09-22T08:00:00.000Z");
+    const hint = parseCalendarCreateHint(
+      "Send mail to sameep and block his calendar for today 4pm for discussing on seriousprep",
+      "Asia/Kolkata",
+      now,
+    );
+    assert.ok(hint);
+    assert.match(hint!.title, /seriousprep/i);
+    assert.doesNotMatch(hint!.title, /mirzapur|ticket|mail|sameep|calendar/i);
+    assert.equal(
+      formatLocalWhenFriendly(new Date(hint!.startIso), "Asia/Kolkata"),
+      "Tuesday 22 September · 4:00 pm",
+    );
+  });
+
   it("reuses the prior hold when the user says Block it", () => {
     const now = new Date("2026-09-20T14:17:00.000Z");
     const prior =

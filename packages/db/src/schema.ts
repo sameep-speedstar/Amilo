@@ -262,6 +262,25 @@ export const geocodeCache = pgTable("geocode_cache", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+/** Uber Rider OAuth — privileged `request` scope; Limited Access until Uber Full Access. */
+export const uberAccounts = pgTable(
+  "uber_accounts",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    uberUserId: varchar("uber_user_id", { length: 80 }),
+    scopes: text("scopes").notNull().default(""),
+    accessTokenEnc: text("access_token_enc").notNull(),
+    refreshTokenEnc: text("refresh_token_enc").notNull().default(""),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex("uber_accounts_user_uidx").on(t.userId)],
+);
+
 /** Per-occurrence leave-by plan (one Routes call until T-30/T-10 recheck). */
 export const travelPlans = pgTable(
   "travel_plans",

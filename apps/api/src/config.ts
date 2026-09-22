@@ -29,6 +29,9 @@ export interface Settings {
   sarvamModel: string;
   sarvamLanguageCode: string;
   googleMapsApiKey: string;
+  uberClientId: string;
+  uberClientSecret: string;
+  uberRedirectUri: string;
   adminToken: string;
   /** Founder admin login email (default sameep@speedstar.ai). */
   adminEmail: string;
@@ -70,6 +73,10 @@ export function loadSettings(): Settings {
     "GOOGLE_REDIRECT_URI",
     `${publicBaseUrl}/oauth/google/callback`,
   );
+  const uberRedirectUri = req(
+    "UBER_REDIRECT_URI",
+    `${publicBaseUrl}/oauth/uber/callback`,
+  );
 
   return {
     port: Number(req("PORT", "8080")),
@@ -101,6 +108,9 @@ export function loadSettings(): Settings {
     sarvamModel: req("SARVAM_MODEL", "saarika:v2.5"),
     sarvamLanguageCode: req("SARVAM_LANGUAGE_CODE", "unknown"),
     googleMapsApiKey: req("GOOGLE_MAPS_API_KEY"),
+    uberClientId: req("UBER_CLIENT_ID"),
+    uberClientSecret: req("UBER_CLIENT_SECRET"),
+    uberRedirectUri,
     adminToken: req("ADMIN_TOKEN"),
     adminEmail: req("ADMIN_EMAIL", "sameep@speedstar.ai").trim().toLowerCase(),
     adminPassword: req("ADMIN_PASSWORD"),

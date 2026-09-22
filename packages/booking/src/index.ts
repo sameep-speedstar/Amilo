@@ -38,3 +38,23 @@ export {
   type BookingConnectorOpts,
 } from "./connector.js";
 export { PARTNER_API_BD_TRACK, PARTNER_API_STUBS } from "./adapters/stubs.js";
+export {
+  UberApiError,
+  listUberProducts,
+  estimateUberRequest,
+  getUberPriceEstimates,
+  buildUberEstimates,
+  createUberRideRequest,
+  getUberRideRequest,
+  cancelUberRideRequest,
+  UBER_SCOPES,
+  buildUberAuthUrl,
+  exchangeUberCode,
+  refreshUberAccessToken,
+  type UberLatLng,
+  type UberProduct,
+  type UberEstimate,
+  type UberRideRequest,
+  type UberOAuthConfig,
+  type UberTokenSet,
+} from "./uber/index.js";

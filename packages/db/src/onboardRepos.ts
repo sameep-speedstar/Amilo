@@ -22,13 +22,34 @@ export type AccessRequestStatus =
   | "spam";
 
 export function normalizePhoneE164(raw: string): string | null {
-  const digits = raw.replace(/\D/g, "");
+  let digits = raw.replace(/\D/g, "");
+  if (!digits) return null;
+  // 0-prefixed Indian mobile (09880…)
+  if (
+    digits.length === 11 &&
+    digits.startsWith("0") &&
+    /^[6-9]/.test(digits.slice(1, 2))
+  ) {
+    digits = digits.slice(1);
+  }
+  // Bare 10-digit Indian mobile — WhatsApp inbound is 91 + 10 digits.
+  // Admin often pastes 9880… without the country code; storing +9880… silently
+  // drops the first Hi Amilo (waId 919880… never matches).
+  if (digits.length === 10 && /^[6-9]/.test(digits)) {
+    digits = `91${digits}`;
+  }
   if (digits.length < 10 || digits.length > 15) return null;
   return `+${digits}`;
 }
 
 export function phoneDigits(raw: string): string {
   return raw.replace(/\D/g, "");
+}
+
+/** Digits after India-aware E.164 normalize — use for allowlist matching. */
+export function canonicalPhoneDigits(raw: string): string {
+  const normalized = normalizePhoneE164(raw);
+  return phoneDigits(normalized ?? raw);
 }
 
 export async function listAllowedPhones(db: Db): Promise<AllowedPhoneRow[]> {
@@ -43,14 +64,14 @@ export async function isPhoneAllowlisted(
   waIdOrE164: string,
   envPhones: string[],
 ): Promise<boolean> {
-  const key = phoneDigits(waIdOrE164);
+  const key = canonicalPhoneDigits(waIdOrE164);
   if (!key) return false;
-  if (envPhones.some((p) => phoneDigits(p) === key)) return true;
+  if (envPhones.some((p) => canonicalPhoneDigits(p) === key)) return true;
   const rows = await db.query.allowedPhones.findMany({
     where: eq(allowedPhones.active, true),
     limit: 500,
   });
-  return rows.some((r) => phoneDigits(r.phoneE164) === key);
+  return rows.some((r) => canonicalPhoneDigits(r.phoneE164) === key);
 }
 
 export async function addAllowedPhone(

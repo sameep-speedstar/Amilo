@@ -38,6 +38,8 @@ describe("pending intent routing", () => {
     );
     assert.equal(looksLikeNewActionIntent("reconnect google personal", "Asia/Kolkata"), true);
     assert.equal(looksLikeNewActionIntent("Connect google speedstar", "Asia/Kolkata"), true);
+    assert.equal(looksLikeNewActionIntent("connect uber", "Asia/Kolkata"), true);
+    assert.equal(looksLikeNewActionIntent("book Uber to airport", "Asia/Kolkata"), true);
     assert.equal(
       looksLikeNewActionIntent("UK 30 year yield declined last week, read about it", "Asia/Kolkata"),
       true,

@@ -20,3 +20,4 @@ export * from "./attention.js";
 export * from "./meetingFollowup.js";
 export * from "./studioRepos.js";
 export * from "./bookingRepos.js";
+export * from "./uberRepos.js";

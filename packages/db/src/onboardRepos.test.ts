@@ -7,6 +7,7 @@ import {
   isUsageCapExemptPhone,
   isValidEmail,
   normalizeEmail,
+  canonicalPhoneDigits,
   normalizePhoneE164,
   phoneDigits,
   usageDayStartUtc,
@@ -19,6 +20,15 @@ describe("onboard phone helpers", () => {
     assert.equal(normalizePhoneE164("+91 98765 43210"), "+919876543210");
     assert.equal(normalizePhoneE164("919876543210"), "+919876543210");
     assert.equal(normalizePhoneE164("123"), null);
+  });
+
+  it("treats bare 10-digit Indian mobiles as +91", () => {
+    assert.equal(normalizePhoneE164("9880494969"), "+919880494969");
+    assert.equal(normalizePhoneE164("+9880494969"), "+919880494969");
+    assert.equal(normalizePhoneE164("09880494969"), "+919880494969");
+    assert.equal(canonicalPhoneDigits("919880494969"), "919880494969");
+    assert.equal(canonicalPhoneDigits("+9880494969"), "919880494969");
+    assert.equal(normalizePhoneE164("+14252057172"), "+14252057172");
   });
 
   it("strips to digits", () => {

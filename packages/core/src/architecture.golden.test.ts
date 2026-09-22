@@ -19,6 +19,8 @@ import {
   isVendorBookOrReserveAsk,
   looksLikeCalendarBookingAsk,
   looksLikeMovieTicketAsk,
+  mergeLifeOpsIntoCalendarText,
+  shouldInheritLifeOpsCalendarContext,
   optionPickSource,
   preferLifeOpsNumberPick,
   resolveActiveDomain,
@@ -78,6 +80,27 @@ describe("architecture golden — domain lock + Grok unlock", () => {
     const copy = vendorBookingUnavailableReply({ vendorKind: "dining", venueHint: "Katani" });
     assert.match(copy, /can't book or reserve/i);
     assert.match(copy, /find/i);
+  });
+
+  it("2c context lock: a new plan does not inherit the last Book links venue", () => {
+    const chat = [
+      "User: Book two tickets for Mirzapur today in Ilante Chandigarh Mall",
+      "Amilo: Book links: two tickets for Mirzapur · today in Ilante Chandigarh Mall",
+      "User: table for 2 near Indiranagar tomorrow 8pm",
+      "Amilo: Handoff (reservation): Burma Burma",
+    ].join("\n");
+    const serious =
+      "Send mail to sameep and block his calendar for today 4pm for discussing on seriousprep";
+    assert.equal(shouldInheritLifeOpsCalendarContext(serious), false);
+    assert.equal(mergeLifeOpsIntoCalendarText(serious, chat), serious);
+    assert.equal(
+      shouldInheritLifeOpsCalendarContext("block calendar and send invite to Mahesh"),
+      true,
+    );
+    assert.match(
+      mergeLifeOpsIntoCalendarText("block calendar and send invite to Mahesh", chat),
+      /Burma Burma/,
+    );
   });
 
   it("3 post-grok: scrub fake ET / identical clocks; no Zomato-shaped movie invent", () => {

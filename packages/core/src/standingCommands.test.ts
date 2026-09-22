@@ -18,6 +18,8 @@ import {
   parseWaitingOnCommand,
   isGoogleListCommand,
   parseConnectGoogleCommand,
+  parseConnectUberCommand,
+  parseUberBookAsk,
   parseDisconnectGoogleCommand,
   parseSyncCommand,
   parseMailLookup,
@@ -144,6 +146,15 @@ describe("standing commands", () => {
       rawLabel: null,
     });
     assert.equal(parseConnectGoogleCommand("connect me later"), null);
+  });
+
+  it("parses connect / disconnect uber and book Uber to", () => {
+    assert.deepEqual(parseConnectUberCommand("connect uber"), { kind: "connect" });
+    assert.deepEqual(parseConnectUberCommand("disconnect uber"), { kind: "disconnect" });
+    assert.deepEqual(parseUberBookAsk("book Uber to Kempegowda Airport"), {
+      destination: "Kempegowda Airport",
+    });
+    assert.equal(parseUberBookAsk("Book Katani Dhaba"), null);
   });
 
   it("parses disconnect / sync", () => {
@@ -289,6 +300,8 @@ describe("standing commands", () => {
   });
   it("help text names the key commands", () => {
     assert.match(STANDING_HELP, /connect google/i);
+    assert.match(STANDING_HELP, /connect uber/i);
+    assert.match(STANDING_HELP, /book Uber to/i);
     assert.match(STANDING_HELP, /what can you do/i);
     assert.match(STANDING_HELP, /status/i);
     assert.match(STANDING_HELP, /about me/i);

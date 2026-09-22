@@ -10,6 +10,8 @@ import {
   formatMovieResearchReply,
   mergeFlightHintsFromChat,
   mergeLifeOpsIntoCalendarText,
+  shouldInheritLifeOpsCalendarContext,
+  lifeOpsCalendarInheritance,
   mergeMovieHintsFromChat,
   parseDiningResearchHints,
   parseFlightResearchHints,
@@ -700,6 +702,32 @@ describe("lifeOps", () => {
     assert.match(merged, /8\s*pm/i);
     assert.match(merged, /Burma Burma/i);
     assert.match(merged, /tomorrow/i);
+  });
+
+  it("does not paste a prior movie or dinner venue onto a new calendar plan", () => {
+    const movieChat = [
+      "User: Book two tickets for Mirzapur today in Ilante Chandigarh Mall",
+      "Amilo: Proposed (life_ops_handoff):",
+      "Amilo: Book links: two tickets for Mirzapur · today in Ilante Chandigarh Mall · near Gmail",
+      "Amilo: Zomato: https://www.zomato.com/bangalore/restaurants?q=two%20tickets%20for%20Mirzapur",
+    ].join("\n");
+    const dinnerChat = [
+      "User: table for 2 near Indiranagar tomorrow 8pm vegetarian",
+      "Amilo: Handoff (reservation): Burma Burma",
+    ].join("\n");
+    const serious =
+      "Send mail to sameep and block his calendar for today 4pm for discussing on seriousprep";
+    for (const chat of [movieChat, dinnerChat]) {
+      const merged = mergeLifeOpsIntoCalendarText(serious, chat);
+      assert.equal(merged, serious);
+      assert.equal(shouldInheritLifeOpsCalendarContext(serious), false);
+      assert.equal(lifeOpsCalendarInheritance(serious, chat), null);
+    }
+    assert.equal(
+      shouldInheritLifeOpsCalendarContext("block calendar and send invite to Mahesh"),
+      true,
+    );
+    assert.equal(shouldInheritLifeOpsCalendarContext("block his calendar for today 4pm for a meeting"), false);
   });
 
   it("extracts dining context from chat", () => {

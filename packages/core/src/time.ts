@@ -272,6 +272,8 @@ export function parseCalendarCreateHint(
     .replace(/\b(?:ist|india(?:n)? standard time)\b/gi, "")
     // "calendar for/on/at …" is scaffolding, not a title
     .replace(/^(?:the\s+)?calendar(?:\s+(?:for|on|at|to))?\b/i, "")
+    .replace(/^(?:mail|e-?mail|email)\b[\s,]*/i, "")
+    .replace(/\bdiscussing\s+on\s+/gi, "")
     .replace(/\b(?:in the morning|in the evening|in the afternoon)\b/gi, "")
     .replace(/\b(?:we have to|i have to|have to|need to|going to|go to)\b/gi, "")
     .replace(/\b(?:play)\b/gi, "")

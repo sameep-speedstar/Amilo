@@ -3631,7 +3631,9 @@ export type PendingActionKind =
   | "booking_email"
   | "booking_confirm"
   | "booking_pay_link"
-  | "booking_select";
+  | "booking_select"
+  | "uber_ride_select"
+  | "uber_ride_confirm";
 
 export type PendingActionStatus =
   | "pending"

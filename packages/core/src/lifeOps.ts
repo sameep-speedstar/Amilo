@@ -1169,13 +1169,32 @@ export function preferLifeOpsNumberPick(opts: {
   return Boolean(coerceOptionPick(pickId, source));
 }
 
+/** Ticket / show lines are not restaurants, even if a bad handoff stored them as Book links. */
+export function isPoisonContextVenue(name: string | null | undefined): boolean {
+  const n = (name ?? "").trim();
+  if (!n) return false;
+  if (looksLikeMovieTicketAsk(n)) return true;
+  return /\b(tickets?|seats?|showtimes?|bookmyshow|cinema|theatre|theater)\b/i.test(n);
+}
+
+function bookLinksVenue(line: string): string | null {
+  return (
+    line.match(/Book links:\s*([^\n·]+)/i)?.[1]?.trim() ??
+    line.match(/Handoff \(reservation\):\s*([^\n·]+)/i)?.[1]?.trim() ??
+    null
+  );
+}
+
 /** Drop movie/cinema lines so dinner handoff never inherits showtimes / invented "today". */
 export function scopeChatToDining(chat: string | null | undefined): string {
   if (!chat?.trim()) return "";
   return chat
     .split("\n")
     .filter((line) => {
+      if (looksLikeMovieTicketAsk(line)) return false;
+      if (isPoisonContextVenue(bookLinksVenue(line))) return false;
       if (MOVIE_LINE_RE.test(line) && !DINING_LINE_RE.test(line)) return false;
+      if (/\b(zomato|dineout|eazydiner)\b/i.test(line) && /\btickets?\b/i.test(line)) return false;
       return true;
     })
     .join("\n");
@@ -1998,7 +2017,9 @@ export function extractLifeOpsDiningContext(
     chat.match(/Handoff \(reservation\):\s*([^\n·]+)/i)?.[1]?.trim() ??
     null;
   const handoffVenue =
-    handoffVenueRaw && !BOOK_PLATFORM_ONLY_RE.test(handoffVenueRaw)
+    handoffVenueRaw &&
+    !BOOK_PLATFORM_ONLY_RE.test(handoffVenueRaw) &&
+    !isPoisonContextVenue(handoffVenueRaw)
       ? handoffVenueRaw.slice(0, 80)
       : null;
 
@@ -2039,8 +2060,69 @@ export function extractLifeOpsDiningContext(
 }
 
 /**
+ * Prior dining venue/time may fill a calendar line only when this message is
+ * still that plan. A new subject (mail, meeting, discussing X) never inherits.
+ */
+const FOREIGN_CALENDAR_PLAN_RE =
+  /\b(discuss(?:ing|ion)?|regarding|agenda|meeting|sync|standup|call|e-?mail|email|appointment|pickup|pick\s*up|drop-?off|dentist|doctor|interview)\b/i;
+
+export function shouldInheritLifeOpsCalendarContext(text: string): boolean {
+  const t = text.trim();
+  if (!t) return false;
+  if (isDiningCalendarBlockAffirm(t)) return true;
+  if (
+    /^(?:(?:and|also|ok|okay|yes|sure|please|yeah|yep)\s+)*block(?:\s+(?:it|that|this|the\s+slot))?\.?$/i.test(
+      t,
+    )
+  ) {
+    return true;
+  }
+  if (/\b(?:this|that)\s+place\b/i.test(t)) return true;
+  if (/\b(?:that|the)\s+(?:dinner|lunch|brunch|table|reservation)\b/i.test(t)) return true;
+  // "send mail … and block calendar" is a new plan, not the last dinner.
+  if (
+    /\b(?:send|write|draft)\s+(?:an?\s+)?(?:mail|e-?mail|email)\b/i.test(t) ||
+    /\b(?:mail|e-?mail|email)\s+to\b/i.test(t)
+  ) {
+    return false;
+  }
+  if (
+    FOREIGN_CALENDAR_PLAN_RE.test(t) &&
+    !/\b(dinner|lunch|brunch|drinks|restaurant|table)\b/i.test(t)
+  ) {
+    return false;
+  }
+  // Own clock plus a named person is a finished ask ("invite Rajeev tomorrow at 3pm").
+  const hasOwnClock =
+    /\b\d{1,2}(?::\d{2})?\s*(?:am|pm|o['']?clock)\b/i.test(t) ||
+    /\b(?:at|@)\s*\d{1,2}\b/i.test(t);
+  const hasNamedPerson = /\b(?:to|with)\s+[A-Za-z][A-Za-z.'-]{1,40}\b/i.test(t);
+  if (
+    hasOwnClock &&
+    hasNamedPerson &&
+    !/\b(dinner|lunch|brunch|drinks|restaurant|table)\b/i.test(t)
+  ) {
+    return false;
+  }
+  return /\b(block|calendar|invite)\b/i.test(t);
+}
+
+/** Dining context for a calendar write. Null when this message is a new plan. */
+export function lifeOpsCalendarInheritance(
+  text: string,
+  recentChat: string | null | undefined,
+): LifeOpsDiningContext | null {
+  if (!shouldInheritLifeOpsCalendarContext(text)) return null;
+  const ctx = extractLifeOpsDiningContext(recentChat, text);
+  if (!ctx) return null;
+  if (ctx.venue && isPoisonContextVenue(ctx.venue)) return null;
+  return ctx;
+}
+
+/**
  * When user says "block calendar / invite X" without time/venue, splice
  * life-ops context from recent chat so parseCalendarCreateHint keeps 8pm + place.
+ * Self-contained requests are returned unchanged.
  */
 export function mergeLifeOpsIntoCalendarText(
   text: string,
@@ -2049,8 +2131,9 @@ export function mergeLifeOpsIntoCalendarText(
   const t = text.trim();
   if (!t || !recentChat?.trim()) return t;
   if (!/\b(block|calendar|invite|schedule|add|put)\b/i.test(t)) return t;
+  if (!shouldInheritLifeOpsCalendarContext(t)) return t;
 
-  const ctx = extractLifeOpsDiningContext(recentChat, t);
+  const ctx = lifeOpsCalendarInheritance(t, recentChat);
   if (!ctx) return t;
 
   let out = t;

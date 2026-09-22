@@ -49,6 +49,7 @@ import {
   classifyOptionListKind,
   coerceOptionPick,
   mergeLifeOpsIntoCalendarText,
+  lifeOpsCalendarInheritance,
   parseInboxErrandDraftAsk,
   parseLifeOpsHandoffIntent,
   parseLifeOpsOptionPick,
@@ -61,6 +62,7 @@ import {
   isDiningCalendarBlockAffirm,
   shortMapsSearchUrl,
   looksLikeMovieTicketAsk,
+  isPoisonContextVenue,
   isLifeOpsResearchShortlist,
   scopeRecentChatForResearch,
   type LifeOpsResearchIntent,
@@ -100,6 +102,8 @@ import {
   parseWaitingOnCommand,
   isGoogleListCommand,
   parseConnectGoogleCommand,
+  parseConnectUberCommand,
+  parseUberBookAsk,
   parseDisconnectGoogleCommand,
   parseSyncCommand,
   parseMailLookup,
@@ -481,6 +485,9 @@ export interface OrchestratorDeps {
   ) => Promise<{ cleared: number; labels: string[] }>;
   /** Google OAuth + sync hooks (M4 multi-account). */
   getGoogleAuthUrl?: (userId: string, label: string) => Promise<string | null>;
+  /** Uber Rider OAuth — null if UBER_CLIENT_* unset. */
+  getUberAuthUrl?: (userId: string) => Promise<string | null>;
+  disconnectUber?: (userId: string) => Promise<string>;
   listGoogleAccounts?: (
     userId: string,
   ) => Promise<Array<{ label: string; email: string | null; scopes?: string }>>;
@@ -770,6 +777,8 @@ export function looksLikeNewActionIntent(
   if (
     isGoogleListCommand(t) ||
     parseConnectGoogleCommand(t) ||
+    parseConnectUberCommand(t) ||
+    parseUberBookAsk(t) ||
     parseDisconnectGoogleCommand(t) ||
     parseSyncCommand(t)
   ) {
@@ -842,6 +851,12 @@ async function proposeCalendarCreatePending(
     ...payloadIn,
   };
   if (!payload.accountLabel) payload.accountLabel = "personal";
+  if (/^(it|that|this)$/i.test(String(payload.title ?? "").trim())) payload.title = "Busy";
+  if (isPoisonContextVenue(String(payload.location ?? ""))) delete payload.location;
+  if (isPoisonContextVenue(String(payload.title ?? ""))) {
+    const stripped = String(payload.title).replace(/\s+at\s+.*$/i, "").trim();
+    payload.title = stripped && !isPoisonContextVenue(stripped) ? stripped : "Busy";
+  }
 
   let conflictNote: string | null = null;
   if (deps.checkCalendarConflict) {
@@ -2644,6 +2659,36 @@ export async function handleInbound(
     ];
   }
 
+  const uberCmd = parseConnectUberCommand(text);
+  if (uberCmd) {
+    if (uberCmd.kind === "disconnect") {
+      if (!deps.disconnectUber) {
+        return [{ text: "Uber unlink isn't configured on this server yet." }];
+      }
+      return [{ text: await deps.disconnectUber(msg.userId) }];
+    }
+    if (!deps.getUberAuthUrl) {
+      return [{ text: "Uber connect isn't configured (set UBER_CLIENT_ID / UBER_CLIENT_SECRET)." }];
+    }
+    const url = await deps.getUberAuthUrl(msg.userId);
+    if (!url) {
+      return [{ text: "Uber OAuth isn't configured on this server yet." }];
+    }
+    return [
+      {
+        text: [
+          uberCmd.kind === "reconnect"
+            ? "Tap to reconnect Uber (ride quotes + book after you confirm):"
+            : "Tap to connect Uber (ride quotes + book after you confirm):",
+          "",
+          url,
+          "",
+          "After connect: book Uber to <place>. Pickup uses your saved home/office.",
+        ].join("\n"),
+      },
+    ];
+  }
+
   const disconnectCmd = parseDisconnectGoogleCommand(text);
   if (disconnectCmd) {
     return replyDisconnectGoogle(msg.userId, disconnectCmd.rawLabel, deps);
@@ -3100,7 +3145,7 @@ export async function handleInbound(
           }
         }
         const withName = extractInviteeNames(calText)[0];
-        const diningCtx = extractLifeOpsDiningContext(recentChatSummary, calText);
+        const diningCtx = lifeOpsCalendarInheritance(text, recentChatSummary);
         const title =
           hint.title && !/^(busy|event|meeting)$/i.test(hint.title)
             ? hint.title
@@ -3135,7 +3180,7 @@ export async function handleInbound(
     );
     const hint = parseCalendarCreateHint(calText, briefCtx.timezone);
     if (hint && !isAppointmentEmailAsk(calText) && !isAppointmentEmailAsk(text)) {
-      const diningCtx = extractLifeOpsDiningContext(recentChatSummary, calText);
+      const diningCtx = lifeOpsCalendarInheritance(text, recentChatSummary);
       const location =
         (await resolveCalendarLocation(msg.userId, calText, deps)) ??
         diningCtx?.venue ??
@@ -3520,26 +3565,26 @@ export async function handleInbound(
 
       // Prefer local parse of the user message over model ISO (avoids wrong year/raw stamps).
       if (kind === "calendar_create") {
+        const inheritCtx = lifeOpsCalendarInheritance(text, recentChatSummary);
         const calText = mergeLifeOpsIntoCalendarText(text, recentChatSummary);
         const hint = parseCalendarCreateHint(calText, briefCtx.timezone);
         if (hint) {
-          const diningCtx = extractLifeOpsDiningContext(recentChatSummary, calText);
           payload.title =
-            diningCtx?.venue && /^(busy|event|meeting|calendar)$/i.test(hint.title.trim())
-              ? `${diningCtx.vibe === "pub" ? "Drinks" : "Dinner"} at ${diningCtx.venue}`
+            inheritCtx?.venue && /^(busy|event|meeting|calendar)$/i.test(hint.title.trim())
+              ? `${inheritCtx.vibe === "pub" ? "Drinks" : "Dinner"} at ${inheritCtx.venue}`
               : hint.title;
           payload.start = hint.startIso;
           payload.end = hint.endIso;
           payload.startIso = hint.startIso;
           payload.endIso = hint.endIso;
-          if (diningCtx?.venue && !strPayload(payload.location)) {
-            payload.location = diningCtx.venue;
-          }
         }
-        const loc =
-          extractEventLocation(calText) ||
-          (await resolveCalendarLocation(msg.userId, calText, deps));
-        if (loc && !strPayload(payload.location)) payload.location = loc;
+        const ownLoc = extractEventLocation(text);
+        const sharedLoc = refersToSharedPlace(text)
+          ? await resolveCalendarLocation(msg.userId, text, deps)
+          : null;
+        const loc = ownLoc || sharedLoc || inheritCtx?.venue || null;
+        if (loc) payload.location = loc;
+        else delete payload.location;
         const attendees = await resolveAttendeesFromMessage(
           msg.userId,
           calText,

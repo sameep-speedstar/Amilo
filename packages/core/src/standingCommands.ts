@@ -337,6 +337,31 @@ export function parseConnectGoogleCommand(
   };
 }
 
+/** connect uber / reconnect uber / disconnect uber */
+export function parseConnectUberCommand(
+  text: string,
+): { kind: "connect" | "reconnect" | "disconnect" } | null {
+  const t = normalizeCommandText(text);
+  if (/^(?:please\s+)?disconnect\s+uber\.?$/.test(t)) return { kind: "disconnect" };
+  const m = t.match(/^(?:please\s+)?(re)?connect\s+uber\.?$/);
+  if (!m) return null;
+  return { kind: m[1] ? "reconnect" : "connect" };
+}
+
+/** Explicit Uber book with destination — for API ride flow. */
+export function parseUberBookAsk(text: string): { destination: string } | null {
+  const t = text.trim();
+  if (!t || t.length > 200) return null;
+  const m =
+    t.match(/^(?:book|get|order|request)\s+(?:an?\s+)?uber\s+(?:to|for)\s+(.+)$/i) ??
+    t.match(/^uber\s+(?:to|for)\s+(.+)$/i) ??
+    t.match(/^(?:book|get)\s+(?:a\s+)?(?:cab|ride)\s+(?:with\s+)?uber\s+(?:to|for)\s+(.+)$/i);
+  const dest = m?.[1]?.trim().replace(/[.?!]+$/, "").trim();
+  if (!dest || dest.length < 2) return null;
+  if (/^(please|now|asap)$/i.test(dest)) return null;
+  return { destination: dest.slice(0, 120) };
+}
+
 export function isGoogleListCommand(text: string): boolean {
   const t = normalizeCommandText(text);
   if (
@@ -791,6 +816,11 @@ export const STANDING_HELP = [
   "• disconnect google <label|all> — unlink (LifeOS untouched)",
   "• sync — refresh mail + today's calendar",
   "• brief — curated priorities (also: morning / evening)",
+  "",
+  "Uber",
+  "• connect uber — link for ride quotes + confirm-to-book",
+  "• book Uber to <place> — shortlist → letter → yes to request",
+  "• disconnect uber — unlink",
   "",
   "Attention",
   "• mute <phrase> / unmute <phrase> / mutes",

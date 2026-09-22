@@ -528,6 +528,28 @@ function orchestratorDeps(): OrchestratorDeps {
       if (!googleCfg) return null;
       return buildAuthUrl(googleCfg, userId, label);
     },
+    getUberAuthUrl: async (userId) => {
+      if (!settings.uberClientId || !settings.uberClientSecret || !settings.tokenEncryptionKey) {
+        return null;
+      }
+      const { buildUberConnectUrl } = await import("./uberService.js");
+      return buildUberConnectUrl(
+        {
+          oauth: {
+            clientId: settings.uberClientId,
+            clientSecret: settings.uberClientSecret,
+            redirectUri: settings.uberRedirectUri,
+          },
+          encryptionKey: settings.tokenEncryptionKey,
+          mapsApiKey: settings.googleMapsApiKey || null,
+        },
+        userId,
+      );
+    },
+    disconnectUber: async (userId) => {
+      const { disconnectUber } = await import("./uberService.js");
+      return disconnectUber(db, userId);
+    },
     listGoogleAccounts: async (userId) => {
       const rows = await listGoogleAccounts(db, userId);
       return rows.map((r) => ({ label: r.label, email: r.email, scopes: r.scopes }));
@@ -1314,8 +1336,53 @@ async function processInbound(rawJson: unknown): Promise<void> {
     );
 
     try {
-      // Cloud browser bookings — OTP / select continue before generic orchestrator.
       const openBooking = await getOpenPendingAction(db, user.id);
+
+      // Uber Rider API — select letter from estimate list.
+      if (openBooking?.kind === "uber_ride_select") {
+        const { parseLifeOpsOptionPick } = await import("@amilo/core");
+        const letter = parseLifeOpsOptionPick(content);
+        if (letter && /^[A-Ea-e]$/.test(letter)) {
+          const { confirmUberRideSelection } = await import("./uberService.js");
+          const outbound = await confirmUberRideSelection(db, {
+            oauth: {
+              clientId: settings.uberClientId,
+              clientSecret: settings.uberClientSecret,
+              redirectUri: settings.uberRedirectUri,
+            },
+            encryptionKey: settings.tokenEncryptionKey,
+            mapsApiKey: settings.googleMapsApiKey || null,
+          }, { userId: user.id, letter });
+          for (const msg of outbound) await sendAndLogOutbound(user.id, msg);
+          continue;
+        }
+      }
+
+      // Uber book ask — estimate shortlist (confirm-before-request).
+      if (settings.uberClientId && settings.uberClientSecret) {
+        const { parseUberBookAsk } = await import("@amilo/core");
+        const uberAsk = parseUberBookAsk(content);
+        if (uberAsk) {
+          const { startUberRideFlow } = await import("./uberService.js");
+          const outbound = await startUberRideFlow(
+            db,
+            {
+              oauth: {
+                clientId: settings.uberClientId,
+                clientSecret: settings.uberClientSecret,
+                redirectUri: settings.uberRedirectUri,
+              },
+              encryptionKey: settings.tokenEncryptionKey,
+              mapsApiKey: settings.googleMapsApiKey || null,
+            },
+            { userId: user.id, destination: uberAsk.destination },
+          );
+          for (const msg of outbound) await sendAndLogOutbound(user.id, msg);
+          continue;
+        }
+      }
+
+      // Cloud browser bookings — OTP / select continue before generic orchestrator.
       if (openBooking?.kind === "booking_otp") {
         const otp = parseBookingOtpReply(content);
         if (otp) {
@@ -1906,6 +1973,55 @@ app.get("/i/:token/qr", async (c) => {
     status: 200,
     headers: { "Content-Type": "image/png", "Cache-Control": "no-store" },
   });
+});
+
+app.get("/oauth/uber/callback", async (c) => {
+  if (!settings.uberClientId || !settings.uberClientSecret || !settings.tokenEncryptionKey) {
+    return c.html("<h1>Uber OAuth not configured</h1>", 503);
+  }
+  const err = c.req.query("error");
+  if (err) {
+    return c.html(`<h1>Uber connect cancelled</h1><p>${err}</p>`, 400);
+  }
+  const code = c.req.query("code");
+  const state = c.req.query("state");
+  if (!code || !state) {
+    return c.html("<h1>Missing code/state</h1>", 400);
+  }
+  try {
+    const { completeUberOAuth } = await import("./uberService.js");
+    const { userId } = await completeUberOAuth(
+      db,
+      {
+        oauth: {
+          clientId: settings.uberClientId,
+          clientSecret: settings.uberClientSecret,
+          redirectUri: settings.uberRedirectUri,
+        },
+        encryptionKey: settings.tokenEncryptionKey,
+        mapsApiKey: settings.googleMapsApiKey || null,
+      },
+      { code, state },
+    );
+    console.log(JSON.stringify({ event: "uber_connected", userId }));
+    return c.html(
+      `<!doctype html><html><body style="font-family:system-ui;padding:2rem">
+        <h1>Uber connected</h1>
+        <p>Return to WhatsApp and try: <code>book Uber to airport</code> (uses your saved home/office as pickup).</p>
+      </body></html>`,
+    );
+  } catch (e) {
+    console.error(
+      JSON.stringify({
+        event: "uber_oauth_error",
+        error: e instanceof Error ? e.message : String(e),
+      }),
+    );
+    return c.html(
+      `<h1>Uber connect failed</h1><p>${e instanceof Error ? e.message : String(e)}</p>`,
+      500,
+    );
+  }
 });
 
 app.get("/oauth/google/callback", async (c) => {

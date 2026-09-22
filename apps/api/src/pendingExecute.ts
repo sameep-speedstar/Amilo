@@ -27,6 +27,7 @@ import {
   type PendingActionRow,
 } from "@amilo/db";
 import { ensureAccessToken } from "./googleSync.js";
+import { loadSettings } from "./config.js";
 
 function str(v: unknown, fallback = ""): string {
   return v == null ? fallback : String(v).trim();
@@ -210,6 +211,44 @@ export async function executePendingAction(
         }
       }
       return { ok: true, message };
+    }
+
+    if (row.kind === "uber_ride_confirm") {
+      const { executeUberRideConfirm } = await import("./uberService.js");
+      const s = loadSettings();
+      if (!s.uberClientId || !s.uberClientSecret) {
+        return { ok: false, message: "Uber isn't configured on this server." };
+      }
+      const rt = {
+        oauth: {
+          clientId: s.uberClientId,
+          clientSecret: s.uberClientSecret,
+          redirectUri: s.uberRedirectUri,
+        },
+        encryptionKey: s.tokenEncryptionKey,
+        mapsApiKey: s.googleMapsApiKey || null,
+      };
+      const placed = await executeUberRideConfirm(db, rt, {
+        userId: row.userId,
+        payload,
+      });
+      await resolvePendingAction(db, row.id, {
+        status: placed.ok ? "confirmed" : "failed",
+        result: { message: placed.message },
+      });
+      await appendAudit(db, {
+        userId: row.userId,
+        action: "uber_ride_confirm",
+        detail: { pendingId: row.id },
+        confirmed: true,
+      });
+      await logEvalEvent(db, {
+        userId: row.userId,
+        event: "action_confirmed",
+        note: "uber_ride_confirm",
+        meta: { pendingId: row.id },
+      });
+      return placed;
     }
 
     if (row.kind === "booking_confirm") {
